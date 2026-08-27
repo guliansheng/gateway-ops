@@ -242,7 +242,7 @@ docker build -t gateway-ops:dev .
 - **连接器**：NewAPI 与 Sub2API 登录、鉴权、余额、倍率和管理 API 适配。
 - **构建**：前端构建、Go 编译、Alpine 运行时三阶段 Docker 构建。
 - **部署**：前端资源嵌入 Go 二进制，由单个应用容器同时提供页面与 API。
-- **镜像**：发布到 Docker Hub `gls/gateway-ops`，支持 `latest`、`edge`、版本号和 commit SHA 标签。
+- **镜像**：发布到 Docker Hub `guliansheng/gateway-ops`，支持 `latest`、`edge`、版本号和 commit SHA 标签。
 
 ## License
 

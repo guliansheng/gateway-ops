@@ -23,7 +23,7 @@ permissions:
   contents: read
 
 env:
-  DOCKERHUB_IMAGE: gls/gateway-ops
+  DOCKERHUB_IMAGE: guliansheng/gateway-ops
 
 jobs:
   build-and-push:
@@ -40,7 +40,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       # 登录 Docker Hub（主）。需要在仓库 Settings → Secrets 配置：
-      #   DOCKERHUB_USERNAME = gls
+      #   DOCKERHUB_USERNAME = guliansheng
       #   DOCKERHUB_TOKEN    = 在 hub.docker.com → Account Settings → Personal access tokens 生成
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
