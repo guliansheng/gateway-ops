@@ -32,6 +32,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    env_file:
+      # Managed by /home/gls/apps/bin/set-channel-egress.
+      - ./.outbound-proxy.env
     environment:
       GATEWAYOPS_SERVER_PORT: 8418
       # `postgres` also exists as a service alias on the shared Sub2API
@@ -51,14 +54,6 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET:-}
-      # Telegram/部分上游在宿主机直连不可达时，通过宿主 ShellCrash HTTP 代理访问。
-      # 代理地址必须使用应用所在 Docker 网络可达的宿主网关地址。
-      HTTP_PROXY: ${GATEWAYOPS_HTTP_PROXY:-}
-      HTTPS_PROXY: ${GATEWAYOPS_HTTPS_PROXY:-}
-      NO_PROXY: ${GATEWAYOPS_NO_PROXY:-gatewayops-postgres,postgres,localhost,127.0.0.1}
-      http_proxy: ${GATEWAYOPS_HTTP_PROXY:-}
-      https_proxy: ${GATEWAYOPS_HTTPS_PROXY:-}
-      no_proxy: ${GATEWAYOPS_NO_PROXY:-gatewayops-postgres,postgres,localhost,127.0.0.1}
     networks:
       - default
       - sub2api-network

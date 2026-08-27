@@ -341,6 +341,8 @@ export interface RelayRecentUsage {
   user_id: number
   user_email: string
   user_name: string
+  ip_address: string
+  ip_location: string
   group_id: number
   group_name: string
   account_id: number

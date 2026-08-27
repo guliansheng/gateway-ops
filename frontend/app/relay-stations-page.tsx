@@ -525,8 +525,8 @@ function RecentUsageTable({
         <CardContent className="border-t border-border p-0">
           <div className="relative isolate h-[520px] max-h-[520px]">
             <div className="h-full overflow-auto">
-              <div className="min-w-[1484px]">
-                <div className="sticky top-0 z-30 grid grid-cols-[180px_160px_180px_150px_76px_240px_170px_160px_168px] gap-0 border-b border-border bg-muted text-[11px] text-foreground/90 font-medium [&>*]:px-4 [&>*]:py-2">
+              <div className="min-w-[1684px]">
+                <div className="sticky top-0 z-30 grid grid-cols-[180px_160px_180px_150px_76px_240px_170px_160px_200px_168px] gap-0 border-b border-border bg-muted text-[11px] text-foreground/90 font-medium [&>*]:px-4 [&>*]:py-2">
                   <span>用户邮箱</span>
                   <span>账户</span>
                   <span>模型</span>
@@ -535,6 +535,7 @@ function RecentUsageTable({
                   <span>Token</span>
                   <span>费用</span>
                   <span>延迟</span>
+                  <span>IP</span>
                   <span>时间</span>
                 </div>
                 {filtered.length ? (
@@ -558,7 +559,7 @@ function RecentUsageTable({
                     return (
                       <div
                         key={`${row.id}-${index}`}
-                        className="grid grid-cols-[180px_160px_180px_150px_76px_240px_170px_160px_168px] items-center gap-0 border-b border-border text-xs last:border-0 [&>*]:px-4 [&>*]:py-2.5 last:[&>*]:border-b-0"
+                        className="grid grid-cols-[180px_160px_180px_150px_76px_240px_170px_160px_200px_168px] items-center gap-0 border-b border-border text-xs last:border-0 [&>*]:px-4 [&>*]:py-2.5 last:[&>*]:border-b-0"
                       >
                         <button
                           type="button"
@@ -673,6 +674,14 @@ function RecentUsageTable({
                             >
                               {formatLatency(row.duration_ms)}
                             </strong>
+                          </span>
+                        </span>
+                        <span className="min-w-0 space-y-0.5" title={row.ip_location || row.ip_address || "未记录 IP"}>
+                          <span className="block truncate font-mono text-[11px] text-foreground">
+                            {row.ip_address || "-"}
+                          </span>
+                          <span className="block truncate text-[10px] text-muted-foreground">
+                            {row.ip_location || (row.ip_address ? "归属地未知" : "未记录")}
                           </span>
                         </span>
                         <span className="font-mono text-[11px] text-muted-foreground">

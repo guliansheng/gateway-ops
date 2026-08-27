@@ -21,6 +21,7 @@ coverage.txt
 # Env / config
 .env
 .env.local
+.outbound-proxy.env
 backend/config.yaml
 !backend/config.example.yaml
 

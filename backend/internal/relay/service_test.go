@@ -826,3 +826,35 @@ func TestChannelBoundAccountCostFallsBackToBaseCost(t *testing.T) {
 		t.Fatalf("unbound account cost = %v, want 2.25", got)
 	}
 }
+
+func TestNormalizeUsageIPAddress(t *testing.T) {
+	tests := []struct {
+		name         string
+		value        string
+		wantAddress  string
+		wantLocation string
+	}{
+		{name: "public IPv4", value: " 23.148.228.88 ", wantAddress: "23.148.228.88"},
+		{name: "forwarded chain", value: "23.148.228.88, 10.0.0.2", wantAddress: "23.148.228.88"},
+		{name: "private IPv4 with port", value: "192.168.1.8:8080", wantAddress: "192.168.1.8", wantLocation: "内网地址"},
+		{name: "IPv6 with port", value: "[::1]:443", wantAddress: "::1", wantLocation: "本机地址"},
+		{name: "invalid", value: "not-an-ip", wantAddress: "not-an-ip", wantLocation: "无效地址"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			address, location := normalizeUsageIPAddress(test.value)
+			if address != test.wantAddress || location != test.wantLocation {
+				t.Fatalf("normalizeUsageIPAddress(%q) = (%q, %q), want (%q, %q)", test.value, address, location, test.wantAddress, test.wantLocation)
+			}
+		})
+	}
+}
+
+func TestFormatIPLocation(t *testing.T) {
+	if got := formatIPLocation("US", "California", "Los Angeles"); got != "US · California · Los Angeles" {
+		t.Fatalf("location = %q", got)
+	}
+	if got := formatIPLocation("SG", "Singapore", "Singapore"); got != "SG · Singapore" {
+		t.Fatalf("deduplicated location = %q", got)
+	}
+}

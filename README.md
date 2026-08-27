@@ -242,7 +242,7 @@ docker build -t gateway-ops:dev .
 - **连接器**：NewAPI 与 Sub2API 登录、鉴权、余额、倍率和管理 API 适配。
 - **构建**：前端构建、Go 编译、Alpine 运行时三阶段 Docker 构建。
 - **部署**：前端资源嵌入 Go 二进制，由单个应用容器同时提供页面与 API。
-- **镜像**：发布到 Docker Hub `guliansheng/gateway-ops`，支持 `latest`、`edge`、版本号和 commit SHA 标签。
+- **镜像**：Docker Hub `guliansheng/gateway-ops`。
 
 ## License
 
@@ -251,17 +251,17 @@ GatewayOps 使用 [GNU Affero General Public License v3.0](./LICENSE) 发布。
 本项目基于 MIT 许可的上游项目 `worryzyy/upstream-hub` 修改而来。上游版权和许可证文本保留在 [LICENSES/MIT-upstream.txt](./LICENSES/MIT-upstream.txt)，修改与署名信息见 [NOTICE.md](./NOTICE.md)。
 
 ## 页面截图
-
+- 运营总览
 ![GatewayOps 运营总览](./docs/images/PixPin_2026-08-27_09-50-07.png)
-
+- 渠道管理
 ![GatewayOps 渠道管理](./docs/images/PixPin_2026-08-27_09-54-19.png)
-
+- 中转站管理
 ![GatewayOps 中转站管理](./docs/images/PixPin_2026-08-27_09-57-25.png)
-
-![GatewayOps 分组与账号](./docs/images/PixPin_2026-08-27_09-59-20.png)
-
-![GatewayOps 成本管理](./docs/images/PixPin_2026-08-27_10-00-12.png)
-
-![GatewayOps 本地号池](./docs/images/PixPin_2026-08-27_10-02-52.png)
-
-![GatewayOps 通知与监控](./docs/images/PixPin_2026-08-27_10-08-54.png)
+- 成本管理
+![GatewayOps 成本管理](./docs/images/PixPin_2026-08-27_09-59-20.png)
+- 本地号池
+![GatewayOps 本地号池](./docs/images/PixPin_2026-08-27_10-00-12.png)
+- 通知中心
+![GatewayOps 通知中心](./docs/images/PixPin_2026-08-27_10-02-52.png)
+- 分组监控
+![GatewayOps 分组监控](./docs/images/PixPin_2026-08-27_10-08-54.png)

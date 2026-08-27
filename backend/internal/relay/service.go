@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"sort"
 	"strconv"
@@ -22,6 +24,12 @@ import (
 )
 
 const requestTimeout = 20 * time.Second
+
+const (
+	ipLocationEndpoint = "http://ip-api.com/batch?fields=status,message,query,countryCode,regionName,city"
+	ipLocationTTL      = 24 * time.Hour
+	ipLocationErrorTTL = time.Hour
+)
 
 // ErrGroupAdminAPIKeyMissing indicates that the selected group has no usable
 // administrator API key. Callers can map this configuration error to a
@@ -37,6 +45,8 @@ type Service struct {
 	usageMu            sync.Mutex
 	usageCache         map[string]usageCacheEntry
 	userUsageCache     map[string]userUsageCacheEntry
+	ipLocationMu       sync.Mutex
+	ipLocationCache    map[string]ipLocationCacheEntry
 	publicMonitorMu    sync.Mutex
 	publicMonitorCache map[uint]publicMonitorCacheEntry
 }
@@ -51,13 +61,15 @@ func NewService(stations *storage.RelayStations, cipher *crypto.Cipher, deps ...
 		rates, _ = deps[1].(*storage.Rates)
 	}
 	return &Service{
-		stations:       stations,
-		cipher:         cipher,
-		channels:       channels,
-		rates:          rates,
-		client:         &http.Client{Timeout: requestTimeout},
-		usageCache:     make(map[string]usageCacheEntry),
-		userUsageCache: make(map[string]userUsageCacheEntry), publicMonitorCache: make(map[uint]publicMonitorCacheEntry),
+		stations:           stations,
+		cipher:             cipher,
+		channels:           channels,
+		rates:              rates,
+		client:             &http.Client{Timeout: requestTimeout},
+		usageCache:         make(map[string]usageCacheEntry),
+		userUsageCache:     make(map[string]userUsageCacheEntry),
+		ipLocationCache:    make(map[string]ipLocationCacheEntry),
+		publicMonitorCache: make(map[uint]publicMonitorCacheEntry),
 	}
 }
 
@@ -132,6 +144,11 @@ type userUsageCacheEntry struct {
 	ExpiresAt   time.Time
 	Usage       map[int64]UserUsageStats
 	FailedUsers int
+}
+
+type ipLocationCacheEntry struct {
+	ExpiresAt time.Time
+	Location  string
 }
 
 type UserUsageStats struct {
@@ -830,6 +847,7 @@ type remoteUsage struct {
 	UserID                int64   `json:"user_id"`
 	UserName              string  `json:"user_name"`
 	UserEmail             string  `json:"user_email"`
+	IPAddress             string  `json:"ip_address"`
 	GroupID               int64   `json:"group_id"`
 	GroupName             string  `json:"group_name"`
 	FirstTokenMS          int64   `json:"first_token_ms"`
@@ -867,6 +885,8 @@ type RecentUsageItem struct {
 	UserID                int64     `json:"user_id"`
 	UserEmail             string    `json:"user_email"`
 	UserName              string    `json:"user_name"`
+	IPAddress             string    `json:"ip_address"`
+	IPLocation            string    `json:"ip_location"`
 	GroupID               int64     `json:"group_id"`
 	GroupName             string    `json:"group_name"`
 	AccountID             int64     `json:"account_id"`
@@ -1427,6 +1447,7 @@ func (s *Service) RecentUsage(ctx context.Context, stationID uint, limit int) ([
 	for _, account := range accounts {
 		accountNames[account.ExternalID] = account.Name
 	}
+	locations := s.resolveIPLocations(ctx, page.Items)
 	items := make([]RecentUsageItem, 0, len(page.Items))
 	for _, usage := range page.Items {
 		created, err := time.Parse(time.RFC3339Nano, usage.CreatedAt)
@@ -1454,7 +1475,13 @@ func (s *Service) RecentUsage(ctx context.Context, stationID uint, limit int) ([
 		if accountName == "" {
 			accountName = accountNames[usage.AccountID]
 		}
+		ipAddress, localLocation := normalizeUsageIPAddress(usage.IPAddress)
+		ipLocation := localLocation
+		if ipLocation == "" {
+			ipLocation = locations[ipAddress]
+		}
 		items = append(items, RecentUsageItem{ID: usage.ID, UserID: usage.UserID, UserEmail: userEmail, UserName: userName,
+			IPAddress: ipAddress, IPLocation: ipLocation,
 			GroupID: usage.GroupID, GroupName: groupName, AccountID: usage.AccountID, AccountName: accountName,
 			Model: model, RequestType: usage.RequestType, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
 			CacheReadTokens: usage.CacheReadTokens, CacheCreationTokens: usage.CacheCreationTokens,
@@ -1464,6 +1491,138 @@ func (s *Service) RecentUsage(ctx context.Context, stationID uint, limit int) ([
 			FirstTokenMS: usage.FirstTokenMS, DurationMS: usage.DurationMS, CreatedAt: created.UTC()})
 	}
 	return items, nil
+}
+
+type ipLocationResponse struct {
+	Status      string `json:"status"`
+	Query       string `json:"query"`
+	CountryCode string `json:"countryCode"`
+	RegionName  string `json:"regionName"`
+	City        string `json:"city"`
+}
+
+func (s *Service) resolveIPLocations(ctx context.Context, usages []remoteUsage) map[string]string {
+	result := make(map[string]string)
+	missing := make([]string, 0)
+	seen := make(map[string]struct{})
+	now := time.Now()
+
+	s.ipLocationMu.Lock()
+	for _, usage := range usages {
+		ipAddress, localLocation := normalizeUsageIPAddress(usage.IPAddress)
+		if ipAddress == "" || localLocation != "" {
+			continue
+		}
+		if cached, ok := s.ipLocationCache[ipAddress]; ok && cached.ExpiresAt.After(now) {
+			result[ipAddress] = cached.Location
+			continue
+		}
+		if _, ok := seen[ipAddress]; !ok {
+			seen[ipAddress] = struct{}{}
+			missing = append(missing, ipAddress)
+		}
+	}
+	s.ipLocationMu.Unlock()
+	if len(missing) == 0 {
+		return result
+	}
+
+	payload, err := json.Marshal(missing)
+	if err != nil {
+		return result
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(lookupCtx, http.MethodPost, ipLocationEndpoint, strings.NewReader(string(payload)))
+	if err != nil {
+		return result
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.client.Do(req)
+	if err != nil {
+		s.cacheIPLocationFailures(missing, now)
+		return result
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		s.cacheIPLocationFailures(missing, now)
+		return result
+	}
+	var responses []ipLocationResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&responses); err != nil {
+		s.cacheIPLocationFailures(missing, now)
+		return result
+	}
+	resolved := make(map[string]string, len(responses))
+	for _, item := range responses {
+		ipAddress, localLocation := normalizeUsageIPAddress(item.Query)
+		if ipAddress == "" || localLocation != "" || item.Status != "success" {
+			continue
+		}
+		resolved[ipAddress] = formatIPLocation(item.CountryCode, item.RegionName, item.City)
+	}
+
+	s.ipLocationMu.Lock()
+	for _, ipAddress := range missing {
+		location := resolved[ipAddress]
+		ttl := ipLocationTTL
+		if location == "" {
+			ttl = ipLocationErrorTTL
+		}
+		s.ipLocationCache[ipAddress] = ipLocationCacheEntry{ExpiresAt: now.Add(ttl), Location: location}
+		result[ipAddress] = location
+	}
+	s.ipLocationMu.Unlock()
+	return result
+}
+
+func (s *Service) cacheIPLocationFailures(ipAddresses []string, now time.Time) {
+	s.ipLocationMu.Lock()
+	defer s.ipLocationMu.Unlock()
+	for _, ipAddress := range ipAddresses {
+		s.ipLocationCache[ipAddress] = ipLocationCacheEntry{ExpiresAt: now.Add(ipLocationErrorTTL)}
+	}
+}
+
+func normalizeUsageIPAddress(value string) (string, string) {
+	value = strings.TrimSpace(strings.Split(value, ",")[0])
+	if value == "" {
+		return "", ""
+	}
+	address, err := netip.ParseAddr(strings.Trim(value, "[]"))
+	if err != nil {
+		if host, _, splitErr := net.SplitHostPort(value); splitErr == nil {
+			address, err = netip.ParseAddr(strings.Trim(host, "[]"))
+		}
+	}
+	if err != nil {
+		return value, "无效地址"
+	}
+	address = address.Unmap()
+	switch {
+	case address.IsLoopback():
+		return address.String(), "本机地址"
+	case address.IsPrivate():
+		return address.String(), "内网地址"
+	case address.IsLinkLocalUnicast(), address.IsLinkLocalMulticast():
+		return address.String(), "链路本地地址"
+	case address.IsUnspecified():
+		return address.String(), "未指定地址"
+	default:
+		return address.String(), ""
+	}
+}
+
+func formatIPLocation(countryCode, regionName, city string) string {
+	parts := make([]string, 0, 3)
+	for _, value := range []string{countryCode, regionName, city} {
+		value = strings.TrimSpace(value)
+		if value != "" && (len(parts) == 0 || parts[len(parts)-1] != value) {
+			parts = append(parts, value)
+		}
+	}
+	return strings.Join(parts, " · ")
 }
 
 // Users returns a complete, range-aware user view. Sub2API can sort persisted
