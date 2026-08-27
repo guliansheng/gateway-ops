@@ -21,12 +21,9 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 env:
-  # Docker Hub 为主推地址，GHCR 同步作为备份/回滚。
   DOCKERHUB_IMAGE: gls/gateway-ops
-  GHCR_IMAGE: ghcr.io/guliansheng/gateway-ops
 
 jobs:
   build-and-push:
@@ -51,24 +48,13 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # 登录 ghcr.io（同步备份）。用 GITHUB_TOKEN，不需要额外配 secret。
-      - name: Log in to ghcr.io
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       # 根据触发场景自动算 tag：semver tag → v0.1.0 / 0.1 / latest；main → edge；
       # 任何场景都额外加一个 sha-xxxxxxx 作为不可变快照。
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          # 两个 image 同时列出，下面所有 tag 规则会同时套用到两个仓库。
-          images: |
-            ${{ env.DOCKERHUB_IMAGE }}
-            ${{ env.GHCR_IMAGE }}
+          images: ${{ env.DOCKERHUB_IMAGE }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
