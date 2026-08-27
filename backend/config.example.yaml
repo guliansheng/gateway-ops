@@ -1,0 +1,64 @@
+server:
+  port: 8418
+  mode: debug          # debug | release
+  trustedProxies: []
+  baseURL: "http://localhost:8418"
+
+database:
+  host: localhost
+  port: 54329
+  user: gatewayops
+  password: change-me
+  name: gatewayops
+  sslMode: disable
+  timezone: Asia/Shanghai
+  maxOpenConns: 20
+  maxIdleConns: 5
+
+security:
+  # 主密钥，用于加密渠道密码 / cookie / token / 打码 API key。
+  # 优先从 APP_SECRET 环境变量读取；这里只作开发期默认。
+  appSecret: "please-change-me-to-a-long-random-secret"
+
+auth:
+  # 鉴权总开关。false（默认）= 所有 /api/* 免登录、前端跳过登录页。
+  # 公网暴露请设 true 并填好下面的账号密码。
+  enabled: false
+  # 后台登录账号 / 密码（明文存放在 config，单用户场景）。
+  # 也可分别用 ADMIN_USERNAME / ADMIN_PASSWORD 环境变量覆盖。enabled=false 时可留空。
+  username: "admin"
+  password: ""
+  # token 签名密钥；留空时回退使用 security.appSecret。
+  tokenSecret: ""
+  # 登录 token 有效期（小时），默认 168 = 7 天。
+  sessionTTLHours: 168
+
+scheduler:
+  # 余额监控：每 15 分钟（错开 0/30 秒以避免和其他服务同步刷）。
+  balanceCron: "37 */15 * * * *"
+  # 倍率监控：每 30 分钟。
+  rateCron:    "13 */30 * * * *"
+  concurrency: 4
+  # 历史数据清理。字段 = 0 表示该表不清理；cron 留空则不启动清理任务。
+  # rate_change_logs 永远保留（核心业务数据，体积也小）。
+  retention:
+    cron: "0 17 3 * * *"          # 每天 03:17:00（6 字段含秒）
+    monitorLogsDays: 30           # 监控日志保留 30 天
+    balanceSnapshotsDays: 90      # 余额采样保留 90 天
+    notificationLogsDays: 90      # 通知发送日志保留 90 天
+
+notifications:
+  # 把一次扫描里多个分组的倍率变化合并成 1 条消息发，避免上游大调价瞬间刷屏。
+  batchRateChanges: true
+  # 涨跌幅 < X% 的 rate_changed 不推送（仍写入 rate_change_logs 表）。0 = 全发。
+  minChangePct: 0
+  # 同一上游的 balance_low 在 N 分钟内只发一次。0 = 每次扫描发现 < 阈值都发。
+  # 状态持久化在 notification_cooldowns 表，跨重启依然生效。
+  balanceLowCooldownMinutes: 60
+  # 单条通知发送失败时最多重试次数（含首次）。1 = 不重试。
+  # 退避：1s / 2s / 4s … 上限 30s。
+  sendMaxAttempts: 3
+
+log:
+  level: info          # debug | info | warn | error
+  format: text         # text | json

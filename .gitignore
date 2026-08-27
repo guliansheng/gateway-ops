@@ -1,0 +1,66 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/backend/bin/
+/backend/gateway-ops
+/backend/gateway-ops.exe
+
+# Test / coverage
+*.test
+*.out
+coverage.txt
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Env / config
+.env
+.env.local
+backend/config.yaml
+!backend/config.example.yaml
+
+# Logs
+*.log
+logs/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/.turbo/
+
+# Embedded frontend dist — 仓库里只保留 .gitkeep 占位，
+# 真实 dist 在 docker build 阶段由 frontend-builder 填充。
+backend/web/dist/*
+!backend/web/dist/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker volumes
+postgres-data/
+backups/
+
+# Claude / AI tooling
+.claude/
+CLAUDE.md
+
+# Demo overlay —— 本地演示沙箱，永远不进 git
+Dockerfile.demo
+docker-compose.demo.yml
+Caddyfile.demo
+.env.demo
+deploy-demo.sh
+backend/cmd/seed-demo/
+
+# Frontend build info
+frontend/tsconfig.tsbuildinfo
+frontend/.pnpm-store/
+
+docs/md

@@ -1,0 +1,49 @@
+# 不需要进入 Docker 构建上下文的文件 — 缩短传输 + 防止本地构建产物污染镜像。
+
+# Node
+**/node_modules
+**/.pnpm-store
+**/.vite
+**/.turbo
+**/.next
+**/.cache
+
+# Go
+**/bin
+**/*.exe
+backend/gateway-ops
+backend/gateway-ops.exe
+
+# 本地构建产物：Dockerfile 内部会重新 pnpm build，不要把宿主的 dist 拷进去
+frontend/dist
+
+# 嵌入占位以外的本地 dist 内容
+backend/web/dist/*
+!backend/web/dist/.gitkeep
+
+# 版本控制 / IDE
+.git
+.gitignore
+.gitattributes
+.github
+.idea
+.vscode
+**/*.log
+*.swp
+
+# Env / config
+.env
+.env.local
+backend/config.yaml
+
+# Volumes / 缓存
+postgres-data/
+backups/
+.claude/
+
+# 文档（构建不需要）
+docs/
+README.md
+CLAUDE.md
+*.md
+!backend/migrations/*.sql

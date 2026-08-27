@@ -1,0 +1,102 @@
+name: Publish Docker Image
+
+# 触发：
+#   - 推送到 main 分支             → 发 :edge 跟踪标签
+#   - 推送形如 v0.1.0 的 git tag    → 发 :v0.1.0 + :0.1 + :latest
+#   - 手动触发                      → 可填自定义 tag
+#
+# 所有构建都附带一个 :sha-xxxxxxx 短 hash tag，方便回滚到任意 commit。
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '额外推送的镜像 tag（可选，如 dev-test）'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  # Docker Hub 为主推地址，GHCR 同步作为备份/回滚。
+  DOCKERHUB_IMAGE: gls/gateway-ops
+  GHCR_IMAGE: ghcr.io/guliansheng/gateway-ops
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # QEMU 让 amd64 runner 能跑 arm64 emulation 出 ARM 镜像。
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 登录 Docker Hub（主）。需要在仓库 Settings → Secrets 配置：
+      #   DOCKERHUB_USERNAME = gls
+      #   DOCKERHUB_TOKEN    = 在 hub.docker.com → Account Settings → Personal access tokens 生成
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # 登录 ghcr.io（同步备份）。用 GITHUB_TOKEN，不需要额外配 secret。
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 根据触发场景自动算 tag：semver tag → v0.1.0 / 0.1 / latest；main → edge；
+      # 任何场景都额外加一个 sha-xxxxxxx 作为不可变快照。
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          # 两个 image 同时列出，下面所有 tag 规则会同时套用到两个仓库。
+          images: |
+            ${{ env.DOCKERHUB_IMAGE }}
+            ${{ env.GHCR_IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=edge,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=${{ inputs.tag }},enable=${{ inputs.tag != '' }}
+            type=sha,prefix=sha-,format=short
+          flavor: |
+            latest=false
+
+      # 多架构构建 + 推送。GitHub Actions 内置 cache (type=gha) 把
+      # 前端 pnpm install 和后端 go mod download 都缓存住，二次构建 1-2 分钟。
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+      - name: Summary
+        run: |
+          echo "### Pushed images" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

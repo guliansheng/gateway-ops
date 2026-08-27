@@ -1,0 +1,2 @@
+# 占位文件 — 让 //go:embed all:dist 在 dist 为空时仍能编译。
+# Docker 构建时这个目录会被前端 build 产物覆盖。

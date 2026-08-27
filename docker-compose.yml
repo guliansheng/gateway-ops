@@ -1,0 +1,81 @@
+name: gatewayops
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: gatewayops-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${GATEWAYOPS_DATABASE_USER:-gatewayops}
+      POSTGRES_PASSWORD: ${GATEWAYOPS_DATABASE_PASSWORD:?GATEWAYOPS_DATABASE_PASSWORD is required}
+      POSTGRES_DB: ${GATEWAYOPS_DATABASE_NAME:-gatewayops}
+    ports:
+      - "127.0.0.1:${GATEWAYOPS_POSTGRES_PORT:-54329}:5432"
+    volumes:
+      - gatewayops-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${GATEWAYOPS_DATABASE_USER:-gatewayops} -d ${GATEWAYOPS_DATABASE_NAME:-gatewayops}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    # 优先用已发布的镜像（默认 latest，可改成 v0.1.0 等具体版本锁定）。
+    # 如果指定的 image 在 Docker Hub 找不到，且本机没缓存，会回落到 build 块从源码构建。
+    # 完全离线 / 强制重建：`docker compose build`；强制重新拉：`docker compose pull`。
+    image: gls/gateway-ops:${GATEWAYOPS_IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gatewayops-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      GATEWAYOPS_SERVER_PORT: 8418
+      # `postgres` also exists as a service alias on the shared Sub2API
+      # network. Use this project's unique container DNS name to avoid
+      # resolving the wrong database after joining that network.
+      GATEWAYOPS_DATABASE_HOST: ${GATEWAYOPS_DATABASE_HOST:-gatewayops-postgres}
+      GATEWAYOPS_DATABASE_PORT: ${GATEWAYOPS_DATABASE_PORT:-5432}
+      GATEWAYOPS_DATABASE_USER: ${GATEWAYOPS_DATABASE_USER:-gatewayops}
+      GATEWAYOPS_DATABASE_PASSWORD: ${GATEWAYOPS_DATABASE_PASSWORD:?GATEWAYOPS_DATABASE_PASSWORD is required}
+      GATEWAYOPS_DATABASE_NAME: ${GATEWAYOPS_DATABASE_NAME:-gatewayops}
+      GATEWAYOPS_SERVER_MODE: ${GATEWAYOPS_SERVER_MODE:-release}
+      GATEWAYOPS_LOG_LEVEL: ${GATEWAYOPS_LOG_LEVEL:-info}
+      TZ: ${TZ:-Asia/Shanghai}
+      APP_SECRET: ${APP_SECRET:?APP_SECRET is required, set it in .env}
+      # 鉴权默认关闭。设 AUTH_ENABLED=true 时 ADMIN_PASSWORD 也必须填，否则后端启动失败。
+      AUTH_ENABLED: ${AUTH_ENABLED:-false}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET:-}
+      # Telegram/部分上游在宿主机直连不可达时，通过宿主 ShellCrash HTTP 代理访问。
+      # 代理地址必须使用应用所在 Docker 网络可达的宿主网关地址。
+      HTTP_PROXY: ${GATEWAYOPS_HTTP_PROXY:-}
+      HTTPS_PROXY: ${GATEWAYOPS_HTTPS_PROXY:-}
+      NO_PROXY: ${GATEWAYOPS_NO_PROXY:-gatewayops-postgres,postgres,localhost,127.0.0.1}
+      http_proxy: ${GATEWAYOPS_HTTP_PROXY:-}
+      https_proxy: ${GATEWAYOPS_HTTPS_PROXY:-}
+      no_proxy: ${GATEWAYOPS_NO_PROXY:-gatewayops-postgres,postgres,localhost,127.0.0.1}
+    networks:
+      - default
+      - sub2api-network
+    ports:
+      - "127.0.0.1:${GATEWAYOPS_HTTP_PORT:-8080}:8418"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8418/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  gatewayops-postgres-data:
+    name: gatewayops-postgres-data
+
+networks:
+  sub2api-network:
+    external: true
+    name: sub2api-deploy_sub2api-network
