@@ -74,6 +74,9 @@ GatewayOps 是一个面向 **NewAPI / Sub2API 生态**的自托管运营管理�
 
 支持 Telegram、Webhook、SMTP 邮件、企业微信、钉钉、飞书和 Bark。通知事件包括余额不足、倍率变化、登录失败、验证码失败和监控失败，可按渠道和分组过滤，并支持消息合并、变化幅度过滤、低余额冷却和失败重试。
 
+
+
+
 验证码服务用于维护和测试 Turnstile 打码 Provider，测试通过后可绑定到渠道。
 
 ## 页面与路由
@@ -265,3 +268,6 @@ GatewayOps 使用 [GNU Affero General Public License v3.0](./LICENSE) 发布。
 ![GatewayOps 通知中心](./docs/images/PixPin_2026-08-27_10-02-52.png)
 - 分组监控
 ![GatewayOps 分组监控](./docs/images/PixPin_2026-08-27_10-08-54.png)
+
+## 社区
+[LinuxDo](https://linux.do)
