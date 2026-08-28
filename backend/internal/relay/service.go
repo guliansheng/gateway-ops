@@ -49,6 +49,8 @@ type Service struct {
 	ipLocationCache    map[string]ipLocationCacheEntry
 	publicMonitorMu    sync.Mutex
 	publicMonitorCache map[uint]publicMonitorCacheEntry
+	publicPricingMu    sync.Mutex
+	publicPricingCache map[uint]publicModelPricingCacheEntry
 }
 
 func NewService(stations *storage.RelayStations, cipher *crypto.Cipher, deps ...any) *Service {
@@ -70,6 +72,7 @@ func NewService(stations *storage.RelayStations, cipher *crypto.Cipher, deps ...
 		userUsageCache:     make(map[string]userUsageCacheEntry),
 		ipLocationCache:    make(map[string]ipLocationCacheEntry),
 		publicMonitorCache: make(map[uint]publicMonitorCacheEntry),
+		publicPricingCache: make(map[uint]publicModelPricingCacheEntry),
 	}
 }
 
@@ -269,10 +272,17 @@ func (s *Service) Update(id uint, in UpdateInput) (*storage.RelayStation, error)
 	if err := s.stations.Update(station); err != nil {
 		return nil, err
 	}
+	s.invalidatePublicModelPricing(id)
 	return station, nil
 }
 
-func (s *Service) Delete(id uint) error { return s.stations.Delete(id) }
+func (s *Service) Delete(id uint) error {
+	if err := s.stations.Delete(id); err != nil {
+		return err
+	}
+	s.invalidatePublicModelPricing(id)
+	return nil
+}
 
 // DeleteAccount removes the real Sub2API account, clears Hub-only account
 // overrides, and refreshes the remaining snapshot without running a billing
@@ -609,15 +619,21 @@ type remoteEnvelope struct {
 }
 
 type remoteGroup struct {
-	ID               int64   `json:"id"`
-	Name             string  `json:"name"`
-	Description      string  `json:"description"`
-	Platform         string  `json:"platform"`
-	Status           string  `json:"status"`
-	IsExclusive      bool    `json:"is_exclusive"`
-	RequireOAuthOnly bool    `json:"require_oauth_only"`
-	SortOrder        int     `json:"sort_order"`
-	RateMultiplier   float64 `json:"rate_multiplier"`
+	ID                   int64    `json:"id"`
+	Name                 string   `json:"name"`
+	Description          string   `json:"description"`
+	Platform             string   `json:"platform"`
+	Status               string   `json:"status"`
+	IsExclusive          bool     `json:"is_exclusive"`
+	RequireOAuthOnly     bool     `json:"require_oauth_only"`
+	SortOrder            int      `json:"sort_order"`
+	RateMultiplier       float64  `json:"rate_multiplier"`
+	AllowImageGeneration bool     `json:"allow_image_generation"`
+	ImageRateIndependent bool     `json:"image_rate_independent"`
+	ImageRateMultiplier  float64  `json:"image_rate_multiplier"`
+	ImagePrice1K         *float64 `json:"image_price_1k"`
+	ImagePrice2K         *float64 `json:"image_price_2k"`
+	ImagePrice4K         *float64 `json:"image_price_4k"`
 }
 
 // remoteAccount 是 Sub2API 管理端账户列表的最小稳定字段集。group_ids 由
@@ -741,15 +757,17 @@ func retainLastProbeCost(cost *float64, observed *time.Time, previous storage.Re
 }
 
 type remoteChannel struct {
-	ID                         int64                `json:"id"`
-	Name                       string               `json:"name"`
-	Description                string               `json:"description"`
-	Status                     string               `json:"status"`
-	GroupIDs                   []int64              `json:"group_ids"`
-	BillingModelSource         string               `json:"billing_model_source"`
-	ModelPricing               []remoteModelPricing `json:"model_pricing"`
-	ApplyPricingToAccountStats bool                 `json:"apply_pricing_to_account_stats"`
-	AccountStatsPricingRules   []remotePricingRule  `json:"account_stats_pricing_rules"`
+	ID                         int64                        `json:"id"`
+	Name                       string                       `json:"name"`
+	Description                string                       `json:"description"`
+	Status                     string                       `json:"status"`
+	GroupIDs                   []int64                      `json:"group_ids"`
+	BillingModelSource         string                       `json:"billing_model_source"`
+	RestrictModels             bool                         `json:"restrict_models"`
+	ModelMapping               map[string]map[string]string `json:"model_mapping"`
+	ModelPricing               []remoteModelPricing         `json:"model_pricing"`
+	ApplyPricingToAccountStats bool                         `json:"apply_pricing_to_account_stats"`
+	AccountStatsPricingRules   []remotePricingRule          `json:"account_stats_pricing_rules"`
 }
 
 type remoteModelPricing struct {
@@ -765,6 +783,9 @@ type remoteModelPricing struct {
 	ImageOutputPrice *float64 `json:"image_output_price"`
 	PerRequestPrice  *float64 `json:"per_request_price"`
 	Intervals        []any    `json:"intervals"`
+	FastMultiplier   *float64 `json:"fast_multiplier"`
+	FlexMultiplier   *float64 `json:"flex_multiplier"`
+	TimePricing      any      `json:"time_pricing"`
 }
 
 type remotePricingRule struct {
@@ -776,10 +797,12 @@ type remotePricingRule struct {
 }
 
 type channelPricingSnapshot struct {
-	BillingModelSource         string               `json:"billing_model_source,omitempty"`
-	ModelPricing               []remoteModelPricing `json:"model_pricing,omitempty"`
-	ApplyPricingToAccountStats bool                 `json:"apply_pricing_to_account_stats"`
-	AccountStatsPricingRules   []remotePricingRule  `json:"account_stats_pricing_rules,omitempty"`
+	BillingModelSource         string                       `json:"billing_model_source,omitempty"`
+	RestrictModels             bool                         `json:"restrict_models"`
+	ModelMapping               map[string]map[string]string `json:"model_mapping,omitempty"`
+	ModelPricing               []remoteModelPricing         `json:"model_pricing,omitempty"`
+	ApplyPricingToAccountStats bool                         `json:"apply_pricing_to_account_stats"`
+	AccountStatsPricingRules   []remotePricingRule          `json:"account_stats_pricing_rules,omitempty"`
 }
 
 type remotePage struct {
@@ -2548,10 +2571,17 @@ func (s *Service) syncSnapshot(ctx context.Context, stationID uint, probeRates b
 		localGroups = append(localGroups, storage.RelayGroup{
 			RelayStationID: station.ID, ExternalID: group.ID, Name: group.Name,
 			Description: group.Description, Platform: group.Platform, Status: group.Status,
-			IsExclusive:      group.IsExclusive,
-			RequireOAuthOnly: group.RequireOAuthOnly,
-			SortOrder:        group.SortOrder,
-			RateMultiplier:   group.RateMultiplier, SyncedAt: now,
+			IsExclusive:          group.IsExclusive,
+			RequireOAuthOnly:     group.RequireOAuthOnly,
+			SortOrder:            group.SortOrder,
+			RateMultiplier:       group.RateMultiplier,
+			AllowImageGeneration: group.AllowImageGeneration,
+			ImageRateIndependent: group.ImageRateIndependent,
+			ImageRateMultiplier:  group.ImageRateMultiplier,
+			ImagePrice1K:         group.ImagePrice1K,
+			ImagePrice2K:         group.ImagePrice2K,
+			ImagePrice4K:         group.ImagePrice4K,
+			SyncedAt:             now,
 		})
 	}
 
@@ -2607,6 +2637,7 @@ func (s *Service) syncSnapshot(ctx context.Context, stationID uint, probeRates b
 		_ = s.stations.SetSyncError(station.ID, err.Error())
 		return err
 	}
+	s.invalidatePublicModelPricing(station.ID)
 	if err := s.ReconcileManualChannelLinks(); err != nil {
 		_ = s.stations.SetSyncError(station.ID, err.Error())
 		return fmt.Errorf("同步手动渠道账号关联失败: %w", err)
@@ -2696,6 +2727,7 @@ func (s *Service) SyncRates(ctx context.Context, stationID uint) error {
 func channelPricing(channel remoteChannel) (string, string, string, int, int, error) {
 	snapshot := channelPricingSnapshot{
 		BillingModelSource: channel.BillingModelSource, ModelPricing: channel.ModelPricing,
+		RestrictModels: channel.RestrictModels, ModelMapping: channel.ModelMapping,
 		ApplyPricingToAccountStats: channel.ApplyPricingToAccountStats,
 		AccountStatsPricingRules:   channel.AccountStatsPricingRules,
 	}

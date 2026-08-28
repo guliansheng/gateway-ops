@@ -14,6 +14,38 @@ import { PlatformBadge } from "@/components/relay/platform-badge"
 
 const refreshIntervalSeconds = 30
 const refreshIntervalMS = refreshIntervalSeconds * 1_000
+const monitorBrowserCacheVersion = 1
+
+type MonitorBrowserCache = {
+  version: number
+  data: PublicGroupMonitorView
+}
+
+function monitorBrowserCacheKey(stationID: number) {
+  return `gatewayops:group-monitor:v${monitorBrowserCacheVersion}:${stationID}`
+}
+
+function readMonitorBrowserCache(stationID: number): PublicGroupMonitorView | null {
+  if (typeof window === "undefined" || !Number.isInteger(stationID) || stationID <= 0) return null
+  try {
+    const raw = window.localStorage.getItem(monitorBrowserCacheKey(stationID))
+    if (!raw) return null
+    const cached = JSON.parse(raw) as MonitorBrowserCache
+    if (cached.version !== monitorBrowserCacheVersion || cached.data?.station_id !== stationID || !Array.isArray(cached.data?.groups)) return null
+    return cached.data
+  } catch {
+    return null
+  }
+}
+
+function writeMonitorBrowserCache(stationID: number, data: PublicGroupMonitorView) {
+  if (typeof window === "undefined") return
+  try {
+    window.localStorage.setItem(monitorBrowserCacheKey(stationID), JSON.stringify({ version: monitorBrowserCacheVersion, data } satisfies MonitorBrowserCache))
+  } catch {
+    // Storage can be unavailable in private browsing; live refresh remains available.
+  }
+}
 
 const statusMeta: Record<PublicGroupMonitorStatus, { label: string; className: string; icon: typeof CheckCircle2 }> = {
   available: { label: "可用", className: "text-success", icon: CheckCircle2 },
@@ -129,8 +161,9 @@ function LoadingCards() {
 export default function PublicRelayMonitorPage() {
   const { stationID } = useParams()
   const numericStationID = Number(stationID)
-  const [data, setData] = useState<PublicGroupMonitorView | null>(null)
-  const [loading, setLoading] = useState(true)
+  const initialCache = useMemo(() => readMonitorBrowserCache(numericStationID), [numericStationID])
+  const [data, setData] = useState<PublicGroupMonitorView | null>(initialCache)
+  const [loading, setLoading] = useState(!initialCache)
   const [refreshing, setRefreshing] = useState(false)
   const [countdown, setCountdown] = useState(refreshIntervalSeconds)
   const [error, setError] = useState<string | null>(null)
@@ -145,6 +178,7 @@ export default function PublicRelayMonitorPage() {
     try {
       const next = await apiFetch<PublicGroupMonitorView>(`/public/relay-stations/${numericStationID}/group-monitor`, { skipAuthErrorHandler: true })
       setData(next)
+      writeMonitorBrowserCache(numericStationID, next)
       setError(null)
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "监控数据读取失败")
@@ -156,14 +190,14 @@ export default function PublicRelayMonitorPage() {
   }, [numericStationID])
 
   useEffect(() => {
-    void load()
+    void load(Boolean(initialCache))
     const timer = window.setInterval(() => void load(true), refreshIntervalMS)
     const countdownTimer = window.setInterval(() => setCountdown((current) => current <= 1 ? refreshIntervalSeconds : current - 1), 1_000)
     return () => {
       window.clearInterval(timer)
       window.clearInterval(countdownTimer)
     }
-  }, [load])
+  }, [initialCache, load])
 
   useEffect(() => {
     if (data?.station_name) document.title = `${data.station_name} · 分组调用监控`

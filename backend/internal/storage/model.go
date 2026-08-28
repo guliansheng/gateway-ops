@@ -414,20 +414,26 @@ func (RelayStation) TableName() string { return "relay_stations" }
 
 // RelayGroup 是从中转站管理端同步的销售分组快照。
 type RelayGroup struct {
-	ID               uint      `gorm:"primaryKey" json:"id"`
-	RelayStationID   uint      `gorm:"not null;uniqueIndex:idx_relay_group_external" json:"relay_station_id"`
-	ExternalID       int64     `gorm:"not null;uniqueIndex:idx_relay_group_external" json:"external_id"`
-	Name             string    `gorm:"size:256;not null" json:"name"`
-	Description      string    `gorm:"size:512" json:"description,omitempty"`
-	Platform         string    `gorm:"size:64" json:"platform,omitempty"`
-	Status           string    `gorm:"size:32" json:"status,omitempty"`
-	IsExclusive      bool      `gorm:"not null;default:false" json:"is_exclusive"`
-	RequireOAuthOnly bool      `json:"require_oauth_only"`
-	SortOrder        int       `gorm:"not null;default:0" json:"sort_order"`
-	ModelTypesJSON   string    `gorm:"type:text" json:"-"`
-	MonitorEnabled   bool      `gorm:"not null;default:false" json:"monitor_enabled"`
-	RateMultiplier   float64   `gorm:"not null" json:"rate_multiplier"`
-	SyncedAt         time.Time `gorm:"not null;index" json:"synced_at"`
+	ID                   uint      `gorm:"primaryKey" json:"id"`
+	RelayStationID       uint      `gorm:"not null;uniqueIndex:idx_relay_group_external" json:"relay_station_id"`
+	ExternalID           int64     `gorm:"not null;uniqueIndex:idx_relay_group_external" json:"external_id"`
+	Name                 string    `gorm:"size:256;not null" json:"name"`
+	Description          string    `gorm:"size:512" json:"description,omitempty"`
+	Platform             string    `gorm:"size:64" json:"platform,omitempty"`
+	Status               string    `gorm:"size:32" json:"status,omitempty"`
+	IsExclusive          bool      `gorm:"not null;default:false" json:"is_exclusive"`
+	RequireOAuthOnly     bool      `json:"require_oauth_only"`
+	SortOrder            int       `gorm:"not null;default:0" json:"sort_order"`
+	ModelTypesJSON       string    `gorm:"type:text" json:"-"`
+	MonitorEnabled       bool      `gorm:"not null;default:false" json:"monitor_enabled"`
+	RateMultiplier       float64   `gorm:"not null" json:"rate_multiplier"`
+	AllowImageGeneration bool      `gorm:"not null;default:false" json:"allow_image_generation"`
+	ImageRateIndependent bool      `gorm:"not null;default:false" json:"image_rate_independent"`
+	ImageRateMultiplier  float64   `gorm:"not null;default:1" json:"image_rate_multiplier"`
+	ImagePrice1K         *float64  `gorm:"type:numeric(20,8)" json:"image_price_1k,omitempty"`
+	ImagePrice2K         *float64  `gorm:"type:numeric(20,8)" json:"image_price_2k,omitempty"`
+	ImagePrice4K         *float64  `gorm:"type:numeric(20,8)" json:"image_price_4k,omitempty"`
+	SyncedAt             time.Time `gorm:"not null;index" json:"synced_at"`
 }
 
 func (RelayGroup) TableName() string { return "relay_groups" }

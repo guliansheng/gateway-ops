@@ -62,6 +62,7 @@ func Register(r *gin.Engine, d *Deps) {
 
 	publicAPI := r.Group("/api/public")
 	registerPublicRelayStations(publicAPI, d)
+	registerPublicModelPricing(publicAPI, d)
 
 	api := r.Group("/api")
 	if d.Auth != nil {

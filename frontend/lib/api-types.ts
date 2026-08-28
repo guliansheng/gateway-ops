@@ -673,6 +673,51 @@ export interface PublicGroupMonitorView {
 	summary: PublicGroupMonitorSummary
 }
 
+export interface PublicModelPricingItem {
+  model: string
+  billing_model?: string
+  company: string
+  provider?: string
+  platform?: string
+  billing_mode?: string
+  billing_model_source?: string
+  price_source: "system_default" | "channel_override" | "channel_override_with_default" | "group_image_pricing" | "unavailable"
+  channel_id: number
+  channel_name: string
+  station_id: number
+  station_name: string
+  groups?: string[]
+  input_price?: number | null
+  output_price?: number | null
+  cache_write_price?: number | null
+  cache_read_price?: number | null
+  image_input_price?: number | null
+  image_output_price?: number | null
+  per_request_price?: number | null
+  image_price_1k?: number | null
+  image_price_2k?: number | null
+  image_price_4k?: number | null
+  fast_multiplier?: number | null
+  flex_multiplier?: number | null
+  intervals?: unknown[]
+  time_pricing?: unknown
+}
+
+export interface PublicModelPricingView {
+  station_id: number
+  station_name: string
+  updated_at: string
+  items: PublicModelPricingItem[]
+  summary: {
+    models: number
+    companies: number
+    channels: number
+    companies_list: string[]
+    platforms: string[]
+    billing_modes: string[]
+  }
+}
+
 export interface RelayMonitorChannelOption {
   id: number
   name: string

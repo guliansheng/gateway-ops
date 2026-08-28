@@ -18,6 +18,7 @@ import RelayStationsPage from '@/app/relay-stations-page'
 import OperationsCostsPage from '@/app/operations-costs-page'
 import LocalPoolPage from '@/app/local-pool-page'
 import PublicRelayMonitorPage from '@/app/public-relay-monitor-page'
+import PublicModelPricingPage from '@/app/public-model-pricing-page'
 import '@/app/globals.css'
 
 function ProtectedApplication() {
@@ -40,6 +41,7 @@ createRoot(document.getElementById('root')!).render(
       <BrowserRouter>
         <Routes>
           <Route path="public/relay-monitor/:stationID" element={<PublicRelayMonitorPage />} />
+          <Route path="public/model-pricing/:stationID" element={<PublicModelPricingPage />} />
           <Route element={<ProtectedApplication />}>
             <Route index element={<DashboardPage />} />
             <Route path="channels" element={<ChannelsPage />} />

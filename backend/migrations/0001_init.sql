@@ -218,11 +218,23 @@ CREATE TABLE IF NOT EXISTS relay_groups (
     model_types_json TEXT,
     monitor_enabled   BOOLEAN NOT NULL DEFAULT false,
     rate_multiplier   DOUBLE PRECISION NOT NULL,
+    allow_image_generation BOOLEAN NOT NULL DEFAULT false,
+    image_rate_independent BOOLEAN NOT NULL DEFAULT false,
+    image_rate_multiplier DOUBLE PRECISION NOT NULL DEFAULT 1,
+    image_price_1k NUMERIC(20,8),
+    image_price_2k NUMERIC(20,8),
+    image_price_4k NUMERIC(20,8),
     synced_at         TIMESTAMPTZ NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_relay_group_external ON relay_groups (relay_station_id, external_id);
 ALTER TABLE relay_groups ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE relay_groups ADD COLUMN IF NOT EXISTS monitor_enabled BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE relay_groups ADD COLUMN IF NOT EXISTS allow_image_generation BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE relay_groups ADD COLUMN IF NOT EXISTS image_rate_independent BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE relay_groups ADD COLUMN IF NOT EXISTS image_rate_multiplier DOUBLE PRECISION NOT NULL DEFAULT 1;
+ALTER TABLE relay_groups ADD COLUMN IF NOT EXISTS image_price_1k NUMERIC(20,8);
+ALTER TABLE relay_groups ADD COLUMN IF NOT EXISTS image_price_2k NUMERIC(20,8);
+ALTER TABLE relay_groups ADD COLUMN IF NOT EXISTS image_price_4k NUMERIC(20,8);
 
 CREATE TABLE IF NOT EXISTS relay_channels (
     id                             BIGSERIAL PRIMARY KEY,
