@@ -858,3 +858,24 @@ func TestFormatIPLocation(t *testing.T) {
 		t.Fatalf("deduplicated location = %q", got)
 	}
 }
+
+func TestUserRiskScoreFlagsSharedRegistrationIP(t *testing.T) {
+	created := time.Now().Add(-48 * time.Hour)
+	user := remoteUser{Email: "person@example.com", CreatedAt: created}
+	score, level, reasons := userRiskScore(user, registrationIPInfo{IP: "203.0.113.10", Count: 5, BurstCount: 3}, UserUsageStats{})
+	if score != 70 || level != "medium" {
+		t.Fatalf("risk = %d/%s, want 70/medium", score, level)
+	}
+	if len(reasons) != 2 {
+		t.Fatalf("reasons = %#v, want shared IP and burst", reasons)
+	}
+}
+
+func TestSuspiciousEmailMatchesRegistrationPattern(t *testing.T) {
+	if !suspiciousEmail("alice.smith12345@gmail.com") {
+		t.Fatal("expected machine-like gmail to be suspicious")
+	}
+	if suspiciousEmail("alice@example.com") || suspiciousEmail("alice@gmail.com") {
+		t.Fatal("ordinary emails must not be suspicious")
+	}
+}

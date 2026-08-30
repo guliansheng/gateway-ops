@@ -23,7 +23,11 @@ import (
 	"github.com/guliansheng/gateway-ops/internal/storage"
 )
 
-const requestTimeout = 20 * time.Second
+const requestTimeout = 45 * time.Second
+
+// Latency samples are optional telemetry. A short snapshot interval must not
+// fan out one usage request per account on every tick and overload Sub2API.
+const latencyCacheTTL = 5 * time.Minute
 
 const (
 	ipLocationEndpoint = "http://ip-api.com/batch?fields=status,message,query,countryCode,regionName,city"
@@ -47,6 +51,8 @@ type Service struct {
 	userUsageCache     map[string]userUsageCacheEntry
 	ipLocationMu       sync.Mutex
 	ipLocationCache    map[string]ipLocationCacheEntry
+	latencyMu          sync.Mutex
+	latencyCache       map[string]latencyCacheEntry
 	publicMonitorMu    sync.Mutex
 	publicMonitorCache map[uint]publicMonitorCacheEntry
 	publicPricingMu    sync.Mutex
@@ -71,6 +77,7 @@ func NewService(stations *storage.RelayStations, cipher *crypto.Cipher, deps ...
 		usageCache:         make(map[string]usageCacheEntry),
 		userUsageCache:     make(map[string]userUsageCacheEntry),
 		ipLocationCache:    make(map[string]ipLocationCacheEntry),
+		latencyCache:       make(map[string]latencyCacheEntry),
 		publicMonitorCache: make(map[uint]publicMonitorCacheEntry),
 		publicPricingCache: make(map[uint]publicModelPricingCacheEntry),
 	}
@@ -154,47 +161,67 @@ type ipLocationCacheEntry struct {
 	Location  string
 }
 
+type latencyCacheEntry struct {
+	ExpiresAt time.Time
+	Samples   map[int64]string
+}
+
 type UserUsageStats struct {
 	TotalTokens int64
 	UserCharge  float64
 }
 
 type UserListQuery struct {
-	Page      int
-	PageSize  int
-	Search    string
-	RangeName string
-	Since     time.Time
-	SortBy    string
-	SortOrder string
+	Page           int
+	PageSize       int
+	Search         string
+	RangeName      string
+	Since          time.Time
+	SortBy         string
+	SortOrder      string
+	RiskLevel      string
+	RegistrationIP string
 }
 
 type UserManagementItem struct {
-	ID                 int64      `json:"id"`
-	Email              string     `json:"email"`
-	Username           string     `json:"username"`
-	Role               string     `json:"role"`
-	Balance            float64    `json:"balance"`
-	Usage              float64    `json:"usage"`
-	UsageTotalTokens   int64      `json:"usage_total_tokens"`
-	Concurrency        int        `json:"concurrency"`
-	CurrentConcurrency int        `json:"current_concurrency"`
-	RPMLimit           int        `json:"rpm_limit"`
-	Status             string     `json:"status"`
-	LastUsedAt         *time.Time `json:"last_used_at,omitempty"`
-	CreatedAt          time.Time  `json:"created_at"`
+	ID                     int64      `json:"id"`
+	Email                  string     `json:"email"`
+	Username               string     `json:"username"`
+	Role                   string     `json:"role"`
+	Balance                float64    `json:"balance"`
+	Usage                  float64    `json:"usage"`
+	UsageTotalTokens       int64      `json:"usage_total_tokens"`
+	Concurrency            int        `json:"concurrency"`
+	CurrentConcurrency     int        `json:"current_concurrency"`
+	RPMLimit               int        `json:"rpm_limit"`
+	Status                 string     `json:"status"`
+	LastUsedAt             *time.Time `json:"last_used_at,omitempty"`
+	CreatedAt              time.Time  `json:"created_at"`
+	RegistrationIP         string     `json:"registration_ip,omitempty"`
+	RegistrationIPCount    int        `json:"registration_ip_count"`
+	RegistrationBurstCount int        `json:"registration_burst_count"`
+	RiskScore              int        `json:"risk_score"`
+	RiskLevel              string     `json:"risk_level"`
+	RiskReasons            []string   `json:"risk_reasons,omitempty"`
 }
 
 type UserManagementPage struct {
-	Items        []UserManagementItem `json:"items"`
-	Total        int                  `json:"total"`
-	TotalBalance float64              `json:"total_balance"`
-	Page         int                  `json:"page"`
-	PageSize     int                  `json:"page_size"`
-	Pages        int                  `json:"pages"`
-	Range        string               `json:"range"`
-	Complete     bool                 `json:"complete"`
-	FailedUsers  int                  `json:"failed_users"`
+	Items            []UserManagementItem `json:"items"`
+	Total            int                  `json:"total"`
+	TotalBalance     float64              `json:"total_balance"`
+	Page             int                  `json:"page"`
+	PageSize         int                  `json:"page_size"`
+	Pages            int                  `json:"pages"`
+	Range            string               `json:"range"`
+	Complete         bool                 `json:"complete"`
+	FailedUsers      int                  `json:"failed_users"`
+	RiskDataComplete bool                 `json:"risk_data_complete"`
+}
+
+type UserDeleteResult struct {
+	Affected      int     `json:"affected"`
+	SkippedAdmins int     `json:"skipped_admins"`
+	Failed        []int64 `json:"failed"`
 }
 
 type UserBatchLimitsInput struct {
@@ -841,6 +868,21 @@ type remoteUserPage struct {
 	Page     int          `json:"page"`
 	Pages    int          `json:"pages"`
 	PageSize int          `json:"page_size"`
+}
+
+type remoteAuditLog struct {
+	CreatedAt  time.Time `json:"created_at"`
+	Action     string    `json:"action"`
+	ClientIP   string    `json:"client_ip"`
+	StatusCode int       `json:"status_code"`
+}
+
+type remoteAuditLogPage struct {
+	Items    []remoteAuditLog `json:"items"`
+	Total    int              `json:"total"`
+	Page     int              `json:"page"`
+	Pages    int              `json:"pages"`
+	PageSize int              `json:"page_size"`
 }
 
 type remoteUserRankingItem struct {
@@ -1660,6 +1702,8 @@ func (s *Service) Users(ctx context.Context, stationID uint, query UserListQuery
 	}
 	query.Search = strings.TrimSpace(query.Search)
 	query.RangeName = strings.TrimSpace(query.RangeName)
+	query.RiskLevel = strings.ToLower(strings.TrimSpace(query.RiskLevel))
+	query.RegistrationIP = strings.TrimSpace(query.RegistrationIP)
 	if query.RangeName == "" {
 		query.RangeName = "today"
 	}
@@ -1685,6 +1729,7 @@ func (s *Service) Users(ctx context.Context, stationID uint, query UserListQuery
 	}
 	users := filterUsersBySearch(allUsers, query.Search)
 	usage, failedUsers := s.userUsage(ctx, stationID, station.BaseURL, apiKey, users, query.RangeName, query.Since)
+	registrationIPs, riskDataComplete := s.registrationIPs(ctx, station.BaseURL, apiKey, allUsers)
 
 	items := make([]UserManagementItem, 0, len(users))
 	for _, user := range users {
@@ -1695,6 +1740,34 @@ func (s *Service) Users(ctx context.Context, stationID uint, query UserListQuery
 			CurrentConcurrency: user.CurrentConcurrency, RPMLimit: user.RPMLimit, Status: user.Status,
 			LastUsedAt: user.LastUsedAt, CreatedAt: user.CreatedAt,
 		})
+		if info, ok := registrationIPs[user.ID]; ok {
+			item := &items[len(items)-1]
+			item.RegistrationIP = info.IP
+			item.RegistrationIPCount = info.Count
+			item.RegistrationBurstCount = info.BurstCount
+			item.RiskScore, item.RiskLevel, item.RiskReasons = userRiskScore(user, info, usage[user.ID])
+		} else {
+			item := &items[len(items)-1]
+			item.RiskScore, item.RiskLevel, item.RiskReasons = userRiskScore(user, registrationIPInfo{}, usage[user.ID])
+		}
+	}
+	if query.RegistrationIP != "" {
+		filtered := items[:0]
+		for _, item := range items {
+			if item.RegistrationIP == query.RegistrationIP {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
+	}
+	if level := strings.ToLower(strings.TrimSpace(query.RiskLevel)); level != "" && level != "all" {
+		filtered := items[:0]
+		for _, item := range items {
+			if item.RiskLevel == level {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
 	}
 	sortUserManagementItems(items, query.SortBy, query.SortOrder)
 
@@ -1716,8 +1789,136 @@ func (s *Service) Users(ctx context.Context, stationID uint, query UserListQuery
 	}
 	return UserManagementPage{
 		Items: items[start:end], Total: total, TotalBalance: totalBalance, Page: query.Page, PageSize: query.PageSize, Pages: pages,
-		Range: query.RangeName, Complete: failedUsers == 0, FailedUsers: failedUsers,
+		Range: query.RangeName, Complete: failedUsers == 0, FailedUsers: failedUsers, RiskDataComplete: riskDataComplete,
 	}, nil
+}
+
+type registrationIPInfo struct {
+	IP         string
+	Count      int
+	BurstCount int
+}
+
+// registrationIPs joins successful auth.register audit events to users by the
+// same short creation-time window used by sub2api-risk-monitor. The endpoint
+// supports action filtering, so this remains small even on busy deployments.
+func (s *Service) registrationIPs(ctx context.Context, baseURL, apiKey string, users []remoteUser) (map[int64]registrationIPInfo, bool) {
+	logs := make([]remoteAuditLog, 0, 500)
+	complete := true
+	for page := 1; page <= 100; page++ {
+		var result remoteAuditLogPage
+		endpoint := fmt.Sprintf("%s/api/v1/admin/audit-logs?action=auth.register&page=%d&page_size=500", strings.TrimRight(baseURL, "/"), page)
+		if err := s.get(ctx, endpoint, apiKey, &result); err != nil {
+			return map[int64]registrationIPInfo{}, false
+		}
+		logs = append(logs, result.Items...)
+		if len(result.Items) == 0 || (result.Pages > 0 && page >= result.Pages) || (result.Total > 0 && len(logs) >= result.Total) {
+			break
+		}
+		if page == 100 {
+			complete = false
+		}
+	}
+	counts := make(map[string]int)
+	burst := make(map[string]map[int64]int)
+	matched := make(map[int64]string)
+	for _, user := range users {
+		var best remoteAuditLog
+		bestDistance := time.Duration(1<<63 - 1)
+		for _, log := range logs {
+			if log.StatusCode < 200 || log.StatusCode >= 300 || strings.TrimSpace(log.ClientIP) == "" {
+				continue
+			}
+			delta := log.CreatedAt.Sub(user.CreatedAt)
+			if delta < -3*time.Second || delta > 15*time.Second {
+				continue
+			}
+			if distance := absDuration(delta); distance < bestDistance {
+				best, bestDistance = log, distance
+			}
+		}
+		if best.ClientIP == "" {
+			continue
+		}
+		matched[user.ID] = best.ClientIP
+		counts[best.ClientIP]++
+		minute := best.CreatedAt.Truncate(time.Minute).Unix()
+		if burst[best.ClientIP] == nil {
+			burst[best.ClientIP] = make(map[int64]int)
+		}
+		burst[best.ClientIP][minute]++
+	}
+	result := make(map[int64]registrationIPInfo, len(matched))
+	for userID, ip := range matched {
+		peak := 0
+		for _, count := range burst[ip] {
+			if count > peak {
+				peak = count
+			}
+		}
+		result[userID] = registrationIPInfo{IP: ip, Count: counts[ip], BurstCount: peak}
+	}
+	return result, complete
+}
+
+func absDuration(value time.Duration) time.Duration {
+	if value < 0 {
+		return -value
+	}
+	return value
+}
+
+func userRiskScore(user remoteUser, info registrationIPInfo, usage UserUsageStats) (int, string, []string) {
+	score := 0
+	reasons := make([]string, 0, 3)
+	if info.Count >= 2 {
+		score += 25
+		reasons = append(reasons, fmt.Sprintf("同注册 IP：%d 个账号", info.Count))
+	}
+	if info.Count >= 5 {
+		score += 20
+	}
+	if info.BurstCount >= 3 {
+		score += 25
+		reasons = append(reasons, fmt.Sprintf("注册突增：%d 个/分钟", info.BurstCount))
+	}
+	if suspiciousEmail(user.Email) {
+		score += 15
+		reasons = append(reasons, "疑似机器注册邮箱")
+	}
+	if time.Since(user.CreatedAt) <= 24*time.Hour && usage.TotalTokens == 0 {
+		score += 5
+		reasons = append(reasons, "新账号暂无 API 请求")
+	}
+	level := "normal"
+	switch {
+	case score >= 80:
+		level = "high"
+	case score >= 50:
+		level = "medium"
+	case score >= 25:
+		level = "low"
+	}
+	return score, level, reasons
+}
+
+func suspiciousEmail(email string) bool {
+	value := strings.ToLower(strings.TrimSpace(email))
+	if !strings.HasSuffix(value, "@gmail.com") {
+		return false
+	}
+	local := strings.TrimSuffix(value, "@gmail.com")
+	parts := strings.FieldsFunc(local, func(r rune) bool { return r == '.' || r == '_' })
+	if len(parts) != 2 || len(parts[0]) < 2 || len(parts[1]) < 2 {
+		return false
+	}
+	for _, r := range parts[1] {
+		if r < '0' || r > '9' {
+			continue
+		}
+		return len(parts[1]) >= 5
+	}
+	return false
 }
 
 func filterUsersBySearch(users []remoteUser, search string) []remoteUser {
@@ -1910,7 +2111,7 @@ func (s *Service) fetchUserUsageStats(ctx context.Context, baseURL, apiKey strin
 func sortUserManagementItems(items []UserManagementItem, sortBy, sortOrder string) {
 	sortBy = strings.ToLower(strings.TrimSpace(sortBy))
 	switch sortBy {
-	case "id", "balance", "usage", "current_concurrency", "last_used_at", "created_at":
+	case "id", "balance", "usage", "risk_score", "registration_ip_count", "current_concurrency", "last_used_at", "created_at":
 	default:
 		sortBy = "balance"
 	}
@@ -1940,6 +2141,10 @@ func sortUserManagementItems(items []UserManagementItem, sortBy, sortOrder strin
 			comparison = cmpFloat64(a.Balance, b.Balance)
 		case "usage":
 			comparison = cmpFloat64(a.Usage, b.Usage)
+		case "risk_score":
+			comparison = cmpInt64(int64(a.RiskScore), int64(b.RiskScore))
+		case "registration_ip_count":
+			comparison = cmpInt64(int64(a.RegistrationIPCount), int64(b.RegistrationIPCount))
 		case "current_concurrency":
 			comparison = cmpInt64(int64(a.CurrentConcurrency), int64(b.CurrentConcurrency))
 		case "created_at":
@@ -2038,6 +2243,65 @@ func (s *Service) UpdateUserLimits(ctx context.Context, stationID uint, input Us
 		return 0, fmt.Errorf("批量更新中转站用户限额失败: %w", err)
 	}
 	return result.Affected, nil
+}
+
+// DeleteUsers soft-deletes remote users through the Sub2API admin endpoint.
+// Admin accounts are never sent to the remote API.
+func (s *Service) DeleteUsers(ctx context.Context, stationID uint, userIDs []int64) (UserDeleteResult, error) {
+	if len(userIDs) == 0 || len(userIDs) > 300 {
+		return UserDeleteResult{}, errors.New("user_ids 必须包含 1 到 300 个用户")
+	}
+	unique := make([]int64, 0, len(userIDs))
+	seen := make(map[int64]struct{}, len(userIDs))
+	for _, id := range userIDs {
+		if id <= 0 {
+			continue
+		}
+		if _, ok := seen[id]; !ok {
+			seen[id] = struct{}{}
+			unique = append(unique, id)
+		}
+	}
+	if len(unique) == 0 {
+		return UserDeleteResult{}, errors.New("没有有效的用户 ID")
+	}
+	station, err := s.stations.FindByID(stationID)
+	if err != nil {
+		return UserDeleteResult{}, err
+	}
+	apiKey, err := s.cipher.Decrypt(station.APIKeyCipher)
+	if err != nil {
+		return UserDeleteResult{}, fmt.Errorf("decrypt admin API key: %w", err)
+	}
+	admins := make(map[int64]struct{})
+	for page := 1; page <= 1000; page++ {
+		var users remoteUserPage
+		endpoint := fmt.Sprintf("%s/api/v1/admin/users?page=%d&page_size=500&sort_by=id&sort_order=asc", strings.TrimRight(station.BaseURL, "/"), page)
+		if err := s.get(ctx, endpoint, apiKey, &users); err != nil {
+			return UserDeleteResult{}, fmt.Errorf("读取用户角色失败: %w", err)
+		}
+		for _, user := range users.Items {
+			if strings.EqualFold(strings.TrimSpace(user.Role), "admin") {
+				admins[user.ID] = struct{}{}
+			}
+		}
+		if len(users.Items) == 0 || (users.Pages > 0 && page >= users.Pages) || (users.Total > 0 && page*500 >= users.Total) {
+			break
+		}
+	}
+	result := UserDeleteResult{Failed: make([]int64, 0)}
+	for _, id := range unique {
+		if _, ok := admins[id]; ok {
+			result.SkippedAdmins++
+			continue
+		}
+		if err := s.deleteRemote(ctx, fmt.Sprintf("%s/api/v1/admin/users/%d", strings.TrimRight(station.BaseURL, "/"), id), apiKey); err != nil {
+			result.Failed = append(result.Failed, id)
+			continue
+		}
+		result.Affected++
+	}
+	return result, nil
 }
 
 func (s *Service) UserBalanceHistory(ctx context.Context, stationID uint, userID int64, page, pageSize int, kind string) (UserBalanceHistory, error) {
@@ -2875,7 +3139,7 @@ func (s *Service) ProbeAccount(ctx context.Context, stationID uint, accountExter
 
 func (s *Service) fetchGroups(ctx context.Context, baseURL, apiKey string) ([]remoteGroup, error) {
 	var groups []remoteGroup
-	if err := s.get(ctx, baseURL+"/api/v1/admin/groups/all?include_inactive=true", apiKey, &groups); err != nil {
+	if err := s.getRetry(ctx, baseURL+"/api/v1/admin/groups/all?include_inactive=true", apiKey, &groups); err != nil {
 		return nil, fmt.Errorf("读取中转站分组失败: %w", err)
 	}
 	return groups, nil
@@ -2886,7 +3150,7 @@ func (s *Service) fetchChannels(ctx context.Context, baseURL, apiKey string) ([]
 	for page := 1; ; page++ {
 		var data remotePage
 		endpoint := fmt.Sprintf("%s/api/v1/admin/channels?page=%d&page_size=100", baseURL, page)
-		if err := s.get(ctx, endpoint, apiKey, &data); err != nil {
+		if err := s.getRetry(ctx, endpoint, apiKey, &data); err != nil {
 			return nil, fmt.Errorf("读取中转站渠道失败: %w", err)
 		}
 		channels = append(channels, data.Items...)
@@ -2905,7 +3169,7 @@ func (s *Service) fetchAccounts(ctx context.Context, baseURL, apiKey string) ([]
 	for page := 1; ; page++ {
 		var data remoteAccountPage
 		endpoint := fmt.Sprintf("%s/api/v1/admin/accounts?page=%d&page_size=100", baseURL, page)
-		if err := s.get(ctx, endpoint, apiKey, &data); err != nil {
+		if err := s.getRetry(ctx, endpoint, apiKey, &data); err != nil {
 			return nil, fmt.Errorf("读取中转站账号失败: %w", err)
 		}
 		accounts = append(accounts, data.Items...)
@@ -2923,7 +3187,7 @@ func (s *Service) fetchAccount(ctx context.Context, baseURL, apiKey string, acco
 	for page := 1; ; page++ {
 		var data remoteAccountPage
 		endpoint := fmt.Sprintf("%s/api/v1/admin/accounts?page=%d&page_size=100", baseURL, page)
-		if err := s.get(ctx, endpoint, apiKey, &data); err != nil {
+		if err := s.getRetry(ctx, endpoint, apiKey, &data); err != nil {
 			return nil, fmt.Errorf("读取中转站账号失败: %w", err)
 		}
 		for i := range data.Items {
@@ -2968,6 +3232,19 @@ func (s *Service) probeAPIKeyAccounts(ctx context.Context, baseURL, apiKey strin
 // Usage is optional telemetry: one account failing or an older Sub2API build
 // lacking the endpoint must not make an otherwise valid station sync fail.
 func (s *Service) fetchAccountLatencies(ctx context.Context, baseURL, apiKey string, accounts []remoteAccount) map[int64]string {
+	cacheKey := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	now := time.Now()
+	s.latencyMu.Lock()
+	if cached, ok := s.latencyCache[cacheKey]; ok && cached.ExpiresAt.After(now) {
+		result := make(map[int64]string, len(cached.Samples))
+		for accountID, samples := range cached.Samples {
+			result[accountID] = samples
+		}
+		s.latencyMu.Unlock()
+		return result
+	}
+	s.latencyMu.Unlock()
+
 	userEmails := make(map[int64]string)
 	if users, err := s.fetchUsers(ctx, baseURL, apiKey, ""); err == nil {
 		for _, user := range users {
@@ -3049,6 +3326,9 @@ func (s *Service) fetchAccountLatencies(ctx context.Context, baseURL, apiKey str
 	for result := range results {
 		snapshots[result.id] = result.json
 	}
+	s.latencyMu.Lock()
+	s.latencyCache[cacheKey] = latencyCacheEntry{ExpiresAt: time.Now().Add(latencyCacheTTL), Samples: snapshots}
+	s.latencyMu.Unlock()
 	return snapshots
 }
 
@@ -3075,6 +3355,25 @@ func (s *Service) get(ctx context.Context, endpoint, apiKey string, out any) err
 		return errors.New(envelope.Message)
 	}
 	return json.Unmarshal(envelope.Data, out)
+}
+
+// getRetry smooths over a transient Cloudflare/upstream stall. The caller's
+// context remains the hard upper bound, so this cannot extend a cancelled
+// request indefinitely.
+func (s *Service) getRetry(ctx context.Context, endpoint, apiKey string, out any) error {
+	var err error
+	for attempt := 0; attempt < 2; attempt++ {
+		err = s.get(ctx, endpoint, apiKey, out)
+		if err == nil || ctx.Err() != nil || attempt == 1 {
+			break
+		}
+		select {
+		case <-time.After(500 * time.Millisecond):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return err
 }
 
 func (s *Service) put(ctx context.Context, endpoint, apiKey string, body any) error {

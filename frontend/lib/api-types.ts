@@ -363,7 +363,8 @@ export interface RelayRecentUsage {
   created_at: string
 }
 
-export type RelayUserSortKey = "id" | "balance" | "usage" | "current_concurrency" | "last_used_at" | "created_at"
+export type RelayUserRiskLevel = "all" | "normal" | "low" | "medium" | "high"
+export type RelayUserSortKey = "id" | "balance" | "usage" | "risk_score" | "registration_ip_count" | "current_concurrency" | "last_used_at" | "created_at"
 
 export interface RelayUserManagementItem {
   id: number
@@ -379,6 +380,12 @@ export interface RelayUserManagementItem {
   status: "active" | "disabled"
   last_used_at?: string
   created_at: string
+  registration_ip?: string
+  registration_ip_count: number
+  registration_burst_count: number
+  risk_score: number
+  risk_level: "normal" | "low" | "medium" | "high"
+  risk_reasons?: string[]
 }
 
 export interface RelayUserManagementPage {
@@ -391,6 +398,7 @@ export interface RelayUserManagementPage {
   range: RelayUsageRange
   complete: boolean
   failed_users: number
+  risk_data_complete: boolean
 }
 
 export interface RelayUserBalanceHistoryItem {

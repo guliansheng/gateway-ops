@@ -18,6 +18,7 @@ import type {
   RelayRecentUsage,
   RelayUserManagementPage,
   RelayUserSortKey,
+  RelayUserRiskLevel,
   RelayUserBalanceHistory,
   RelayStation,
   DashboardRange,
@@ -251,6 +252,8 @@ export function useRelayUsers(stationID: number | null, options: {
   range: RelayUsageRange
   sortBy: RelayUserSortKey
   sortOrder: "asc" | "desc"
+  riskLevel: RelayUserRiskLevel
+  registrationIP: string
 }) {
   if (stationID == null) return useApi<RelayUserManagementPage>(null)
   const query = new URLSearchParams({
@@ -259,6 +262,8 @@ export function useRelayUsers(stationID: number | null, options: {
     range: options.range,
     sort_by: options.sortBy,
     sort_order: options.sortOrder,
+    risk_level: options.riskLevel,
+    registration_ip: options.registrationIP,
   })
   if (options.search.trim()) query.set("search", options.search.trim())
   return useApi<RelayUserManagementPage>(`/relay-stations/${stationID}/users?${query.toString()}`)

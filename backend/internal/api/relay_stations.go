@@ -26,6 +26,7 @@ func registerRelayStations(g *gin.RouterGroup, d *Deps) {
 	gp.GET("/:id/users", func(c *gin.Context) { relayStationUsers(c, d) })
 	gp.PUT("/:id/users/:user_id/status", func(c *gin.Context) { updateRelayStationUserStatus(c, d) })
 	gp.POST("/:id/users/batch-limits", func(c *gin.Context) { updateRelayStationUserLimits(c, d) })
+	gp.POST("/:id/users/batch-delete", func(c *gin.Context) { deleteRelayStationUsers(c, d) })
 	gp.GET("/:id/users/:user_id/balance-history", func(c *gin.Context) { relayStationUserBalanceHistory(c, d) })
 	gp.GET("/:id/accounts/:external_id/models", func(c *gin.Context) { relayStationAccountModels(c, d) })
 	gp.POST("/:id/accounts/:external_id/test", func(c *gin.Context) { relayStationTestAccount(c, d) })
@@ -151,6 +152,10 @@ type relayUserLimitsInput struct {
 	UserIDs     []int64 `json:"user_ids"`
 	Concurrency *int    `json:"concurrency"`
 	RPMLimit    *int    `json:"rpm_limit"`
+}
+
+type relayUserDeleteInput struct {
+	UserIDs []int64 `json:"user_ids"`
 }
 
 type relayStationSummary struct {
@@ -1206,6 +1211,8 @@ func relayStationUsers(c *gin.Context, d *Deps) {
 	result, err := d.Relay.Users(c.Request.Context(), id, relay.UserListQuery{
 		Page: page, PageSize: pageSize, Search: c.Query("search"), RangeName: rangeName, Since: since,
 		SortBy: c.DefaultQuery("sort_by", "balance"), SortOrder: c.DefaultQuery("sort_order", "desc"),
+		RiskLevel:      c.DefaultQuery("risk_level", "all"),
+		RegistrationIP: c.Query("registration_ip"),
 	})
 	if err != nil {
 		fail(c, http.StatusBadGateway, err)
@@ -1256,6 +1263,29 @@ func updateRelayStationUserLimits(c *gin.Context, d *Deps) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{"affected": affected}})
+}
+
+func deleteRelayStationUsers(c *gin.Context, d *Deps) {
+	id, err := uintParam(c, "id")
+	if err != nil {
+		fail(c, http.StatusBadRequest, err)
+		return
+	}
+	var input relayUserDeleteInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		fail(c, http.StatusBadRequest, err)
+		return
+	}
+	if len(input.UserIDs) == 0 || len(input.UserIDs) > 300 {
+		fail(c, http.StatusBadRequest, errors.New("user_ids 必须包含 1 到 300 个用户"))
+		return
+	}
+	result, err := d.Relay.DeleteUsers(c.Request.Context(), id, input.UserIDs)
+	if err != nil {
+		fail(c, http.StatusBadGateway, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result})
 }
 
 func relayStationUserBalanceHistory(c *gin.Context, d *Deps) {
