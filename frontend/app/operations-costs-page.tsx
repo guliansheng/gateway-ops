@@ -14,6 +14,7 @@ import { useChannels, useOperationLedger, useOperationSummary, useRelayStations 
 import type { OperationLedgerEntry, OperationRange } from "@/lib/api-types"
 import { cn } from "@/lib/utils"
 import { cny, OperationSummaryCards } from "@/components/operations/summary-cards"
+import { useTriggerRefresh } from "@/lib/refresh-context"
 
 const ranges: { value: OperationRange; label: string }[] = [
   { value: "all", label: "全部" },
@@ -87,6 +88,7 @@ export default function OperationsCostsPage() {
   const ledger = useOperationLedger(range, { direction: ledgerDirection, category: ledgerCategory })
   const channels = useChannels()
   const stations = useRelayStations()
+  const refresh = useTriggerRefresh()
   const [editing, setEditing] = useState<OperationLedgerEntry | null>(null)
   const [formOpen, setFormOpen] = useState(false)
   const [direction, setDirection] = useState<Direction>("expense")
@@ -154,6 +156,7 @@ export default function OperationsCostsPage() {
       setFormOpen(false)
       summary.refetch()
       ledger.refetch()
+      refresh()
       toast.success(editing ? "账本记录已更新" : "账本记录已添加")
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "保存账本记录失败")
@@ -169,6 +172,7 @@ export default function OperationsCostsPage() {
       await apiFetch(`/operations/ledger/${row.id}`, { method: "DELETE" })
       summary.refetch()
       ledger.refetch()
+      refresh()
       toast.success("账本记录已删除")
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "删除账本记录失败")

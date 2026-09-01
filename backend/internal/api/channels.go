@@ -22,6 +22,7 @@ func registerChannels(g *gin.RouterGroup, d *Deps) {
 	gp := g.Group("/channels")
 	gp.GET("", func(c *gin.Context) { listChannels(c, d) })
 	gp.GET("/metrics", func(c *gin.Context) { channelMetrics(c, d) })
+	gp.GET("/latency-trends", func(c *gin.Context) { channelLatencyTrends(c, d) })
 	gp.POST("/sync-all", func(c *gin.Context) { syncAllChannels(c, d) })
 	gp.POST("", func(c *gin.Context) { createChannel(c, d) })
 	gp.GET("/:id", func(c *gin.Context) { getChannel(c, d) })
@@ -146,6 +147,11 @@ type channelMetricView struct {
 	CurrentBalance           float64 `json:"current_balance"`
 }
 
+type channelLatencyTrendView struct {
+	ChannelID uint                         `json:"channel_id"`
+	Samples   []storage.RelayLatencySample `json:"samples"`
+}
+
 func channelMetrics(c *gin.Context, d *Deps) {
 	since, rangeName := operationSince(c.DefaultQuery("range", "today"))
 	channels, err := d.Channels.List()
@@ -186,6 +192,29 @@ func channelMetrics(c *gin.Context, d *Deps) {
 			UserChargeAmount: interval.UserCharge, MatchedAccountCount: interval.MatchedAccountCount,
 			UserChargeComplete: interval.Complete, CurrentBalance: currentBalance,
 		})
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result})
+}
+
+func channelLatencyTrends(c *gin.Context, d *Deps) {
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "60"))
+	channels, err := d.Channels.List()
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err)
+		return
+	}
+	trends, err := d.Relay.ChannelLatencyTrends(channels, limit)
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err)
+		return
+	}
+	result := make([]channelLatencyTrendView, 0, len(channels))
+	for _, channel := range channels {
+		samples := trends[channel.ID]
+		if samples == nil {
+			samples = []storage.RelayLatencySample{}
+		}
+		result = append(result, channelLatencyTrendView{ChannelID: channel.ID, Samples: samples})
 	}
 	c.JSON(http.StatusOK, gin.H{"data": result})
 }

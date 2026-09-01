@@ -60,11 +60,15 @@ type Channel struct {
 	// manually managed balance. It is intentionally internal bookkeeping and
 	// not part of the public channel API.
 	ManualUsageBaseline *float64 `gorm:"type:double precision" json:"-"`
-	Remark              string   `gorm:"size:512" json:"remark,omitempty"`
-	TurnstileEnabled    bool     `gorm:"default:false" json:"turnstile_enabled"`
-	CaptchaConfigID     *uint    `json:"captcha_config_id,omitempty"`
-	BalanceThreshold    float64  `gorm:"default:0" json:"balance_threshold"`
-	MonitorEnabled      bool     `gorm:"default:true" json:"monitor_enabled"`
+	// ManualUsageBasis identifies the bound relay accounts and cost formula used
+	// to produce ManualUsageBaseline. A changed basis starts a fresh period so
+	// historical usage is never repriced with a new account multiplier.
+	ManualUsageBasis string  `gorm:"size:64;not null;default:''" json:"-"`
+	Remark           string  `gorm:"size:512" json:"remark,omitempty"`
+	TurnstileEnabled bool    `gorm:"default:false" json:"turnstile_enabled"`
+	CaptchaConfigID  *uint   `json:"captcha_config_id,omitempty"`
+	BalanceThreshold float64 `gorm:"default:0" json:"balance_threshold"`
+	MonitorEnabled   bool    `gorm:"default:true" json:"monitor_enabled"`
 
 	// 最近一次采集结果（聚合视图，便于列表页直接展示）
 	LastBalance          *float64   `json:"last_balance,omitempty"`
@@ -533,12 +537,23 @@ func (RelayAccount) TableName() string { return "relay_accounts" }
 // RelayLatencySample is the small, stable subset of a Sub2API usage row that
 // is useful for the account health table.
 type RelayLatencySample struct {
-	FirstTokenMS int64     `json:"first_token_ms"`
-	DurationMS   int64     `json:"duration_ms"`
-	CreatedAt    time.Time `json:"created_at"`
-	Model        string    `json:"model,omitempty"`
-	RequestType  string    `json:"request_type,omitempty"`
-	UserEmail    string    `json:"user_email,omitempty"`
+	FirstTokenMS           int64     `json:"first_token_ms"`
+	DurationMS             int64     `json:"duration_ms"`
+	CreatedAt              time.Time `json:"created_at"`
+	Model                  string    `json:"model,omitempty"`
+	RequestType            string    `json:"request_type,omitempty"`
+	UserEmail              string    `json:"user_email,omitempty"`
+	InputTokens            int64     `json:"input_tokens,omitempty"`
+	OutputTokens           int64     `json:"output_tokens,omitempty"`
+	CacheReadTokens        int64     `json:"cache_read_tokens,omitempty"`
+	CacheCreationTokens    int64     `json:"cache_creation_tokens,omitempty"`
+	CacheCreation5mTokens  int64     `json:"cache_creation_5m_tokens,omitempty"`
+	CacheCreation1hTokens  int64     `json:"cache_creation_1h_tokens,omitempty"`
+	GroupID                int64     `json:"group_id,omitempty"`
+	GroupName              string    `json:"group_name,omitempty"`
+	GroupMultiplier        *float64  `json:"group_multiplier,omitempty"`
+	ChannelGroupName       string    `json:"channel_group_name,omitempty"`
+	ChannelGroupMultiplier *float64  `json:"channel_group_multiplier,omitempty"`
 }
 
 // RelayAccountGroup 保存上游账号与销售分组的关联。

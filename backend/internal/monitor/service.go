@@ -266,6 +266,7 @@ func (s *Service) refreshManualBalance(ctx context.Context, c *storage.Channel) 
 	if c.LastBalance != nil {
 		balance = *c.LastBalance
 	}
+	observedBalance := balance
 	if s.relay == nil {
 		progress.OK(ctx, progress.StageBalance, fmt.Sprintf("当前余额 %.4f（手动管理）", balance), map[string]any{"balance": balance, "manual": true})
 		s.notifyManualBalanceLow(ctx, c, balance)
@@ -292,11 +293,13 @@ func (s *Service) refreshManualBalance(ctx context.Context, c *storage.Channel) 
 		progress.Fail(ctx, progress.StageBalance, "手动余额消费统计不完整")
 		return fmt.Errorf("手动余额消费统计不完整，暂不扣减余额")
 	}
-	balance, baseline, deducted, initialized := applyManualUsage(balance, c.ManualUsageBaseline, total.Cost)
+	balance, baseline, basis, deducted, initialized := applyManualUsage(balance, c.ManualUsageBaseline, c.ManualUsageBasis, total.Cost, total.CostBasis)
 	now := time.Now()
-	if err := s.channels.UpdateManualBalance(c.ID, balance, now, "", baseline); err != nil {
+	settledBalance, err := s.channels.SettleManualBalance(c.ID, observedBalance, balance, now, "", baseline, basis)
+	if err != nil {
 		return err
 	}
+	balance = settledBalance
 	if s.rates != nil {
 		if err := s.rates.AppendBalance(&storage.BalanceSnapshot{ChannelID: c.ID, Balance: balance, SampledAt: now}); err != nil {
 			return err
@@ -315,25 +318,27 @@ func (s *Service) refreshManualBalance(ctx context.Context, c *storage.Channel) 
 // A new or invalid baseline starts a fresh accounting period; a relay reset
 // (cumulative cost falling) similarly advances the baseline without charging
 // the balance a negative amount.
-func applyManualUsage(balance float64, baseline *float64, cumulativeCost float64) (nextBalance float64, nextBaseline *float64, deducted float64, initialized bool) {
+func applyManualUsage(balance float64, baseline *float64, settledBasis string, cumulativeCost float64, currentBasis string) (nextBalance float64, nextBaseline *float64, nextBasis string, deducted float64, initialized bool) {
 	nextBalance = balance
-	if !validManualUsage(cumulativeCost) {
-		return nextBalance, baseline, 0, false
+	nextBasis = settledBasis
+	if !validManualUsage(cumulativeCost) || strings.TrimSpace(currentBasis) == "" {
+		return nextBalance, baseline, nextBasis, 0, false
 	}
 	next := cumulativeCost
 	nextBaseline = &next
-	if baseline == nil || !validManualUsage(*baseline) {
-		return nextBalance, nextBaseline, 0, true
+	nextBasis = currentBasis
+	if baseline == nil || !validManualUsage(*baseline) || settledBasis == "" || settledBasis != currentBasis {
+		return nextBalance, nextBaseline, nextBasis, 0, true
 	}
 	deducted = cumulativeCost - *baseline
 	if !validManualUsage(deducted) || deducted < 0 {
-		return nextBalance, nextBaseline, 0, false
+		return nextBalance, nextBaseline, nextBasis, 0, false
 	}
 	nextBalance -= deducted
 	if nextBalance < 0 || math.IsNaN(nextBalance) || math.IsInf(nextBalance, 0) {
 		nextBalance = 0
 	}
-	return nextBalance, nextBaseline, deducted, false
+	return nextBalance, nextBaseline, nextBasis, deducted, false
 }
 
 func validManualUsage(value float64) bool {

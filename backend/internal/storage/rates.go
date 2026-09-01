@@ -230,35 +230,42 @@ func (r *Rates) AppendBalance(s *BalanceSnapshot) error {
 		s.SampledAt = time.Now()
 	}
 	return r.db.Transaction(func(tx *gorm.DB) error {
-		var previous BalanceSnapshot
-		previousErr := tx.Where("channel_id = ? AND sampled_at <= ?", s.ChannelID, s.SampledAt).
-			Order("sampled_at DESC, id DESC").First(&previous).Error
-		if previousErr != nil && previousErr != gorm.ErrRecordNotFound {
-			return previousErr
-		}
-		if err := tx.Create(s).Error; err != nil {
-			return err
-		}
-		if previousErr == gorm.ErrRecordNotFound {
-			return r.ensureDailyBalance(tx, s)
-		}
-		delta := s.Balance - previous.Balance
-		if math.Abs(delta) <= 0.000000001 {
-			return r.ensureDailyBalance(tx, s)
-		}
-		kind := "consumption"
-		if delta > 0 {
-			kind = "recharge"
-		}
-		if err := tx.Create(&BalanceChangeLog{
-			ChannelID: s.ChannelID, BalanceSnapshotID: s.ID,
-			PreviousBalance: previous.Balance, NewBalance: s.Balance,
-			Delta: delta, Kind: kind, DetectedAt: s.SampledAt,
-		}).Error; err != nil {
-			return err
-		}
-		return r.ensureDailyBalance(tx, s)
+		return appendBalanceSnapshot(tx, s)
 	})
+}
+
+// appendBalanceSnapshot writes a balance sample and its derived change log in
+// the caller's transaction. Ledger adjustments use this to keep the channel
+// balance and history atomic with the operation entry.
+func appendBalanceSnapshot(tx *gorm.DB, s *BalanceSnapshot) error {
+	var previous BalanceSnapshot
+	previousErr := tx.Where("channel_id = ? AND sampled_at <= ?", s.ChannelID, s.SampledAt).
+		Order("sampled_at DESC, id DESC").First(&previous).Error
+	if previousErr != nil && previousErr != gorm.ErrRecordNotFound {
+		return previousErr
+	}
+	if err := tx.Create(s).Error; err != nil {
+		return err
+	}
+	if previousErr == gorm.ErrRecordNotFound {
+		return ensureDailyBalance(tx, s)
+	}
+	delta := s.Balance - previous.Balance
+	if math.Abs(delta) <= 0.000000001 {
+		return ensureDailyBalance(tx, s)
+	}
+	kind := "consumption"
+	if delta > 0 {
+		kind = "recharge"
+	}
+	if err := tx.Create(&BalanceChangeLog{
+		ChannelID: s.ChannelID, BalanceSnapshotID: s.ID,
+		PreviousBalance: previous.Balance, NewBalance: s.Balance,
+		Delta: delta, Kind: kind, DetectedAt: s.SampledAt,
+	}).Error; err != nil {
+		return err
+	}
+	return ensureDailyBalance(tx, s)
 }
 
 // CaptureDailyBalances stores one balance for every channel on the local day
@@ -421,7 +428,7 @@ func dailyBalanceCandidate(tx *gorm.DB, channel Channel, dayStart, dayEnd time.T
 	return nil, nil
 }
 
-func (r *Rates) ensureDailyBalance(tx *gorm.DB, snapshot *BalanceSnapshot) error {
+func ensureDailyBalance(tx *gorm.DB, snapshot *BalanceSnapshot) error {
 	if snapshot.Balance <= validBalanceEpsilon {
 		return nil
 	}

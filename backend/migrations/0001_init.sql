@@ -11,6 +11,8 @@ CREATE TABLE IF NOT EXISTS channels (
     credential_mode   VARCHAR(16)  NOT NULL DEFAULT 'password',
     balance_mode      VARCHAR(16)  NOT NULL DEFAULT 'auto',
     manual_balance    DOUBLE PRECISION NOT NULL DEFAULT 0,
+	manual_usage_baseline DOUBLE PRECISION,
+	manual_usage_basis VARCHAR(64) NOT NULL DEFAULT '',
     remark            VARCHAR(512),
     turnstile_enabled BOOLEAN DEFAULT false,
     captcha_config_id BIGINT,
@@ -28,6 +30,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_name ON channels (name) WHERE del
 CREATE INDEX IF NOT EXISTS idx_channels_type ON channels (type);
 CREATE INDEX IF NOT EXISTS idx_channels_deleted_at ON channels (deleted_at);
 ALTER TABLE channels ADD COLUMN IF NOT EXISTS manual_balance DOUBLE PRECISION NOT NULL DEFAULT 0;
+ALTER TABLE channels ADD COLUMN IF NOT EXISTS manual_usage_baseline DOUBLE PRECISION;
+ALTER TABLE channels ADD COLUMN IF NOT EXISTS manual_usage_basis VARCHAR(64) NOT NULL DEFAULT '';
 ALTER TABLE channels ADD COLUMN IF NOT EXISTS remark VARCHAR(512);
 
 CREATE TABLE IF NOT EXISTS auth_sessions (

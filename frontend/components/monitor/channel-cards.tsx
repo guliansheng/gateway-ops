@@ -29,18 +29,19 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { useConfirm } from "@/components/ui/confirm-dialog"
-import { useChannels, useChannelMetrics, useChannelRates, useLatestRatioChanges } from "@/lib/queries"
+import { useChannels, useChannelLatencyTrends, useChannelMetrics, useChannelRates, useLatestRatioChanges } from "@/lib/queries"
 import { apiFetch } from "@/lib/api"
 import { useTriggerRefresh } from "@/lib/refresh-context"
 import { channelTypeLabel, money, ratioArrow, relativeTime } from "@/lib/format"
 import { cn } from "@/lib/utils"
 import { syncChannelStream, testLoginStream, type ProgressEvent } from "@/lib/sync-stream"
-import type { Channel, ChannelAccount, RateSnapshot, RelayUsageRange } from "@/lib/api-types"
+import type { Channel, ChannelAccount, RateSnapshot, RelayLatencySample, RelayUsageRange } from "@/lib/api-types"
 import { ChannelFormDialog } from "@/components/monitor/channel-form-dialog"
 
 type Status = "healthy" | "low" | "failed" | "idle"
 type MonitorStatusFilter = "enabled" | "disabled" | "all"
 type ManagementModeFilter = "auto" | "manual" | "all"
+type AccountCountFilter = "multi" | "single" | "all"
 
 function statusOf(c: Channel, balance?: number | null): Status {
   if (c.last_error) return "failed"
@@ -144,16 +145,11 @@ function AccountPreview({ accounts }: { accounts: ChannelAccount[] }) {
 }
 
 function AccountBalance({ accounts, total }: { accounts: ChannelAccount[]; total: number | null | undefined }) {
-  const values = accounts.map((account) => account.last_balance).filter((value): value is number => value != null && Number.isFinite(value))
-  if (accounts.length <= 1 || values.length !== accounts.length) return <>{money(total)}</>
-  const parts = values.length <= 3
-    ? values.map((value) => money(value)).join(" + ")
-    : `${money(values[0])} + ${money(values[1])} + …`
-  const expression = `${parts} = ${money(total)}`
+  if (accounts.length <= 1) return <>{money(total)}</>
   return (
     <Tooltip delayDuration={150}>
       <TooltipTrigger asChild>
-        <span className="block truncate" tabIndex={0}>{expression}</span>
+        <span className="block truncate" tabIndex={0} aria-label="查看各账号余额">{money(total)}</span>
       </TooltipTrigger>
       <TooltipContent side="top" className="max-w-xs p-2 text-xs">
         <p className="mb-1.5 font-medium">账号余额明细</p>
@@ -186,6 +182,143 @@ function ratioTone(r: number): string {
   if (r < 1) return "bg-brand/10 text-brand ring-brand/20"
   if (r > 1.2) return "bg-warning/10 text-warning ring-warning/20"
   return "bg-muted text-foreground ring-border"
+}
+
+type LatencyTone = "good" | "warn" | "slow" | "critical"
+
+function latencyTone(value: number | null | undefined, metric: "first" | "duration"): LatencyTone {
+  if (value == null || !Number.isFinite(value) || value < 0) return "critical"
+  const thresholds = metric === "first"
+    ? { warn: 10_000, slow: 30_000, critical: 60_000 }
+    : { warn: 60_000, slow: 180_000, critical: 300_000 }
+  if (value >= thresholds.critical) return "critical"
+  if (value >= thresholds.slow) return "slow"
+  if (value >= thresholds.warn) return "warn"
+  return "good"
+}
+
+const latencyColor: Record<LatencyTone, string> = {
+  good: "#10b981",
+  warn: "#f59e0b",
+  slow: "#f97316",
+  critical: "#ef4444",
+}
+
+const latencyTextClass: Record<LatencyTone, string> = {
+  good: "text-emerald-600 dark:text-emerald-400",
+  warn: "text-amber-600 dark:text-amber-400",
+  slow: "text-orange-600 dark:text-orange-400",
+  critical: "text-red-600 dark:text-red-400",
+}
+
+function formatLatency(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value) || value < 0) return "-"
+  const milliseconds = Math.round(value)
+  if (milliseconds < 1_000) return `${milliseconds}ms`
+  const seconds = milliseconds / 1_000
+  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}秒`
+  const minutes = Math.floor(seconds / 60)
+  return `${minutes}分 ${String(Math.round(seconds % 60)).padStart(2, "0")}秒`
+}
+
+function formatSampleTime(value: string | undefined) {
+  if (!value) return "-"
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return "-"
+  return date.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  })
+}
+
+function formatTokens(value: number | undefined) {
+  if (value == null || !Number.isFinite(value)) return "-"
+  return Math.max(0, Math.round(value)).toLocaleString("zh-CN")
+}
+
+function ChannelLatencyTrend({ samples }: { samples: RelayLatencySample[] }) {
+  const ordered = useMemo(() => [...samples].reverse(), [samples])
+  const latestSample = useMemo(() => samples.reduce<RelayLatencySample | null>((latest, sample) => {
+    if (!latest || new Date(sample.created_at).getTime() > new Date(latest.created_at).getTime()) return sample
+    return latest
+  }, null), [samples])
+  return (
+    <div className="mt-3 border-t border-border pt-3">
+      <div className="mb-1.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+        <span className="text-[11px] font-medium text-muted-foreground">
+          最近调用延时
+          {latestSample ? <span className="ml-1 font-mono text-[10px] font-normal tabular-nums text-muted-foreground/80">· 最后调用 {formatSampleTime(latestSample.created_at)}</span> : null}
+        </span>
+        <span className="font-mono text-[10px] tabular-nums text-muted-foreground">最近 {samples.length} / 60 条</span>
+      </div>
+      {ordered.length === 0 ? <div className="flex h-9 items-center rounded-md border border-dashed border-border px-2 text-[10px] text-muted-foreground">暂无延时数据</div> : (
+        <Tooltip delayDuration={160}>
+          <TooltipTrigger asChild>
+            <button type="button" className="block h-10 w-full rounded-md px-1 py-1 transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={`查看最近 ${samples.length} 次调用延时`}>
+              <span className="flex h-8 w-full items-stretch gap-px overflow-hidden" aria-hidden="true">
+                {ordered.map((sample, index) => {
+                  const first = latencyTone(sample.first_token_ms, "first")
+                  const duration = latencyTone(sample.duration_ms, "duration")
+                  return <span key={`${sample.created_at}-${index}`} className="min-w-0 flex-1 rounded-[2px] opacity-90 transition-opacity hover:opacity-100" style={{ background: `linear-gradient(to top, ${latencyColor[duration]} 0 50%, ${latencyColor[first]} 50% 100%)` }} />
+                })}
+              </span>
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="top" align="end" className="max-h-96 w-[540px] max-w-[calc(100vw-24px)] overflow-y-auto border border-slate-200 bg-white p-0 text-[11px] text-slate-900 shadow-xl dark:border-slate-200 dark:bg-white dark:text-slate-900 [&>svg]:hidden">
+            <div className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2 font-medium"><span>最近 {samples.length} 次调用</span><span className="text-slate-500">上半段首字 · 下半段总耗时</span></div>
+            <div className="divide-y divide-slate-100 px-3">
+              {[...ordered].reverse().map((sample, index) => {
+                const first = latencyTone(sample.first_token_ms, "first")
+                const duration = latencyTone(sample.duration_ms, "duration")
+                const sub2apiGroup = sample.group_name?.trim() || "未标记分组"
+                const sub2apiMultiplier = sample.group_multiplier == null ? "-" : `${sample.group_multiplier.toFixed(3)}×`
+                const channelGroup = sample.channel_group_name?.trim() || "未关联渠道分组"
+                const channelMultiplier = sample.channel_group_multiplier == null ? "-" : `${sample.channel_group_multiplier.toFixed(3)}×`
+                const cacheCreationTokens = sample.cache_creation_tokens ?? 0
+                const cacheCreation5mTokens = sample.cache_creation_5m_tokens ?? 0
+                const cacheCreation1hTokens = sample.cache_creation_1h_tokens ?? 0
+                const cacheCreationTotal = cacheCreationTokens || cacheCreation5mTokens + cacheCreation1hTokens
+                const totalTokens = (sample.input_tokens ?? 0) + (sample.output_tokens ?? 0) + (sample.cache_read_tokens ?? 0) + cacheCreationTotal
+                return (
+                  <div key={`${sample.created_at}-detail-${index}`} className="grid grid-cols-[112px_minmax(0,1fr)] gap-2 py-2">
+                    <span className="whitespace-nowrap font-mono tabular-nums text-slate-500">{formatSampleTime(sample.created_at)}</span>
+                    <div className="min-w-0">
+                      <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+                        <div className="min-w-0 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1.5">
+                          <p className="text-[9px] font-semibold uppercase text-emerald-700">Sub2API 分组</p>
+                          <p className="mt-0.5 flex min-w-0 items-center gap-1.5 whitespace-nowrap text-emerald-950">
+                            <span className="min-w-0 truncate font-semibold" title={sub2apiGroup}>{sub2apiGroup}</span>
+                            <span className="shrink-0 rounded bg-emerald-600 px-1.5 py-0.5 font-mono text-xs font-semibold tabular-nums text-white">{sub2apiMultiplier}</span>
+                          </p>
+                        </div>
+                        <div className="min-w-0 rounded-md border border-sky-200 bg-sky-50 px-2 py-1.5">
+                          <p className="text-[9px] font-semibold uppercase text-sky-700">渠道分组</p>
+                          <p className="mt-0.5 flex min-w-0 items-center gap-1.5 whitespace-nowrap text-sky-950">
+                            <span className="min-w-0 truncate font-semibold" title={channelGroup}>{channelGroup}</span>
+                            <span className="shrink-0 rounded bg-sky-600 px-1.5 py-0.5 font-mono text-xs font-semibold tabular-nums text-white">{channelMultiplier}</span>
+                          </p>
+                        </div>
+                      </div>
+                      <p className="mt-1.5 break-words text-slate-700" title={sample.model || "-"}>{sample.model || "-"}{sample.request_type ? ` · ${sample.request_type}` : ""}</p>
+                      <p className="mt-1 font-mono text-xs font-semibold tabular-nums text-slate-900">Token 总量 {formatTokens(totalTokens)}</p>
+                      <p className="mt-1 flex flex-wrap gap-x-4 gap-y-1 font-mono text-xs font-semibold tabular-nums">
+                        <span className={latencyTextClass[first]}>首字 {formatLatency(sample.first_token_ms)}</span>
+                        <span className={latencyTextClass[duration]}>总耗时 {formatLatency(sample.duration_ms)}</span>
+                      </p>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </TooltipContent>
+        </Tooltip>
+      )}
+    </div>
+  )
 }
 
 /** InlineRates 在渠道卡片内部展示当前所有分组倍率，默认完整展开。 */
@@ -511,11 +644,14 @@ export function ChannelCards({ usageRange = "today" }: { usageRange?: RelayUsage
   const { data: channels, loading, error, refetch } = useChannels()
   const [monitorStatus, setMonitorStatus] = useState<MonitorStatusFilter>("enabled")
   const [managementMode, setManagementMode] = useState<ManagementModeFilter>("all")
+  const [accountCount, setAccountCount] = useState<AccountCountFilter>("all")
   const [channelNameQuery, setChannelNameQuery] = useState("")
   const [remarkQuery, setRemarkQuery] = useState("")
-  const hasActiveFilters = monitorStatus !== "enabled" || managementMode !== "all" || channelNameQuery.trim() !== "" || remarkQuery.trim() !== ""
+  const hasActiveFilters = monitorStatus !== "enabled" || managementMode !== "all" || accountCount !== "all" || channelNameQuery.trim() !== "" || remarkQuery.trim() !== ""
   const metrics = useChannelMetrics(usageRange)
+  const latencyTrends = useChannelLatencyTrends(60)
   const metricByChannel = new Map((metrics.data ?? []).map((item) => [item.channel_id, item]))
+  const latencyByChannel = new Map((latencyTrends.data ?? []).map((item) => [item.channel_id, item.samples]))
   const filteredChannels = useMemo(() => {
     if (!channels) return []
     const nameQuery = channelNameQuery.trim().toLocaleLowerCase()
@@ -523,11 +659,13 @@ export function ChannelCards({ usageRange = "today" }: { usageRange?: RelayUsage
     return channels.filter((channel) => {
       const statusMatches = monitorStatus === "all" || channel.monitor_enabled === (monitorStatus === "enabled")
       const managementMatches = managementMode === "all" || channel.balance_mode === managementMode
+      const isMultiAccount = (channel.accounts?.length ?? 0) > 1
+      const accountCountMatches = accountCount === "all" || isMultiAccount === (accountCount === "multi")
       const nameMatches = nameQuery === "" || channel.name.toLocaleLowerCase().includes(nameQuery)
       const remarkMatches = normalizedRemarkQuery === "" || channel.remark?.toLocaleLowerCase().includes(normalizedRemarkQuery)
-      return statusMatches && managementMatches && nameMatches && remarkMatches
+      return statusMatches && managementMatches && accountCountMatches && nameMatches && remarkMatches
     })
-  }, [channelNameQuery, channels, managementMode, monitorStatus, remarkQuery])
+  }, [accountCount, channelNameQuery, channels, managementMode, monitorStatus, remarkQuery])
   const refresh = useTriggerRefresh()
   const { confirm, dialog: confirmDialog } = useConfirm()
   const [editing, setEditing] = useState<Channel | null>(null)
@@ -654,6 +792,7 @@ export function ChannelCards({ usageRange = "today" }: { usageRange?: RelayUsage
   function resetFilters() {
     setMonitorStatus("enabled")
     setManagementMode("all")
+    setAccountCount("all")
     setChannelNameQuery("")
     setRemarkQuery("")
   }
@@ -688,6 +827,14 @@ export function ChannelCards({ usageRange = "today" }: { usageRange?: RelayUsage
               <SelectItem value="all">全部管理</SelectItem>
               <SelectItem value="auto">自动读取</SelectItem>
               <SelectItem value="manual">手动管理</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={accountCount} onValueChange={(value) => setAccountCount(value as AccountCountFilter)}>
+            <SelectTrigger className="h-11 w-32 text-xs sm:h-9" aria-label="渠道账号数量筛选"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部账号</SelectItem>
+              <SelectItem value="multi">多账号渠道</SelectItem>
+              <SelectItem value="single">单账号渠道</SelectItem>
             </SelectContent>
           </Select>
           <Button type="button" size="sm" variant="outline" className="h-11 gap-1.5 text-xs sm:h-9" disabled={!hasActiveFilters} onClick={resetFilters}>
@@ -784,15 +931,22 @@ export function ChannelCards({ usageRange = "today" }: { usageRange?: RelayUsage
                     </span>
                   ) : null}
                   <div className="ml-auto flex shrink-0 items-center gap-2">
+                    {accounts.length > 1 ? (
+                      <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-inset bg-cyan-500/10 text-cyan-700 ring-cyan-500/20 dark:text-cyan-400">
+                        多账号渠道
+                      </span>
+                    ) : null}
                     <span className={cn("inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-inset", c.balance_mode === "manual" ? "bg-amber-400/15 text-amber-700 ring-amber-500/30 dark:text-amber-400" : "bg-sky-500/10 text-sky-700 ring-sky-500/20 dark:text-sky-400")}>
                       {c.balance_mode === "manual" ? "手动管理" : "自动读取"}
                     </span>
                     <span
                       className={cn(
                         "inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-inset",
-                        c.type === "newapi"
-                          ? "bg-brand/10 text-brand ring-brand/20"
-                          : "bg-foreground/5 text-foreground ring-border",
+                        c.type === "sub2api"
+                          ? "bg-emerald-500/10 text-emerald-700 ring-emerald-500/20 dark:text-emerald-400"
+                          : c.type === "newapi"
+                            ? "bg-brand/10 text-brand ring-brand/20"
+                            : "bg-foreground/5 text-foreground ring-border",
                       )}
                     >
                       {channelTypeLabel(c.type)}
@@ -835,6 +989,7 @@ export function ChannelCards({ usageRange = "today" }: { usageRange?: RelayUsage
                   ) : null}
                 </div>
 
+                <ChannelLatencyTrend samples={latencyByChannel.get(c.id) ?? []} />
                 {c.balance_mode !== "manual" ? <div className="mt-3 flex-1 border-t border-border"><InlineRates channelID={c.id} /></div> : <ManualRatesEditor channelID={c.id} />}
 
 				<div className="mt-3 grid grid-cols-3 gap-2">

@@ -4,6 +4,7 @@ package relay
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +29,7 @@ const requestTimeout = 45 * time.Second
 // Latency samples are optional telemetry. A short snapshot interval must not
 // fan out one usage request per account on every tick and overload Sub2API.
 const latencyCacheTTL = 5 * time.Minute
+const latencySampleLimit = 60
 
 const (
 	ipLocationEndpoint = "http://ip-api.com/batch?fields=status,message,query,countryCode,regionName,city"
@@ -1183,6 +1185,7 @@ func (s *Service) usageStatsForAccountIDs(ctx context.Context, stationID uint, r
 // another set.
 type ChannelUsageTotal struct {
 	Cost                float64
+	CostBasis           string
 	UserCharge          float64
 	MatchedAccountCount int
 	Complete            bool
@@ -1208,6 +1211,7 @@ func (s *Service) ChannelUsageTotals(ctx context.Context, channels []storage.Cha
 		}
 	}
 	totals := make(map[uint]ChannelUsageTotal, len(channels))
+	basisEntries := make(map[uint][]channelUsageCostBasisEntry, len(channels))
 	for _, channel := range channels {
 		totals[channel.ID] = ChannelUsageTotal{Complete: true}
 	}
@@ -1240,18 +1244,95 @@ func (s *Service) ChannelUsageTotals(ctx context.Context, channels []storage.Cha
 			if usageErr != nil || !ok {
 				total.Complete = false
 			} else {
-				total.Cost += channelBoundAccountCost(stats, binding)
+				cost, multiplierBits, usesAccountCost := channelBoundAccountCostCalculation(stats, binding)
+				total.Cost += cost
 				total.UserCharge += stats.UserCharge
+				basisEntries[channelID] = append(basisEntries[channelID], channelUsageCostBasisEntry{
+					RelayStationID: station.ID, RelayAccountExternalID: accountID,
+					MultiplierBits: multiplierBits, UsesAccountCost: usesAccountCost,
+				})
 			}
 			totals[channelID] = total
 		}
 	}
+	for channelID, total := range totals {
+		total.CostBasis = channelUsageCostBasis(basisEntries[channelID])
+		totals[channelID] = total
+	}
 	return totals, nil
+}
+
+// ChannelLatencyTrends returns the latest latency samples for each monitored
+// channel. Samples are read from the account snapshots populated by sync, then
+// attributed with the same explicit-binding/automatic-URL rules as cost and
+// user-charge metrics.
+func (s *Service) ChannelLatencyTrends(channels []storage.Channel, limit int) (map[uint][]storage.RelayLatencySample, error) {
+	if limit <= 0 || limit > 100 {
+		limit = latencySampleLimit
+	}
+	result := make(map[uint][]storage.RelayLatencySample, len(channels))
+	for _, channel := range channels {
+		result[channel.ID] = []storage.RelayLatencySample{}
+	}
+	ratesByChannel := make(map[uint][]storage.RateSnapshot, len(channels))
+	if s.rates != nil {
+		for _, channel := range channels {
+			rates, err := s.rates.ListByChannel(channel.ID)
+			if err != nil {
+				return nil, err
+			}
+			ratesByChannel[channel.ID] = rates
+		}
+	}
+	stations, err := s.stations.List()
+	if err != nil {
+		return nil, err
+	}
+	for _, station := range stations {
+		overrides, err := s.stations.ListCostOverrides(station.ID)
+		if err != nil {
+			return nil, err
+		}
+		accounts, err := s.stations.ListAccounts(station.ID)
+		if err != nil {
+			return nil, err
+		}
+		bindings := resolveChannelUsageCostBindings(channels, accounts, overrides, ratesByChannel)
+		for _, account := range accounts {
+			binding, ok := bindings[account.ExternalID]
+			if !ok {
+				continue
+			}
+			var samples []storage.RelayLatencySample
+			if strings.TrimSpace(account.LatencySamplesJSON) == "" || json.Unmarshal([]byte(account.LatencySamplesJSON), &samples) != nil {
+				continue
+			}
+			for i := range samples {
+				samples[i].ChannelGroupName = binding.GroupName
+				if binding.Multiplier != nil {
+					value := *binding.Multiplier
+					samples[i].ChannelGroupMultiplier = &value
+				}
+			}
+			result[binding.ChannelID] = append(result[binding.ChannelID], samples...)
+		}
+	}
+	for channelID, samples := range result {
+		sort.SliceStable(samples, func(i, j int) bool {
+			return samples[i].CreatedAt.After(samples[j].CreatedAt)
+		})
+		if len(samples) > limit {
+			samples = samples[:limit]
+		}
+		result[channelID] = samples
+	}
+	return result, nil
 }
 
 type channelUsageCostBinding struct {
 	ChannelID  uint
 	Mode       string
+	GroupName  string
 	Multiplier *float64
 }
 
@@ -1275,7 +1356,7 @@ func resolveChannelUsageCostBindings(channels []storage.Channel, accounts []stor
 		if _, exists := channelByID[*override.MonitorChannelID]; !exists {
 			continue
 		}
-		binding := channelUsageCostBinding{ChannelID: *override.MonitorChannelID, Mode: override.Mode}
+		binding := channelUsageCostBinding{ChannelID: *override.MonitorChannelID, Mode: override.Mode, GroupName: strings.TrimSpace(override.UpstreamGroup)}
 		for _, rate := range ratesByChannel[*override.MonitorChannelID] {
 			if rate.ModelName == override.UpstreamGroup && rate.Ratio >= 0 {
 				value := rate.Ratio
@@ -1297,6 +1378,24 @@ func resolveChannelUsageCostBindings(channels []storage.Channel, accounts []stor
 				value := *account.RateMultiplier
 				binding.Multiplier = &value
 			}
+			for _, rate := range ratesByChannel[channelID] {
+				if rate.Source == storage.RateSnapshotSourceRelayAccount && rate.RelayAccountExternalID != nil && *rate.RelayAccountExternalID == account.ExternalID {
+					binding.GroupName = strings.TrimSpace(rate.ModelName)
+					if binding.Multiplier == nil && rate.Ratio >= 0 {
+						value := rate.Ratio
+						binding.Multiplier = &value
+					}
+					break
+				}
+			}
+			if binding.GroupName == "" && binding.Multiplier != nil {
+				for _, rate := range ratesByChannel[channelID] {
+					if rate.Ratio >= 0 && math.Abs(rate.Ratio-*binding.Multiplier) < 1e-9 {
+						binding.GroupName = strings.TrimSpace(rate.ModelName)
+						break
+					}
+				}
+			}
 			result[account.ExternalID] = binding
 		}
 	}
@@ -1304,17 +1403,55 @@ func resolveChannelUsageCostBindings(channels []storage.Channel, accounts []stor
 }
 
 func channelBoundAccountCost(stats AccountUsageStats, binding channelUsageCostBinding) float64 {
+	cost, _, _ := channelBoundAccountCostCalculation(stats, binding)
+	return cost
+}
+
+func channelBoundAccountCostCalculation(stats AccountUsageStats, binding channelUsageCostBinding) (cost float64, multiplierBits uint64, usesAccountCost bool) {
 	if binding.Multiplier != nil && *binding.Multiplier >= 0 {
 		// The selected channel group (including an auto-linked relay account
 		// group) is the source of truth for account cost. Sub2API's aggregate
 		// account_cost may still use its default multiplier of 1 when the relay
 		// account declaration is unavailable there, so do not prefer it over the
 		// explicit binding.
-		if stats.BaseCost > 0 {
-			return stats.BaseCost * *binding.Multiplier
+		if stats.BaseCost > 0 || stats.AccountCost == 0 {
+			return stats.BaseCost * *binding.Multiplier, math.Float64bits(*binding.Multiplier), false
 		}
 	}
-	return stats.AccountCost
+	return stats.AccountCost, 0, true
+}
+
+type channelUsageCostBasisEntry struct {
+	RelayStationID         uint
+	RelayAccountExternalID int64
+	MultiplierBits         uint64
+	UsesAccountCost        bool
+}
+
+func channelUsageCostBasis(entries []channelUsageCostBasisEntry) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	ordered := append([]channelUsageCostBasisEntry(nil), entries...)
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].RelayStationID != ordered[j].RelayStationID {
+			return ordered[i].RelayStationID < ordered[j].RelayStationID
+		}
+		return ordered[i].RelayAccountExternalID < ordered[j].RelayAccountExternalID
+	})
+	hash := sha256.New()
+	var encoded [25]byte
+	for _, entry := range ordered {
+		binary.BigEndian.PutUint64(encoded[0:8], uint64(entry.RelayStationID))
+		binary.BigEndian.PutUint64(encoded[8:16], uint64(entry.RelayAccountExternalID))
+		binary.BigEndian.PutUint64(encoded[16:24], entry.MultiplierBits)
+		encoded[24] = 0
+		if entry.UsesAccountCost {
+			encoded[24] = 1
+		}
+		_, _ = hash.Write(encoded[:])
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil))
 }
 
 // resolveChannelUsageBindings returns the accounting channel for each relay
@@ -1468,7 +1605,58 @@ func serviceHostsMatch(left, right string) bool {
 	if left == "" || right == "" {
 		return false
 	}
-	return left == right || strings.HasSuffix(left, "."+right) || strings.HasSuffix(right, "."+left)
+	if left == right || strings.HasSuffix(left, "."+right) || strings.HasSuffix(right, "."+left) {
+		return true
+	}
+	// Some providers expose a public site and an API endpoint on unrelated
+	// registrable domains (for example api.mhapi.cn and mhapi.net). As a
+	// conservative fallback, accept one unique, non-generic host label shared
+	// by both names; this keeps example/api/www labels from creating matches.
+	generic := map[string]struct{}{"www": {}, "api": {}, "app": {}, "www2": {}, "example": {}, "localhost": {}, "test": {}, "dev": {}, "staging": {}, "prod": {}}
+	leftLabels := strings.Split(left, ".")
+	rightLabels := strings.Split(right, ".")
+	// Reject lookalikes where one complete host is merely embedded inside a
+	// longer host (for example walkcoding.top.evil.test). Such names are not a
+	// provider's alternate endpoint, even if they share a distinctive label.
+	if hostLabelsEmbedded(leftLabels, rightLabels) || hostLabelsEmbedded(rightLabels, leftLabels) {
+		return false
+	}
+	rightSet := make(map[string]struct{}, len(rightLabels))
+	for _, label := range rightLabels {
+		rightSet[label] = struct{}{}
+	}
+	shared := 0
+	for _, l := range leftLabels {
+		if len(l) < 4 {
+			continue
+		}
+		if _, skip := generic[l]; skip {
+			continue
+		}
+		if _, ok := rightSet[l]; ok {
+			shared++
+		}
+	}
+	return shared == 1
+}
+
+func hostLabelsEmbedded(shorter, longer []string) bool {
+	if len(shorter) < 2 || len(shorter) >= len(longer) {
+		return false
+	}
+	for start := 0; start+len(shorter) <= len(longer); start++ {
+		match := true
+		for i := range shorter {
+			if shorter[i] != longer[start+i] {
+				match = false
+				break
+			}
+		}
+		if match && start+len(shorter) != len(longer) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) RecentUsage(ctx context.Context, stationID uint, limit int) ([]RecentUsageItem, error) {
@@ -2827,7 +3015,7 @@ func (s *Service) syncSnapshot(ctx context.Context, stationID uint, probeRates b
 			previousLatency[account.ExternalID] = account.LatencySamplesJSON
 		}
 	}
-	latencySnapshots := s.fetchAccountLatencies(ctx, station.BaseURL, apiKey, accounts)
+	latencySnapshots := s.fetchAccountLatencies(ctx, station.BaseURL, apiKey, accounts, groups)
 
 	now := time.Now().UTC()
 	localGroups := make([]storage.RelayGroup, 0, len(groups))
@@ -3231,7 +3419,7 @@ func (s *Service) probeAPIKeyAccounts(ctx context.Context, baseURL, apiKey strin
 // fetchAccountLatencies reads a bounded usage window for each API Key account.
 // Usage is optional telemetry: one account failing or an older Sub2API build
 // lacking the endpoint must not make an otherwise valid station sync fail.
-func (s *Service) fetchAccountLatencies(ctx context.Context, baseURL, apiKey string, accounts []remoteAccount) map[int64]string {
+func (s *Service) fetchAccountLatencies(ctx context.Context, baseURL, apiKey string, accounts []remoteAccount, groups []remoteGroup) map[int64]string {
 	cacheKey := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	now := time.Now()
 	s.latencyMu.Lock()
@@ -3250,6 +3438,10 @@ func (s *Service) fetchAccountLatencies(ctx context.Context, baseURL, apiKey str
 		for _, user := range users {
 			userEmails[user.ID] = strings.TrimSpace(user.Email)
 		}
+	}
+	groupByID := make(map[int64]remoteGroup, len(groups))
+	for _, group := range groups {
+		groupByID[group.ID] = group
 	}
 	type job struct{ id int64 }
 	jobs := make(chan job)
@@ -3271,7 +3463,7 @@ func (s *Service) fetchAccountLatencies(ctx context.Context, baseURL, apiKey str
 			defer wg.Done()
 			for item := range jobs {
 				var page remoteUsagePage
-				endpoint := fmt.Sprintf("%s/api/v1/admin/usage?page=1&page_size=30&account_id=%d", baseURL, item.id)
+				endpoint := fmt.Sprintf("%s/api/v1/admin/usage?page=1&page_size=%d&account_id=%d", baseURL, latencySampleLimit, item.id)
 				if err := s.get(ctx, endpoint, apiKey, &page); err != nil {
 					continue
 				}
@@ -3285,10 +3477,23 @@ func (s *Service) fetchAccountLatencies(ctx context.Context, baseURL, apiKey str
 					if userEmail == "" {
 						userEmail = userEmails[usage.UserID]
 					}
+					groupName := strings.TrimSpace(usage.GroupName)
+					var groupMultiplier *float64
+					if group, ok := groupByID[usage.GroupID]; ok {
+						if groupName == "" {
+							groupName = strings.TrimSpace(group.Name)
+						}
+						value := group.RateMultiplier
+						groupMultiplier = &value
+					}
 					samples = append(samples, storage.RelayLatencySample{
 						FirstTokenMS: usage.FirstTokenMS, DurationMS: usage.DurationMS,
 						CreatedAt: created.UTC(), Model: usage.Model, RequestType: usage.RequestType,
-						UserEmail: userEmail,
+						UserEmail:   userEmail,
+						InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
+						CacheReadTokens: usage.CacheReadTokens, CacheCreationTokens: usage.CacheCreationTokens,
+						CacheCreation5mTokens: usage.CacheCreation5mTokens, CacheCreation1hTokens: usage.CacheCreation1hTokens,
+						GroupID: usage.GroupID, GroupName: groupName, GroupMultiplier: groupMultiplier,
 					})
 				}
 				if len(samples) == 0 {

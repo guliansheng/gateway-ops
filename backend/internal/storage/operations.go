@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
@@ -141,29 +142,44 @@ func (o *Operations) ChannelRechargeTotals() (map[uint]float64, error) {
 func (o *Operations) CreateLedger(entry *OperationLedgerEntry) error {
 	entry.Source = LedgerSourceManual
 	entry.LocalAccountID = nil
-	if err := validateLedgerReferences(o.db, entry); err != nil {
-		return err
-	}
-	return o.db.Create(entry).Error
+	return o.db.Transaction(func(tx *gorm.DB) error {
+		if err := validateLedgerReferences(tx, entry); err != nil {
+			return err
+		}
+		if err := tx.Create(entry).Error; err != nil {
+			return err
+		}
+		adjustments := map[uint]float64{}
+		addRechargeAdjustment(adjustments, entry, 1)
+		return applyManualRechargeAdjustments(tx, adjustments)
+	})
 }
 
 func (o *Operations) UpdateLedger(entry *OperationLedgerEntry) error {
-	var current OperationLedgerEntry
-	if err := o.db.First(&current, entry.ID).Error; err != nil {
-		return err
-	}
-	if current.Source != LedgerSourceManual {
-		return errors.New("自动采购成本记录需要在本地号池中修改")
-	}
-	if err := validateLedgerReferences(o.db, entry); err != nil {
-		return err
-	}
-	return o.db.Model(&current).Updates(map[string]any{
-		"direction": entry.Direction, "category": entry.Category,
-		"amount": entry.Amount, "currency": entry.Currency,
-		"description": entry.Description, "channel_id": entry.ChannelID,
-		"relay_station_id": entry.RelayStationID, "occurred_at": entry.OccurredAt,
-	}).Error
+	return o.db.Transaction(func(tx *gorm.DB) error {
+		var current OperationLedgerEntry
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&current, entry.ID).Error; err != nil {
+			return err
+		}
+		if current.Source != LedgerSourceManual {
+			return errors.New("自动采购成本记录需要在本地号池中修改")
+		}
+		if err := validateLedgerReferences(tx, entry); err != nil {
+			return err
+		}
+		adjustments := map[uint]float64{}
+		addRechargeAdjustment(adjustments, &current, -1)
+		addRechargeAdjustment(adjustments, entry, 1)
+		if err := tx.Model(&current).Updates(map[string]any{
+			"direction": entry.Direction, "category": entry.Category,
+			"amount": entry.Amount, "currency": entry.Currency,
+			"description": entry.Description, "channel_id": entry.ChannelID,
+			"relay_station_id": entry.RelayStationID, "occurred_at": entry.OccurredAt,
+		}).Error; err != nil {
+			return err
+		}
+		return applyManualRechargeAdjustments(tx, adjustments)
+	})
 }
 
 func validateLedgerReferences(tx *gorm.DB, entry *OperationLedgerEntry) error {
@@ -189,14 +205,81 @@ func validateLedgerReferences(tx *gorm.DB, entry *OperationLedgerEntry) error {
 }
 
 func (o *Operations) DeleteLedger(id uint) error {
-	var current OperationLedgerEntry
-	if err := o.db.First(&current, id).Error; err != nil {
-		return err
+	return o.db.Transaction(func(tx *gorm.DB) error {
+		var current OperationLedgerEntry
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&current, id).Error; err != nil {
+			return err
+		}
+		if current.Source != LedgerSourceManual {
+			return errors.New("自动采购成本记录需要在本地号池中删除或修改")
+		}
+		if err := tx.Delete(&current).Error; err != nil {
+			return err
+		}
+		adjustments := map[uint]float64{}
+		addRechargeAdjustment(adjustments, &current, -1)
+		return applyManualRechargeAdjustments(tx, adjustments)
+	})
+}
+
+func entryRechargeDelta(entry *OperationLedgerEntry) float64 {
+	if entry == nil || entry.ChannelID == nil || entry.Direction != "expense" || entry.Category != "upstream_recharge" {
+		return 0
 	}
-	if current.Source != LedgerSourceManual {
-		return errors.New("自动采购成本记录需要在本地号池中删除或修改")
+	return entry.Amount
+}
+
+func addRechargeAdjustment(adjustments map[uint]float64, entry *OperationLedgerEntry, sign float64) {
+	if entry == nil || entry.ChannelID == nil {
+		return
 	}
-	return o.db.Delete(&current).Error
+	delta := entryRechargeDelta(entry)
+	if delta != 0 {
+		adjustments[*entry.ChannelID] += sign * delta
+	}
+}
+
+// applyManualRechargeAdjustments keeps a manually managed channel's explicit
+// balance in sync with linked upstream-recharge ledger facts. The row lock and
+// balance snapshot are part of the same transaction as the ledger mutation.
+func applyManualRechargeAdjustments(tx *gorm.DB, adjustments map[uint]float64) error {
+	for channelID, delta := range adjustments {
+		if channelID == 0 || delta == 0 {
+			continue
+		}
+		var channel Channel
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&channel, channelID).Error; err != nil {
+			return err
+		}
+		if channel.BalanceMode != BalanceModeManual {
+			continue
+		}
+		currentBalance := channel.ManualBalance
+		if channel.LastBalance != nil {
+			currentBalance = *channel.LastBalance
+		}
+		newBalance := currentBalance + delta
+		if newBalance < 0 {
+			newBalance = 0
+		}
+		newManualBalance := channel.ManualBalance + delta
+		if newManualBalance < 0 {
+			newManualBalance = 0
+		}
+		now := time.Now()
+		if err := tx.Model(&channel).Updates(map[string]any{
+			"manual_balance":  newManualBalance,
+			"last_balance":    newBalance,
+			"last_balance_at": now,
+			"last_error":      "",
+		}).Error; err != nil {
+			return err
+		}
+		if err := appendBalanceSnapshot(tx, &BalanceSnapshot{ChannelID: channelID, Balance: newBalance, SampledAt: now}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type LocalAccountFilter struct {

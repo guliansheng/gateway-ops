@@ -1,7 +1,10 @@
 package storage
 
 import (
+	"math"
+
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // Channels 渠道仓库。
@@ -275,13 +278,43 @@ func (r *Channels) UpdateBalance(id uint, balance float64, at any, lastErr strin
 // UpdateManualBalance persists the displayed balance and the cumulative relay
 // cost it was settled against in one write, so a later refresh only deducts a
 // newly observed increment.
-func (r *Channels) UpdateManualBalance(id uint, balance float64, at any, lastErr string, usageBaseline *float64) error {
-	return r.db.Model(&Channel{}).Where("id = ?", id).Updates(map[string]any{
-		"last_balance":          balance,
-		"last_balance_at":       at,
-		"last_error":            lastErr,
-		"manual_usage_baseline": usageBaseline,
-	}).Error
+func (r *Channels) UpdateManualBalance(id uint, balance float64, at any, lastErr string, usageBaseline *float64, usageBasis string) error {
+	_, err := r.SettleManualBalance(id, balance, balance, at, lastErr, usageBaseline, usageBasis)
+	return err
+}
+
+// SettleManualBalance persists a usage settlement while preserving a recharge
+// or explicit balance edit that happened after the monitor read the channel.
+// observedBalance is the value used to calculate settledBalance; the locked
+// row delta is carried forward into the final displayed balance.
+func (r *Channels) SettleManualBalance(id uint, observedBalance, settledBalance float64, at any, lastErr string, usageBaseline *float64, usageBasis string) (float64, error) {
+	finalBalance := settledBalance
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		var current Channel
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&current, id).Error; err != nil {
+			return err
+		}
+		settledBalance = carryForwardManualBalanceChange(observedBalance, settledBalance, current.LastBalance)
+		finalBalance = settledBalance
+		return tx.Model(&current).Updates(map[string]any{
+			"last_balance":          settledBalance,
+			"last_balance_at":       at,
+			"last_error":            lastErr,
+			"manual_usage_baseline": usageBaseline,
+			"manual_usage_basis":    usageBasis,
+		}).Error
+	})
+	return finalBalance, err
+}
+
+func carryForwardManualBalanceChange(observedBalance, settledBalance float64, currentBalance *float64) float64 {
+	if currentBalance != nil && math.Abs(*currentBalance-observedBalance) > 0.000000001 {
+		settledBalance += *currentBalance - observedBalance
+	}
+	if settledBalance < 0 {
+		return 0
+	}
+	return settledBalance
 }
 
 func (r *Channels) SetLastError(id uint, msg string) error {

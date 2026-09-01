@@ -37,9 +37,11 @@ function ChannelRateRow({ channel }: { channel: Channel }) {
           <span
             className={cn(
               "inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-inset",
-              channel.type === "newapi"
-                ? "bg-brand/10 text-brand ring-brand/20"
-                : "bg-foreground/5 text-foreground ring-border",
+              channel.type === "sub2api"
+                ? "bg-emerald-500/10 text-emerald-700 ring-emerald-500/20 dark:text-emerald-400"
+                : channel.type === "newapi"
+                  ? "bg-brand/10 text-brand ring-brand/20"
+                  : "bg-foreground/5 text-foreground ring-border",
             )}
           >
             {channelTypeLabel(channel.type)}

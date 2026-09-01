@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -698,6 +699,7 @@ func TestChannelSiteMatchesAccountBaseURL(t *testing.T) {
 		{name: "different registrable domain", site: "https://example.com", account: "https://api.example.net/v1", want: false},
 		{name: "provider subdomain", site: "https://walkcoding.top", account: "https://st.walkcoding.top", want: true},
 		{name: "subdomain site", site: "https://st.walkcoding.top", account: "https://walkcoding.top", want: true},
+		{name: "provider api domain", site: "https://api.mhapi.cn", account: "https://mhapi.net", want: true},
 		{name: "lookalike host", site: "https://example.com", account: "https://example.com.evil.test/v1", want: false},
 		{name: "lookalike subdomain", site: "https://walkcoding.top", account: "https://walkcoding.top.evil.test/v1", want: false},
 		{name: "path without boundary", site: "https://example.com/api", account: "https://example.com/apiv2", want: false},
@@ -803,7 +805,7 @@ func TestResolveChannelUsageCostBindingsUsesSelectedGroupMultiplier(t *testing.T
 	}
 	bindings := resolveChannelUsageCostBindings(channels, accounts, overrides, rates)
 	binding, ok := bindings[11]
-	if !ok || binding.ChannelID != channelID || binding.Multiplier == nil || *binding.Multiplier != 0.37 {
+	if !ok || binding.ChannelID != channelID || binding.GroupName != "自定义组" || binding.Multiplier == nil || *binding.Multiplier != 0.37 {
 		t.Fatalf("cost binding = %#v, want channel %d with multiplier 0.37", binding, channelID)
 	}
 }
@@ -824,6 +826,30 @@ func TestChannelBoundAccountCostFallsBackToBaseCost(t *testing.T) {
 	got = channelBoundAccountCost(AccountUsageStats{AccountCost: 2.25}, channelUsageCostBinding{})
 	if got != 2.25 {
 		t.Fatalf("unbound account cost = %v, want 2.25", got)
+	}
+}
+
+func TestChannelUsageCostBasisChangesWithMultiplierOrAccountSet(t *testing.T) {
+	base := []channelUsageCostBasisEntry{
+		{RelayStationID: 1, RelayAccountExternalID: 547, MultiplierBits: math.Float64bits(0.04)},
+		{RelayStationID: 1, RelayAccountExternalID: 1895, MultiplierBits: math.Float64bits(0.55)},
+	}
+	reordered := []channelUsageCostBasisEntry{base[1], base[0]}
+	if channelUsageCostBasis(base) != channelUsageCostBasis(reordered) {
+		t.Fatal("cost basis must be independent of account iteration order")
+	}
+
+	changedMultiplier := append([]channelUsageCostBasisEntry(nil), base...)
+	changedMultiplier[0].MultiplierBits = math.Float64bits(0.10)
+	if channelUsageCostBasis(base) == channelUsageCostBasis(changedMultiplier) {
+		t.Fatal("cost basis did not change with the effective multiplier")
+	}
+
+	changedAccounts := append(append([]channelUsageCostBasisEntry(nil), base...), channelUsageCostBasisEntry{
+		RelayStationID: 1, RelayAccountExternalID: 1904, MultiplierBits: math.Float64bits(0.05),
+	})
+	if channelUsageCostBasis(base) == channelUsageCostBasis(changedAccounts) {
+		t.Fatal("cost basis did not change with the bound account set")
 	}
 }
 

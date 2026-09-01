@@ -1,5 +1,6 @@
 "use client"
 
+import { useEffect, useRef, useState } from "react"
 import { ExternalLink } from "lucide-react"
 import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis, CartesianGrid } from "recharts"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -66,6 +67,27 @@ function ChartTooltip({ active, payload, label }: { active?: boolean; payload?: 
 export function BalanceOverview({ range = "today" }: { range?: DashboardRange }) {
   const trend = useBalanceTrend(range)
   const summary = useDashboardSummary(range)
+  const chartRef = useRef<HTMLDivElement>(null)
+  const [tooltipPinned, setTooltipPinned] = useState(false)
+
+  useEffect(() => {
+    if (!tooltipPinned) return
+
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (event.target instanceof Node && chartRef.current?.contains(event.target)) return
+      setTooltipPinned(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setTooltipPinned(false)
+    }
+
+    document.addEventListener("pointerdown", closeOnOutsideClick, true)
+    document.addEventListener("keydown", closeOnEscape)
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsideClick, true)
+      document.removeEventListener("keydown", closeOnEscape)
+    }
+  }, [tooltipPinned])
 
   const data = (trend.data ?? []).map((p) => ({
     day: range === "today" || range === "24h" ? formatHour(p.day) : formatDay(p.day),
@@ -82,7 +104,7 @@ export function BalanceOverview({ range = "today" }: { range?: DashboardRange })
         <span className="shrink-0 rounded-md border border-border bg-muted/30 px-2 py-1 text-xs text-foreground">{range === "today" ? "今天" : range === "24h" ? "24 小时" : range === "7d" ? "7 天" : "30 天"}</span>
       </CardHeader>
       <CardContent className="flex min-h-0 flex-1 flex-col">
-        <div className="min-h-0 w-full flex-1">
+        <div ref={chartRef} className="min-h-0 w-full flex-1">
           {trend.loading ? (
             <div className="flex h-full items-center justify-center text-xs text-muted-foreground">{"加载中…"}</div>
           ) : data.length === 0 ? (
@@ -91,7 +113,11 @@ export function BalanceOverview({ range = "today" }: { range?: DashboardRange })
             </div>
           ) : (
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+              <LineChart
+                data={data}
+                margin={{ top: 8, right: 12, left: 0, bottom: 0 }}
+                onClick={(state) => setTooltipPinned((state.activeTooltipIndex ?? -1) >= 0)}
+              >
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
                 <XAxis
                   dataKey="day"
@@ -108,7 +134,11 @@ export function BalanceOverview({ range = "today" }: { range?: DashboardRange })
                   tickFormatter={formatY}
                   domain={[0, yMax]}
                 />
-                <Tooltip content={<ChartTooltip />} cursor={{ stroke: "var(--border)", strokeDasharray: "4 4" }} />
+                <Tooltip
+                  active={tooltipPinned || undefined}
+                  content={<ChartTooltip />}
+                  cursor={{ stroke: "var(--border)", strokeDasharray: "4 4" }}
+                />
                 <Line
                   type="monotone"
                   dataKey="balance"

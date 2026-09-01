@@ -273,6 +273,7 @@ func (s *Service) Update(id uint, in UpdateInput) (*storage.Channel, error) {
 			c.LastBalance = nil
 			c.LastBalanceAt = nil
 			c.ManualUsageBaseline = nil
+			c.ManualUsageBasis = ""
 		}
 	}
 
@@ -472,6 +473,7 @@ func resetManualBalance(c *storage.Channel, at time.Time) {
 	c.LastBalanceAt = &at
 	c.LastError = ""
 	c.ManualUsageBaseline = nil
+	c.ManualUsageBasis = ""
 }
 
 func (s *Service) ensureUniqueName(name string, excludeID uint) error {

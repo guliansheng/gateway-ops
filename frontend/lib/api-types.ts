@@ -558,6 +558,22 @@ export interface RelayLatencySample {
   model?: string
   request_type?: string
   user_email?: string
+  input_tokens?: number
+  output_tokens?: number
+  cache_read_tokens?: number
+  cache_creation_tokens?: number
+  cache_creation_5m_tokens?: number
+  cache_creation_1h_tokens?: number
+  group_id?: number
+  group_name?: string
+  group_multiplier?: number | null
+  channel_group_name?: string
+  channel_group_multiplier?: number | null
+}
+
+export interface ChannelLatencyTrend {
+  channel_id: number
+  samples: RelayLatencySample[]
 }
 
 export interface RelayRiskSummary {

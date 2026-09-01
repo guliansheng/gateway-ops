@@ -8,6 +8,7 @@ import type {
   CaptchaConfig,
   Channel,
   ChannelMetric,
+  ChannelLatencyTrend,
   DashboardSummary,
   NotificationChannel,
   NotificationLog,
@@ -196,6 +197,10 @@ export function useChannels() {
 
 export function useChannelMetrics(range: RelayUsageRange = "today") {
   return useApi<ChannelMetric[]>(`/channels/metrics?range=${range}`)
+}
+
+export function useChannelLatencyTrends(limit = 60) {
+  return useApi<ChannelLatencyTrend[]>(`/channels/latency-trends?limit=${limit}`)
 }
 
 export function useChannelRates(channelID: number | null) {
