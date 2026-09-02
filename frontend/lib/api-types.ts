@@ -556,6 +556,7 @@ export interface RelayLatencySample {
   duration_ms: number
   created_at: string
   model?: string
+  platform?: string
   request_type?: string
   user_email?: string
   input_tokens?: number
@@ -567,7 +568,6 @@ export interface RelayLatencySample {
   group_id?: number
   group_name?: string
   group_multiplier?: number | null
-  channel_group_name?: string
   channel_group_multiplier?: number | null
 }
 

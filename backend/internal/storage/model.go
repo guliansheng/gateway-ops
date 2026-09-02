@@ -541,6 +541,7 @@ type RelayLatencySample struct {
 	DurationMS             int64     `json:"duration_ms"`
 	CreatedAt              time.Time `json:"created_at"`
 	Model                  string    `json:"model,omitempty"`
+	Platform               string    `json:"platform,omitempty"`
 	RequestType            string    `json:"request_type,omitempty"`
 	UserEmail              string    `json:"user_email,omitempty"`
 	InputTokens            int64     `json:"input_tokens,omitempty"`
@@ -552,7 +553,6 @@ type RelayLatencySample struct {
 	GroupID                int64     `json:"group_id,omitempty"`
 	GroupName              string    `json:"group_name,omitempty"`
 	GroupMultiplier        *float64  `json:"group_multiplier,omitempty"`
-	ChannelGroupName       string    `json:"channel_group_name,omitempty"`
 	ChannelGroupMultiplier *float64  `json:"channel_group_multiplier,omitempty"`
 }
 

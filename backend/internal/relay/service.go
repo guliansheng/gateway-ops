@@ -1308,7 +1308,9 @@ func (s *Service) ChannelLatencyTrends(channels []storage.Channel, limit int) (m
 				continue
 			}
 			for i := range samples {
-				samples[i].ChannelGroupName = binding.GroupName
+				if strings.TrimSpace(samples[i].Platform) == "" {
+					samples[i].Platform = account.Platform
+				}
 				if binding.Multiplier != nil {
 					value := *binding.Multiplier
 					samples[i].ChannelGroupMultiplier = &value
@@ -3443,7 +3445,10 @@ func (s *Service) fetchAccountLatencies(ctx context.Context, baseURL, apiKey str
 	for _, group := range groups {
 		groupByID[group.ID] = group
 	}
-	type job struct{ id int64 }
+	type job struct {
+		id       int64
+		platform string
+	}
 	jobs := make(chan job)
 	results := make(chan struct {
 		id   int64
@@ -3488,7 +3493,7 @@ func (s *Service) fetchAccountLatencies(ctx context.Context, baseURL, apiKey str
 					}
 					samples = append(samples, storage.RelayLatencySample{
 						FirstTokenMS: usage.FirstTokenMS, DurationMS: usage.DurationMS,
-						CreatedAt: created.UTC(), Model: usage.Model, RequestType: usage.RequestType,
+						CreatedAt: created.UTC(), Model: usage.Model, Platform: item.platform, RequestType: usage.RequestType,
 						UserEmail:   userEmail,
 						InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
 						CacheReadTokens: usage.CacheReadTokens, CacheCreationTokens: usage.CacheCreationTokens,
@@ -3514,7 +3519,7 @@ func (s *Service) fetchAccountLatencies(ctx context.Context, baseURL, apiKey str
 			if strings.EqualFold(strings.TrimSpace(account.Type), "apikey") &&
 				strings.EqualFold(strings.TrimSpace(account.Status), "active") && account.Schedulable && account.ID > 0 {
 				select {
-				case jobs <- job{id: account.ID}:
+				case jobs <- job{id: account.ID, platform: account.Platform}:
 				case <-ctx.Done():
 					close(jobs)
 					wg.Wait()

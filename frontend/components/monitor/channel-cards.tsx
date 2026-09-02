@@ -37,6 +37,7 @@ import { cn } from "@/lib/utils"
 import { syncChannelStream, testLoginStream, type ProgressEvent } from "@/lib/sync-stream"
 import type { Channel, ChannelAccount, RateSnapshot, RelayLatencySample, RelayUsageRange } from "@/lib/api-types"
 import { ChannelFormDialog } from "@/components/monitor/channel-form-dialog"
+import { PlatformBadge } from "@/components/relay/platform-badge"
 
 type Status = "healthy" | "low" | "failed" | "idle"
 type MonitorStatusFilter = "enabled" | "disabled" | "all"
@@ -251,7 +252,7 @@ function ChannelLatencyTrend({ samples }: { samples: RelayLatencySample[] }) {
       <div className="mb-1.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
         <span className="text-[11px] font-medium text-muted-foreground">
           最近调用延时
-          {latestSample ? <span className="ml-1 font-mono text-[10px] font-normal tabular-nums text-muted-foreground/80">· 最后调用 {formatSampleTime(latestSample.created_at)}</span> : null}
+          {latestSample ? <span className="ml-1 inline-flex items-center gap-1 font-mono text-[11px] font-medium tabular-nums text-foreground/80"><span aria-hidden="true">·</span><span>最后调用</span><time dateTime={latestSample.created_at} className="text-xs font-semibold text-foreground">{formatSampleTime(latestSample.created_at)}</time></span> : null}
         </span>
         <span className="font-mono text-[10px] tabular-nums text-muted-foreground">最近 {samples.length} / 60 条</span>
       </div>
@@ -276,7 +277,6 @@ function ChannelLatencyTrend({ samples }: { samples: RelayLatencySample[] }) {
                 const duration = latencyTone(sample.duration_ms, "duration")
                 const sub2apiGroup = sample.group_name?.trim() || "未标记分组"
                 const sub2apiMultiplier = sample.group_multiplier == null ? "-" : `${sample.group_multiplier.toFixed(3)}×`
-                const channelGroup = sample.channel_group_name?.trim() || "未关联渠道分组"
                 const channelMultiplier = sample.channel_group_multiplier == null ? "-" : `${sample.channel_group_multiplier.toFixed(3)}×`
                 const cacheCreationTokens = sample.cache_creation_tokens ?? 0
                 const cacheCreation5mTokens = sample.cache_creation_5m_tokens ?? 0
@@ -285,7 +285,7 @@ function ChannelLatencyTrend({ samples }: { samples: RelayLatencySample[] }) {
                 const totalTokens = (sample.input_tokens ?? 0) + (sample.output_tokens ?? 0) + (sample.cache_read_tokens ?? 0) + cacheCreationTotal
                 return (
                   <div key={`${sample.created_at}-detail-${index}`} className="grid grid-cols-[112px_minmax(0,1fr)] gap-2 py-2">
-                    <span className="whitespace-nowrap font-mono tabular-nums text-slate-500">{formatSampleTime(sample.created_at)}</span>
+                    <time dateTime={sample.created_at} className="whitespace-nowrap font-mono text-xs font-semibold leading-5 tabular-nums text-slate-700">{formatSampleTime(sample.created_at)}</time>
                     <div className="min-w-0">
                       <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
                         <div className="min-w-0 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1.5">
@@ -296,14 +296,15 @@ function ChannelLatencyTrend({ samples }: { samples: RelayLatencySample[] }) {
                           </p>
                         </div>
                         <div className="min-w-0 rounded-md border border-sky-200 bg-sky-50 px-2 py-1.5">
-                          <p className="text-[9px] font-semibold uppercase text-sky-700">渠道分组</p>
-                          <p className="mt-0.5 flex min-w-0 items-center gap-1.5 whitespace-nowrap text-sky-950">
-                            <span className="min-w-0 truncate font-semibold" title={channelGroup}>{channelGroup}</span>
-                            <span className="shrink-0 rounded bg-sky-600 px-1.5 py-0.5 font-mono text-xs font-semibold tabular-nums text-white">{channelMultiplier}</span>
-                          </p>
+                          <p className="text-[9px] font-semibold uppercase text-sky-700">渠道倍率</p>
+                          <p className="mt-0.5 font-mono text-sm font-semibold tabular-nums text-sky-950">{channelMultiplier}</p>
                         </div>
                       </div>
-                      <p className="mt-1.5 break-words text-slate-700" title={sample.model || "-"}>{sample.model || "-"}{sample.request_type ? ` · ${sample.request_type}` : ""}</p>
+                      <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-2.5 py-2">
+                        <PlatformBadge platform={sample.platform} />
+                        <span className="min-w-0 flex-1 truncate font-mono text-sm font-semibold leading-5 text-slate-950" title={sample.model || "-"}>{sample.model || "-"}</span>
+                        {sample.request_type ? <span className="shrink-0 text-[11px] font-medium text-slate-600">{sample.request_type}</span> : null}
+                      </div>
                       <p className="mt-1 font-mono text-xs font-semibold tabular-nums text-slate-900">Token 总量 {formatTokens(totalTokens)}</p>
                       <p className="mt-1 flex flex-wrap gap-x-4 gap-y-1 font-mono text-xs font-semibold tabular-nums">
                         <span className={latencyTextClass[first]}>首字 {formatLatency(sample.first_token_ms)}</span>
