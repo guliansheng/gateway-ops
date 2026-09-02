@@ -442,6 +442,19 @@ func appendGroupIDs(current, additions []int64) []int64 {
 	return result
 }
 
+func ensureSelectedGroupSubset(selected, allowed []int64, label string) error {
+	allowedSet := make(map[int64]struct{}, len(allowed))
+	for _, id := range allowed {
+		allowedSet[id] = struct{}{}
+	}
+	for _, id := range selected {
+		if _, ok := allowedSet[id]; !ok {
+			return fmt.Errorf("销售分组 %d 不在当前%s候选中", id, label)
+		}
+	}
+	return nil
+}
+
 // SetGroupsBatch applies one selected sales-group set to several accounts.
 // Each account is audited independently so a single remote failure does not
 // hide successful updates for the remaining selections.
@@ -528,6 +541,13 @@ func (s *Service) SetSchedulableBatch(ctx context.Context, stationID uint, accou
 // in the supplied account set. Accounts without an applicable recommendation
 // are reported as skipped instead of failed.
 func (s *Service) ApplySuggestionsBatch(ctx context.Context, stationID uint, accountExternalIDs []int64) (AccountBatchActionResult, error) {
+	return s.ApplySuggestionsBatchWithSelections(ctx, stationID, accountExternalIDs, nil)
+}
+
+// ApplySuggestionsBatchWithSelections accepts current regroup recommendations,
+// optionally narrowed per account by the operator. Empty or missing selections
+// skip that account instead of replacing it with no groups.
+func (s *Service) ApplySuggestionsBatchWithSelections(ctx context.Context, stationID uint, accountExternalIDs []int64, selectedGroupIDs map[int64][]int64) (AccountBatchActionResult, error) {
 	station, err := s.stations.FindByID(stationID)
 	if err != nil {
 		return AccountBatchActionResult{}, err
@@ -542,6 +562,7 @@ func (s *Service) ApplySuggestionsBatch(ctx context.Context, stationID uint, acc
 	}
 
 	result := AccountBatchActionResult{}
+	useSelections := selectedGroupIDs != nil
 	for _, accountID := range uniqueAccountIDs(accountExternalIDs) {
 		result.Requested++
 		risk, ok := riskByAccount[accountID]
@@ -553,9 +574,35 @@ func (s *Service) ApplySuggestionsBatch(ctx context.Context, stationID uint, acc
 			result.Skipped++
 			continue
 		}
-		if err := s.applyRisk(ctx, station, risk, "manual", "group_update"); err != nil {
-			result.addFailure(accountID, err)
-			continue
+		if useSelections {
+			ids, selected := selectedGroupIDs[accountID]
+			if !selected {
+				result.Skipped++
+				continue
+			}
+			nextIDs := uniqueGroupIDs(ids)
+			if len(nextIDs) == 0 {
+				result.Skipped++
+				continue
+			}
+			if err := ensureSelectedGroupSubset(nextIDs, risk.SuggestedGroupIDs, "调组建议"); err != nil {
+				result.addFailure(accountID, err)
+				continue
+			}
+			if sameIDs(groupIDs(risk.CurrentGroups), nextIDs) {
+				result.Skipped++
+				continue
+			}
+			recommendedGroupID := recommendedGroupIDFromRisk(risk)
+			if err := s.applyGroupIDs(ctx, station, risk.Account, groupIDs(risk.CurrentGroups), nextIDs, "manual", "group_update", recommendedGroupID); err != nil {
+				result.addFailure(accountID, err)
+				continue
+			}
+		} else {
+			if err := s.applyRisk(ctx, station, risk, "manual", "group_update"); err != nil {
+				result.addFailure(accountID, err)
+				continue
+			}
 		}
 		result.Applied++
 	}
@@ -565,6 +612,12 @@ func (s *Service) ApplySuggestionsBatch(ctx context.Context, stationID uint, acc
 // AddDowngradesBatch keeps every current remote group assignment and appends
 // every safe downgrade group in the account's configured model type.
 func (s *Service) AddDowngradesBatch(ctx context.Context, stationID uint, accountExternalIDs []int64) (AccountBatchActionResult, error) {
+	return s.AddDowngradesBatchWithSelections(ctx, stationID, accountExternalIDs, nil)
+}
+
+// AddDowngradesBatchWithSelections keeps every current remote group assignment
+// and appends the operator-selected safe downgrade groups per account.
+func (s *Service) AddDowngradesBatchWithSelections(ctx context.Context, stationID uint, accountExternalIDs []int64, selectedGroupIDs map[int64][]int64) (AccountBatchActionResult, error) {
 	if _, err := s.stations.FindByID(stationID); err != nil {
 		return AccountBatchActionResult{}, err
 	}
@@ -578,6 +631,7 @@ func (s *Service) AddDowngradesBatch(ctx context.Context, stationID uint, accoun
 	}
 
 	result := AccountBatchActionResult{}
+	useSelections := selectedGroupIDs != nil
 	for _, accountID := range uniqueAccountIDs(accountExternalIDs) {
 		result.Requested++
 		risk, ok := riskByAccount[accountID]
@@ -589,7 +643,24 @@ func (s *Service) AddDowngradesBatch(ctx context.Context, stationID uint, accoun
 			result.Skipped++
 			continue
 		}
-		if err := s.addGroups(ctx, stationID, accountID, groupIDs(risk.DowngradeGroups), nil); err != nil {
+		addIDs := groupIDs(risk.DowngradeGroups)
+		if useSelections {
+			ids, selected := selectedGroupIDs[accountID]
+			if !selected {
+				result.Skipped++
+				continue
+			}
+			addIDs = uniqueGroupIDs(ids)
+			if len(addIDs) == 0 {
+				result.Skipped++
+				continue
+			}
+			if err := ensureSelectedGroupSubset(addIDs, groupIDs(risk.DowngradeGroups), "降价分组"); err != nil {
+				result.addFailure(accountID, err)
+				continue
+			}
+		}
+		if err := s.addGroups(ctx, stationID, accountID, addIDs, nil); err != nil {
 			result.addFailure(accountID, err)
 			continue
 		}
@@ -975,12 +1046,16 @@ func (s *Service) applyAutomaticAdjustments(ctx context.Context, station *storag
 
 func (s *Service) applyRisk(ctx context.Context, station *storage.RelayStation, risk AccountRisk, source, action string) error {
 	oldIDs := groupIDs(risk.CurrentGroups)
+	return s.applyGroupIDs(ctx, station, risk.Account, oldIDs, risk.SuggestedGroupIDs, source, action, recommendedGroupIDFromRisk(risk))
+}
+
+func recommendedGroupIDFromRisk(risk AccountRisk) *int64 {
 	var recommendedGroupID *int64
 	if risk.RecommendedGroup != nil {
 		id := risk.RecommendedGroup.ExternalID
 		recommendedGroupID = &id
 	}
-	return s.applyGroupIDs(ctx, station, risk.Account, oldIDs, risk.SuggestedGroupIDs, source, action, recommendedGroupID)
+	return recommendedGroupID
 }
 
 func (s *Service) applyGroupIDs(ctx context.Context, station *storage.RelayStation, account storage.RelayAccount, oldIDs, newIDs []int64, source, action string, recommendedGroupID *int64) error {

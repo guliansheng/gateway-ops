@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useRef, useState } from "react"
+import { useCallback, useRef, useState, type ReactNode } from "react"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -16,10 +16,11 @@ import { cn } from "@/lib/utils"
 
 interface ConfirmOptions {
   title: string
-  description?: string
+  description?: ReactNode
   confirmLabel?: string
   cancelLabel?: string
   destructive?: boolean
+  contentClassName?: string
 }
 
 interface ConfirmState extends ConfirmOptions {
@@ -61,11 +62,17 @@ export function useConfirm() {
         if (!o) finish(false)
       }}
     >
-      <AlertDialogContent>
+      <AlertDialogContent className={state.contentClassName}>
         <AlertDialogHeader>
           <AlertDialogTitle>{state.title}</AlertDialogTitle>
           {state.description ? (
-            <AlertDialogDescription>{state.description}</AlertDialogDescription>
+            typeof state.description === "string" ? (
+              <AlertDialogDescription>{state.description}</AlertDialogDescription>
+            ) : (
+              <AlertDialogDescription asChild>
+                <div>{state.description}</div>
+              </AlertDialogDescription>
+            )
           ) : null}
         </AlertDialogHeader>
         <AlertDialogFooter>

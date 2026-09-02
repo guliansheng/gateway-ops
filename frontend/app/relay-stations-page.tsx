@@ -30,6 +30,15 @@ type GroupSortKey = "name" | "rate"
 type AccountSortKey = "latency" | "priority" | "cost" | "usage"
 type SortState<K extends string> = { key: K; direction: SortDirection } | null
 type RelayDetailModule = "usage" | "users" | "groups" | "accounts"
+type AccountAdjustmentMode = "suggestion" | "downgrade"
+type AccountAdjustmentSelection = Record<number, number[]>
+type AccountAdjustmentDialogState = {
+  mode: AccountAdjustmentMode
+  title: string
+  confirmLabel: string
+  accounts: RelayAccountView[]
+  totalCount: number
+} | null
 
 const emptyForm: StationForm = { name: "", base_url: "", api_key: "" }
 const rateIntervals = [5, 10, 15, 30, 60, 180, 360, 720, 1440]
@@ -173,6 +182,106 @@ function snapshotIntervalLabel(value: number) {
 function GroupNames({ groups }: { groups: RelayGroupOption[] }) {
   if (groups.length === 0) return <>未关联</>
   return <>{groups.map((group, index) => <span key={group.external_id}>{index ? " · " : ""}{group.name} <strong className="font-mono text-sm font-semibold tabular-nums">{multiplier(group.rate_multiplier)}</strong></span>)}</>
+}
+
+function uniqueGroups(groups: RelayGroupOption[]) {
+  const seen = new Set<number>()
+  const result: RelayGroupOption[] = []
+  for (const group of groups) {
+    if (seen.has(group.external_id)) continue
+    seen.add(group.external_id)
+    result.push(group)
+  }
+  return result
+}
+
+function suggestedGroups(account: RelayAccountView, groupsByID: Map<number, RelayGroupOption>) {
+  const fallbacks = new Map<number, RelayGroupOption>()
+  for (const group of [...account.current_groups, ...(account.recommended_group ? [account.recommended_group] : []), ...accountDowngradeGroups(account)]) {
+    fallbacks.set(group.external_id, group)
+  }
+  const groups = (account.suggested_group_ids ?? []).map((id) => groupsByID.get(id) ?? fallbacks.get(id)).filter(Boolean) as RelayGroupOption[]
+  if (groups.length === 0 && account.recommended_group) return [account.recommended_group]
+  return uniqueGroups(groups)
+}
+
+function adjustmentCandidateGroups(mode: AccountAdjustmentMode, account: RelayAccountView, groupsByID: Map<number, RelayGroupOption>) {
+  return mode === "downgrade" ? accountDowngradeGroups(account) : suggestedGroups(account, groupsByID)
+}
+
+function groupIDsFromOptions(groups: RelayGroupOption[]) {
+  return groups.map((group) => group.external_id)
+}
+
+function selectedCandidateGroups(groups: RelayGroupOption[], selectedIDs: number[]) {
+  const selected = new Set(selectedIDs)
+  return groups.filter((group) => selected.has(group.external_id))
+}
+
+function defaultAccountAdjustmentSelections(mode: AccountAdjustmentMode, accounts: RelayAccountView[], groupsByID: Map<number, RelayGroupOption>) {
+  return Object.fromEntries(accounts.map((account) => [account.external_id, groupIDsFromOptions(adjustmentCandidateGroups(mode, account, groupsByID))])) as AccountAdjustmentSelection
+}
+
+function selectedAdjustmentAccountCount(accounts: RelayAccountView[], selections: AccountAdjustmentSelection) {
+  return accounts.filter((account) => (selections[account.external_id] ?? []).length > 0).length
+}
+
+function downgradeAdjustedGroups(account: RelayAccountView, additions = accountDowngradeGroups(account)) {
+  return uniqueGroups([...account.current_groups, ...additions])
+}
+
+function GroupPreviewPills({ groups, tone = "neutral" }: { groups: RelayGroupOption[]; tone?: "neutral" | "target" | "addition" }) {
+  if (groups.length === 0) return <span className="text-[11px] text-muted-foreground">未关联</span>
+  return <span className="flex min-w-0 flex-wrap gap-1.5">{groups.map((group) => <span key={group.external_id} className={cn("max-w-full truncate rounded border px-1.5 py-0.5 text-[11px] font-medium", tone === "target" ? "border-success/25 bg-success/10 text-success" : tone === "addition" ? "border-warning/25 bg-warning/10 text-warning" : "border-border bg-background text-foreground/75")} title={`${group.name} · 倍率 ${multiplier(group.rate_multiplier)}`}>{group.name} <span className="font-mono tabular-nums">{multiplier(group.rate_multiplier)}</span></span>)}</span>
+}
+
+function GroupCandidatePicker({ mode, account, groups, selectedIDs, onChange }: { mode: AccountAdjustmentMode; account: RelayAccountView; groups: RelayGroupOption[]; selectedIDs: number[]; onChange: (accountID: number, groupIDs: number[]) => void }) {
+  const selected = new Set(selectedIDs)
+  const allIDs = groupIDsFromOptions(groups)
+  return <div className="mt-3 min-w-0 rounded-md border border-border bg-muted/20 p-2.5">
+    <div className="mb-2 flex items-center justify-between gap-2">
+      <p className="text-[11px] font-medium text-foreground">{mode === "downgrade" ? "可选新增降价分组" : "可选调整分组"}</p>
+      {groups.length > 1 ? <div className="flex shrink-0 items-center gap-1"><button type="button" className="rounded px-1.5 py-0.5 text-[10px] font-medium text-brand transition-colors hover:bg-brand/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => onChange(account.external_id, allIDs)}>全选</button><button type="button" className="rounded px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => onChange(account.external_id, [])}>清空</button></div> : null}
+    </div>
+    <div className="grid gap-1.5 sm:grid-cols-2">
+      {groups.map((group) => {
+        const checked = selected.has(group.external_id)
+        const id = `adjustment-${mode}-${account.external_id}-${group.external_id}`
+        const nextIDs = allIDs.filter((value) => value === group.external_id ? !checked : selected.has(value))
+        return <label key={group.external_id} htmlFor={id} className={cn("flex min-w-0 cursor-pointer items-center gap-2 rounded border px-2 py-1.5 text-[11px] transition-colors", checked ? mode === "downgrade" ? "border-warning/30 bg-warning/10 text-warning" : "border-success/30 bg-success/10 text-success" : "border-border bg-background text-muted-foreground hover:text-foreground")}>
+          <Checkbox id={id} checked={checked} onCheckedChange={() => onChange(account.external_id, nextIDs)} />
+          <span className="min-w-0 flex-1 truncate" title={group.name}>{group.name}</span>
+          <span className="shrink-0 font-mono font-semibold tabular-nums">{multiplier(group.rate_multiplier)}</span>
+        </label>
+      })}
+    </div>
+  </div>
+}
+
+function AccountAdjustmentPreview({ mode, accounts, totalCount, groupsByID, selectedGroupIDs, onSelectionChange }: { mode: AccountAdjustmentMode; accounts: RelayAccountView[]; totalCount: number; groupsByID: Map<number, RelayGroupOption>; selectedGroupIDs?: AccountAdjustmentSelection; onSelectionChange?: (accountID: number, groupIDs: number[]) => void }) {
+  const rows = accounts.map((account) => {
+    const candidateGroups = adjustmentCandidateGroups(mode, account, groupsByID)
+    const selectedIDs = selectedGroupIDs?.[account.external_id] ?? groupIDsFromOptions(candidateGroups)
+    const selectedGroups = selectedCandidateGroups(candidateGroups, selectedIDs)
+    const additions = mode === "downgrade" ? selectedGroups : []
+    const target = mode === "downgrade" ? downgradeAdjustedGroups(account, additions) : selectedGroups
+    return { account, additions, candidateGroups, selectedGroups, selectedIDs, target }
+  })
+  const selectedAccountCount = rows.filter((row) => row.selectedGroups.length > 0).length
+  const skipped = Math.max(totalCount - selectedAccountCount, 0)
+  return <div className="space-y-3 text-left text-sm">
+    <p className="leading-6 text-foreground">{mode === "downgrade" ? "将为可降价账号追加勾选的安全降价分组，原有分组会保留；未勾选任何分组的账号会跳过。" : "将把可应用账号同步为勾选的建议销售分组；未勾选任何分组的账号会跳过。"}</p>
+    <div className="grid grid-cols-3 gap-2 text-center"><div className="rounded-md border border-border bg-muted/40 px-2 py-2"><p className="text-[11px] text-muted-foreground">当前筛选</p><p className="mt-0.5 font-mono text-base font-semibold tabular-nums text-foreground">{totalCount}</p></div><div className="rounded-md border border-success/25 bg-success/10 px-2 py-2"><p className="text-[11px] text-success">{mode === "downgrade" ? "将降价" : "将调组"}</p><p className="mt-0.5 font-mono text-base font-semibold tabular-nums text-success">{selectedAccountCount}</p></div><div className="rounded-md border border-border bg-muted/40 px-2 py-2"><p className="text-[11px] text-muted-foreground">预计跳过</p><p className="mt-0.5 font-mono text-base font-semibold tabular-nums text-foreground">{skipped}</p></div></div>
+    <div className="max-h-[min(58vh,520px)] space-y-2 overflow-y-auto pr-1">{rows.map(({ account, additions, candidateGroups, selectedGroups, selectedIDs, target }) => <div key={account.external_id} className="rounded-md border border-border bg-card p-3"><div className="flex flex-wrap items-center justify-between gap-2"><div className="min-w-0"><p className="truncate text-xs font-semibold text-foreground" title={account.name}>{account.name}</p><p className="mt-0.5 text-[11px] text-muted-foreground">#{account.external_id} · {account.platform || "-"} · {account.model_type || "未绑定模型类型"}</p></div><div className="flex shrink-0 items-center gap-1.5"><span className={cn("rounded px-2 py-1 text-[11px] font-medium", selectedGroups.length > 0 ? "bg-success/10 text-success" : "bg-warning/10 text-warning")}>{selectedGroups.length > 0 ? `已选 ${selectedGroups.length}/${candidateGroups.length}` : "将跳过"}</span><span className="rounded bg-muted px-2 py-1 font-mono text-[11px] font-medium tabular-nums text-foreground">成本 {multiplier(account.cost_multiplier)}</span></div></div><div className="mt-3 grid gap-2 sm:grid-cols-2"><div className="min-w-0"><p className="mb-1 text-[11px] font-medium text-muted-foreground">当前分组</p><GroupPreviewPills groups={account.current_groups} /></div><div className="min-w-0"><p className="mb-1 text-[11px] font-medium text-success">调整后分组</p>{selectedGroups.length > 0 ? <GroupPreviewPills groups={target} tone="target" /> : <span className="text-[11px] text-warning">未选择，确认时跳过</span>}</div></div>{mode === "downgrade" ? <div className="mt-2 min-w-0"><p className="mb-1 text-[11px] font-medium text-warning">新增降价分组</p>{selectedGroups.length > 0 ? <GroupPreviewPills groups={additions} tone="addition" /> : <span className="text-[11px] text-warning">未选择新增分组</span>}</div> : account.recommended_group ? <p className="mt-2 text-[11px] text-muted-foreground">推荐基准：<span className="font-medium text-foreground">{account.recommended_group.name}</span> <span className="font-mono tabular-nums">{multiplier(account.recommended_group.rate_multiplier)}</span></p> : null}{onSelectionChange ? <GroupCandidatePicker mode={mode} account={account} groups={candidateGroups} selectedIDs={selectedIDs} onChange={onSelectionChange} /> : null}</div>)}</div>
+  </div>
+}
+
+function AccountAdjustmentSelectionDialog({ state, selections, busy, groupsByID, onSelectionChange, onCancel, onConfirm }: { state: AccountAdjustmentDialogState; selections: AccountAdjustmentSelection; busy: boolean; groupsByID: Map<number, RelayGroupOption>; onSelectionChange: (accountID: number, groupIDs: number[]) => void; onCancel: () => void; onConfirm: () => void }) {
+  return <Dialog open={state != null} onOpenChange={(open) => { if (!open && !busy) onCancel() }}>
+    <DialogContent className="w-[calc(100vw-2rem)] max-h-[calc(100dvh-2rem)] overflow-hidden p-0 sm:max-w-3xl">
+      {state ? <><DialogHeader className="border-b border-border px-4 py-5 sm:px-6"><DialogTitle>{state.title}</DialogTitle><DialogDescription>默认全选候选分组，可按账号取消不需要应用的分组。</DialogDescription></DialogHeader><div className="px-4 py-4 sm:px-6"><AccountAdjustmentPreview mode={state.mode} accounts={state.accounts} totalCount={state.totalCount} groupsByID={groupsByID} selectedGroupIDs={selections} onSelectionChange={onSelectionChange} /></div><DialogFooter className="border-t border-border px-4 py-4 sm:px-6"><Button type="button" variant="outline" disabled={busy} onClick={onCancel}>取消</Button><Button type="button" className="gap-1.5" disabled={busy} onClick={onConfirm}><Check className="size-3.5" />{state.confirmLabel}</Button></DialogFooter></> : null}
+    </DialogContent>
+  </Dialog>
 }
 
 function sourceLabel(account: RelayAccountView, overview: RelayOverview) {
@@ -1289,7 +1398,10 @@ export default function RelayStationsPage() {
   const [groupTestNeedsKey, setGroupTestNeedsKey] = useState(false)
   const [accountSort, setAccountSort] = useState<SortState<AccountSortKey>>(null)
   const [accountListOpen, setAccountListOpen] = usePersistedOpen("uh_relay_account_risk_open")
+  const [accountAdjustmentDialog, setAccountAdjustmentDialog] = useState<AccountAdjustmentDialogState>(null)
+  const [accountAdjustmentSelections, setAccountAdjustmentSelections] = useState<AccountAdjustmentSelection>({})
   const lastOverviewByStation = useRef(new Map<number, RelayOverview>())
+  const accountAdjustmentResolver = useRef<((selection: AccountAdjustmentSelection | null) => void) | null>(null)
 
   useEffect(() => { if (selectedID == null && stations.data?.[0]) setSelectedID(stations.data[0].id); if (selectedID != null && stations.data && !stations.data.some((station) => station.id === selectedID)) setSelectedID(stations.data[0]?.id ?? null) }, [stations.data, selectedID])
   useEffect(() => { if (!syncSettings.data) return; setAutoRateSyncEnabled(syncSettings.data.relay_rate_enabled); setAutoRateSyncInterval(syncSettings.data.relay_rate_interval_minutes || 60); setAutoSnapshotSyncEnabled(syncSettings.data.relay_snapshot_enabled); setAutoSnapshotSyncInterval(syncSettings.data.relay_snapshot_interval_seconds || (syncSettings.data.relay_snapshot_interval_minutes || 60) * 60) }, [syncSettings.data])
@@ -1375,10 +1487,33 @@ export default function RelayStationsPage() {
   const allFilteredSelected = filteredAccounts.length > 0 && filteredAccounts.every((account) => selected.includes(account.external_id))
   const filteredEnableCount = filteredAccounts.filter((account) => !account.schedulable).length
   const filteredDisableCount = filteredAccounts.filter((account) => account.schedulable).length
-  const filteredSuggestionCount = filteredAccounts.filter((account) => account.can_apply).length
-  const filteredDowngradeCount = filteredAccounts.filter((account) => accountDowngradeGroups(account).length > 0).length
+  const filteredSuggestionAccounts = useMemo(() => filteredAccounts.filter((account) => account.can_apply), [filteredAccounts])
+  const filteredDowngradeAccounts = useMemo(() => filteredAccounts.filter((account) => accountDowngradeGroups(account).length > 0), [filteredAccounts])
+  const filteredSuggestionCount = filteredSuggestionAccounts.length
+  const filteredDowngradeCount = filteredDowngradeAccounts.length
+  const groupsByID = useMemo(() => new Map((currentOverview?.groups ?? []).map((group) => [group.external_id, group])), [currentOverview?.groups])
   const batchGroups = currentOverview?.monitor_channels.find((channel) => String(channel.id) === batchChannelID)?.groups ?? []
   const modelTypeOptions = useMemo(() => Array.from(new Set((currentOverview?.groups ?? []).flatMap((group) => group.model_types ?? []))).sort(), [currentOverview?.groups])
+
+  function openAccountAdjustmentDialog(options: NonNullable<AccountAdjustmentDialogState>) {
+    return new Promise<AccountAdjustmentSelection | null>((resolve) => {
+      accountAdjustmentResolver.current?.(null)
+      accountAdjustmentResolver.current = resolve
+      setAccountAdjustmentSelections(defaultAccountAdjustmentSelections(options.mode, options.accounts, groupsByID))
+      setAccountAdjustmentDialog(options)
+    })
+  }
+
+  function finishAccountAdjustmentDialog(selection: AccountAdjustmentSelection | null) {
+    const resolve = accountAdjustmentResolver.current
+    accountAdjustmentResolver.current = null
+    setAccountAdjustmentDialog(null)
+    resolve?.(selection)
+  }
+
+  function updateAccountAdjustmentSelection(accountID: number, groupIDs: number[]) {
+    setAccountAdjustmentSelections((current) => ({ ...current, [accountID]: [...new Set(groupIDs)] }))
+  }
 
   async function reload() { await Promise.all([stations.refetch(), overview.refetch(), usage.refetch(), recentUsage.refetch()]) }
   function openCreate() { setEditingID(null); setForm(emptyForm); setShowForm(true) }
@@ -1393,8 +1528,8 @@ export default function RelayStationsPage() {
   async function savePriorityPolicy() { if (!selectedID) return; setBusy(true); try { await apiFetch(`/relay-stations/${selectedID}`, { method: "PUT", body: JSON.stringify({ auto_priority_enabled: autoPriorityEnabled, auto_priority_recall_enabled: autoPriorityRecallEnabled, auto_priority_recall_minutes: autoPriorityRecallMinutes }) }); await reload(); toast.success("自动优先级策略已保存") } catch (error) { toast.error(error instanceof Error ? error.message : "保存失败") } finally { setBusy(false) } }
   async function updateGroup(groupID: number, patch: RelayGroupPatch) { if (!selectedID) return; await apiFetch(`/relay-stations/${selectedID}/groups/${groupID}`, { method: "PUT", body: JSON.stringify(patch) }); await reload(); toast.success("分组已更新") }
   async function updateGroupOrder(ids: number[]) { if (!selectedID) return; await apiFetch(`/relay-stations/${selectedID}/groups/sort-order`, { method: "PUT", body: JSON.stringify({ updates: ids.map((id, index) => ({ id, sort_order: index * 10 })) }) }); await reload(); toast.success("分组排序已保存") }
-  async function applySuggestion(account: RelayAccountView) { if (!selectedID || !account.recommended_group) return; setBusy(true); try { await apiFetch(`/relay-stations/${selectedID}/accounts/${account.external_id}/apply-suggestion`, { method: "POST" }); await reload(); toast.success("账号分组已更新并写入审计记录") } catch (error) { toast.error(error instanceof Error ? error.message : "应用建议失败") } finally { setBusy(false) } }
-  async function addDowngradeGroups(account: RelayAccountView) { const groups = accountDowngradeGroups(account); if (!selectedID || groups.length === 0) return; setBusy(true); try { const result = await apiFetch<RelayAccountBatchActionResult>(`/relay-stations/${selectedID}/accounts/add-downgrades`, { method: "POST", body: JSON.stringify({ account_external_ids: [account.external_id] }) }); if (result.failed) throw new Error(result.errors?.[0] || "加入可降级分组失败"); await reload(); toast.success(`已加入 ${groups.length} 个可降级分组：${groups.map((group) => group.name).join("、")}；原分组保持不变`) } catch (error) { toast.error(error instanceof Error ? error.message : "加入可降级分组失败") } finally { setBusy(false) } }
+  async function applySuggestion(account: RelayAccountView) { if (!selectedID || !account.can_apply) return; const selection = await openAccountAdjustmentDialog({ mode: "suggestion", title: `应用“${account.name}”的调组建议？`, confirmLabel: "应用建议", accounts: [account], totalCount: 1 }); if (!selection) return; setBusy(true); try { const result = await apiFetch<RelayAccountBatchActionResult>(`/relay-stations/${selectedID}/accounts/apply-suggestions`, { method: "POST", body: JSON.stringify({ account_external_ids: [account.external_id], account_group_external_ids: selection }) }); if (result.failed) throw new Error(result.errors?.[0] || "应用建议失败"); await reload(); toast.success(result.applied > 0 ? "账号分组已更新并写入审计记录" : "未选择可应用分组，已跳过") } catch (error) { toast.error(error instanceof Error ? error.message : "应用建议失败") } finally { setBusy(false) } }
+  async function addDowngradeGroups(account: RelayAccountView) { const groups = accountDowngradeGroups(account); if (!selectedID || groups.length === 0) return; const selection = await openAccountAdjustmentDialog({ mode: "downgrade", title: `为“${account.name}”追加降价分组？`, confirmLabel: "追加降价分组", accounts: [account], totalCount: 1 }); if (!selection) return; setBusy(true); try { const result = await apiFetch<RelayAccountBatchActionResult>(`/relay-stations/${selectedID}/accounts/add-downgrades`, { method: "POST", body: JSON.stringify({ account_external_ids: [account.external_id], account_group_external_ids: selection }) }); if (result.failed) throw new Error(result.errors?.[0] || "加入可降价分组失败"); const selectedGroups = selectedCandidateGroups(groups, selection[account.external_id] ?? []); await reload(); toast.success(result.applied > 0 ? `已加入 ${selectedGroups.length} 个可降价分组：${selectedGroups.map((group) => group.name).join("、")}；原分组保持不变` : "未选择新增降价分组，已跳过") } catch (error) { toast.error(error instanceof Error ? error.message : "加入可降价分组失败") } finally { setBusy(false) } }
   async function saveGroups(ids: number[]) { if (!selectedID || !groupEditor) return; setBusy(true); try { await apiFetch(`/relay-stations/${selectedID}/accounts/${groupEditor.external_id}/groups`, { method: "PUT", body: JSON.stringify({ group_external_ids: ids }) }); setGroupEditor(null); await reload(); toast.success("账号分组已手动更新") } catch (error) { toast.error(error instanceof Error ? error.message : "更新分组失败") } finally { setBusy(false) } }
   async function setSchedulable(account: RelayAccountView, schedulable: boolean) { if (!selectedID) return; setSchedulingAccountID(account.external_id); try { await apiFetch(`/relay-stations/${selectedID}/accounts/${account.external_id}/schedulable`, { method: "PUT", body: JSON.stringify({ schedulable }) }); await reload(); toast.success(schedulable ? "账号调度已开启" : "账号调度已关闭") } catch (error) { toast.error(error instanceof Error ? error.message : "更新调度状态失败") } finally { setSchedulingAccountID(null) } }
   async function probeAccount(account: RelayAccountView) { if (!selectedID) return; setProbingAccountID(account.external_id); try { await apiFetch(`/relay-stations/${selectedID}/accounts/${account.external_id}/probe`, { method: "POST" }); await reload(); toast.success(account.cost_override_mode ? "上游倍率已探测，当前手工成本覆盖继续优先" : "上游倍率已立即探测并刷新") } catch (error) { toast.error(error instanceof Error ? error.message : "上游倍率探测失败") } finally { setProbingAccountID(null) } }
@@ -1410,7 +1545,7 @@ export default function RelayStationsPage() {
   async function saveBatchRuntimeSettings() { if (!selectedID || selected.length === 0 || (batchMode !== "concurrency" && batchMode !== "priority" && batchMode !== "retry_count")) return; const value = Number(batchRuntimeValue); if (batchMode === "retry_count") { if (!Number.isInteger(value) || value < 0 || value > 10) { toast.error("同账号重试次数必须是 0 到 10 的整数"); return } const selectedAccounts = currentOverview?.accounts.filter((account) => selected.includes(account.external_id)) ?? []; const unsupported = selectedAccounts.find((account) => !["apikey", "bedrock"].includes((account.type || "").toLowerCase())); if (unsupported) { toast.error(`账号“${unsupported.name}”不支持同账号重试次数，仅支持 API Key 或 Bedrock 账号`); return } const poolModeOff = selectedAccounts.find((account) => account.pool_mode !== true); if (poolModeOff) { toast.error(`账号“${poolModeOff.name}”未开启池模式，请先在 Sub2API 账号编辑中开启池模式`); return } } else { if (!Number.isInteger(value) || value < 1 || value > 1000) { toast.error(`${batchMode === "concurrency" ? "并发数" : "优先级"}必须是 1 到 1000 的整数`); return } if (batchMode === "priority" && value === 1 && currentOverview?.accounts.some((account) => selected.includes(account.external_id) && account.type?.toLowerCase() !== "oauth")) { toast.error("优先级 1 仅保留给 OAuth 账号"); return } } setBusy(true); try { const field = batchMode === "retry_count" ? "pool_mode_retry_count" : batchMode; await apiFetch(`/relay-stations/${selectedID}/accounts/runtime-settings`, { method: "PUT", body: JSON.stringify({ account_external_ids: selected, [field]: value }) }); setSelected([]); setBatchRuntimeValue(""); await reload(); toast.success(`已批量设置账号${batchMode === "concurrency" ? "并发数" : batchMode === "priority" ? "优先级" : "同账号重试次数"}`) } catch (error) { toast.error(error instanceof Error ? error.message : "批量设置失败") } finally { setBusy(false) } }
   async function saveBatchModelType() { if (!selectedID || selected.length === 0) return; setBusy(true); try { await apiFetch(`/relay-stations/${selectedID}/accounts/model-types`, { method: "PUT", body: JSON.stringify({ account_external_ids: selected, model_type: batchModelType }) }); setSelected([]); setBatchModelType(""); await reload(); toast.success("已批量设置账号模型类型") } catch (error) { toast.error(error instanceof Error ? error.message : "批量设置模型类型失败") } finally { setBusy(false) } }
   async function saveBatchGroups(ids: number[]) { if (!selectedID || selected.length === 0) return; if (ids.length === 0) { toast.error("至少选择一个销售分组"); return } setBusy(true); try { await apiFetch(`/relay-stations/${selectedID}/accounts/groups`, { method: "PUT", body: JSON.stringify({ account_external_ids: selected, group_external_ids: ids }) }); setBatchGroupDialogOpen(false); setSelected([]); await reload(); toast.success("已批量调整账号销售分组") } catch (error) { toast.error(error instanceof Error ? error.message : "批量调整分组失败") } finally { setBusy(false) } }
-  async function runFilteredAccountAction(path: string, schedulable: boolean | undefined, successLabel: string) { if (!selectedID || filteredAccounts.length === 0) { toast.info("当前筛选没有账号"); return } setBusy(true); try { const result = await apiFetch<RelayAccountBatchActionResult>(`/relay-stations/${selectedID}/accounts/${path}`, { method: path === "schedulable" ? "PUT" : "POST", body: JSON.stringify({ account_external_ids: filteredAccounts.map((account) => account.external_id), ...(path === "schedulable" ? { schedulable } : {}) }) }); setSelected([]); await reload(); const detail = result.failed ? `，失败 ${result.failed} 个${result.errors?.[0] ? `：${result.errors[0]}` : ""}` : ""; const message = `${successLabel}：已处理 ${result.applied} 个，跳过 ${result.skipped} 个${detail}`; if (result.failed) toast.warning(message); else toast.success(message) } catch (error) { toast.error(error instanceof Error ? error.message : `${successLabel}失败`) } finally { setBusy(false) } }
+  async function runFilteredAccountAction(path: string, schedulable: boolean | undefined, successLabel: string) { if (!selectedID || filteredAccounts.length === 0) { toast.info("当前筛选没有账号"); return } let accountGroupExternalIDs: AccountAdjustmentSelection | undefined; if (path === "apply-suggestions" || path === "add-downgrades") { const previewAccounts = path === "apply-suggestions" ? filteredSuggestionAccounts : filteredDowngradeAccounts; if (previewAccounts.length === 0) { toast.info(path === "apply-suggestions" ? "当前筛选没有可应用建议的账号" : "当前筛选没有可降价账号"); return } const selection = await openAccountAdjustmentDialog({ mode: path === "apply-suggestions" ? "suggestion" : "downgrade", title: path === "apply-suggestions" ? `接受 ${previewAccounts.length} 个账号的推荐调组？` : `接受 ${previewAccounts.length} 个账号的推荐降价？`, confirmLabel: path === "apply-suggestions" ? "接受推荐调组" : "接受推荐降价", accounts: previewAccounts, totalCount: filteredAccounts.length }); if (!selection) return; accountGroupExternalIDs = selection } setBusy(true); try { const result = await apiFetch<RelayAccountBatchActionResult>(`/relay-stations/${selectedID}/accounts/${path}`, { method: path === "schedulable" ? "PUT" : "POST", body: JSON.stringify({ account_external_ids: filteredAccounts.map((account) => account.external_id), ...(path === "schedulable" ? { schedulable } : {}), ...(accountGroupExternalIDs ? { account_group_external_ids: accountGroupExternalIDs } : {}) }) }); setSelected([]); await reload(); const detail = result.failed ? `，失败 ${result.failed} 个${result.errors?.[0] ? `：${result.errors[0]}` : ""}` : ""; const message = `${successLabel}：已处理 ${result.applied} 个，跳过 ${result.skipped} 个${detail}`; if (result.failed) toast.warning(message); else toast.success(message) } catch (error) { toast.error(error instanceof Error ? error.message : `${successLabel}失败`) } finally { setBusy(false) } }
   async function remove() { if (!selectedID || !selectedStation) return; const accepted = await confirm({ title: `删除中转站“${selectedStation.name}”？`, description: "将从系统真实删除该中转站及其账号快照、调整记录，操作不可恢复；历史使用记录不会被删除。", confirmLabel: "确认删除", destructive: true }); if (!accepted) return; setBusy(true); try { await apiFetch(`/relay-stations/${selectedID}`, { method: "DELETE" }); setSelectedID(null); await reload(); toast.success("中转站已删除") } catch (error) { toast.error(error instanceof Error ? error.message : "删除失败") } finally { setBusy(false) } }
 
   return <section className="space-y-4"><header className="flex flex-wrap items-end justify-between gap-3 border-l-2 border-brand pl-3"><div><h1 className="flex items-center gap-2 text-xl font-bold text-foreground"><Server className="size-5 text-brand" />中转站管理</h1><p className="mt-1 text-xs text-muted-foreground">同步时实时探测 API Key 上游倍率，并按平台、账号类型和模型类型评估销售分组与降级候选。</p></div><div className="flex flex-wrap items-center gap-2"><Button variant="outline" size="sm" className="h-11 gap-1.5 sm:h-9" onClick={openCreate}><Plus className="size-3.5" />添加中转站</Button>{stations.data?.length ? <Button variant="outline" size="sm" className="h-11 gap-1.5 sm:h-9" disabled={busy} onClick={() => void syncAll()}><RefreshCw className={cn("size-3.5", busy && "animate-spin")} />同步全部</Button> : null}{selectedStation ? <><Button asChild variant="outline" size="sm" className="h-11 gap-1.5 sm:h-9"><a href={`/public/relay-monitor/${selectedStation.id}`} target="_blank" rel="noopener noreferrer"><Activity className="size-3.5" />分组监控</a></Button><Button asChild variant="outline" size="sm" className="h-11 gap-1.5 sm:h-9"><a href={`/public/model-pricing/${selectedStation.id}`} target="_blank" rel="noopener noreferrer"><CircleDollarSign className="size-3.5" />模型价格</a></Button><Button variant="outline" size="sm" className="h-11 sm:h-9" onClick={openEdit}>编辑</Button><Button size="sm" className="h-11 gap-1.5 sm:h-9" disabled={busy || !selectedStation.api_key_configured} onClick={() => void sync()}><RefreshCw className={cn("size-3.5", busy && "animate-spin")} />实时同步</Button><Button variant="ghost" size="icon" className="size-11 sm:size-9" aria-label="删除中转站" disabled={busy} onClick={() => void remove()}><Trash2 className="size-4 text-danger" /></Button></> : null}</div></header>
@@ -1539,6 +1674,7 @@ export default function RelayStationsPage() {
         <DialogFooter className="border-t border-border px-4 py-4 sm:px-6"><Button type="button" variant="outline" disabled={testingAccountID != null} onClick={() => setTestAccount(null)}>关闭</Button><Button type="button" className="gap-1.5 bg-teal-600 hover:bg-teal-700" disabled={testingAccountID != null || testModelsLoading || !testModel} onClick={() => void runAccountTest()}><Play className="size-3.5" />开始测试</Button></DialogFooter>
       </DialogContent>
     </Dialog>
+    <AccountAdjustmentSelectionDialog state={accountAdjustmentDialog} selections={accountAdjustmentSelections} busy={busy} groupsByID={groupsByID} onSelectionChange={updateAccountAdjustmentSelection} onCancel={() => finishAccountAdjustmentDialog(null)} onConfirm={() => finishAccountAdjustmentDialog(accountAdjustmentSelections)} />
     {confirmDialog}
   </section>
 }

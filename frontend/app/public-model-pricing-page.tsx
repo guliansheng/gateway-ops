@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { BadgeDollarSign, Building2, Database, Layers3, RefreshCw, Search, Tags } from "lucide-react"
+import { BadgeDollarSign, Building2, Database, Filter, Layers3, RefreshCw, Search, Tags } from "lucide-react"
 import { useParams } from "react-router-dom"
 import alibabaCloudIcon from "@lobehub/icons-static-svg/icons/alibabacloud-color.svg"
 import anthropicIcon from "@lobehub/icons-static-svg/icons/anthropic.svg"
@@ -183,6 +183,7 @@ export default function PublicModelPricingPage() {
   const [query, setQuery] = useState("")
   const [company, setCompany] = useState("all")
   const [billingMode, setBillingMode] = useState("all")
+  const [selectedGroup, setSelectedGroup] = useState("all")
 
   const load = useCallback(async (silent = false) => {
     if (!Number.isInteger(numericStationID) || numericStationID <= 0) {
@@ -202,10 +203,28 @@ export default function PublicModelPricingPage() {
   }, [cacheUpdatedAt, data, load])
   useEffect(() => { document.title = data?.station_name ? `${data.station_name} · 模型价格` : "模型价格 · GatewayOps" }, [data?.station_name])
 
+  const orderedGroups = useMemo(() => {
+    const groups = new Set<string>()
+    for (const item of data?.items ?? []) {
+      for (const group of item.groups ?? []) {
+        const name = group.trim()
+        if (name) groups.add(name)
+      }
+    }
+    return [...groups].sort((left, right) => left.localeCompare(right, "zh-CN", { numeric: true, sensitivity: "base" }))
+  }, [data?.items])
+
+  useEffect(() => {
+    if (selectedGroup !== "all" && !orderedGroups.includes(selectedGroup)) setSelectedGroup("all")
+  }, [orderedGroups, selectedGroup])
+
   const items = useMemo(() => {
     const normalized = query.trim().toLowerCase()
-    return (data?.items ?? []).filter((item) => (!normalized || [item.model, item.billing_model, item.company, item.provider, item.channel_name].some((value) => value?.toLowerCase().includes(normalized))) && (company === "all" || item.company === company) && (billingMode === "all" || item.billing_mode === billingMode))
-  }, [data?.items, query, company, billingMode])
+    return (data?.items ?? []).filter((item) => {
+      const groups = (item.groups ?? []).map((group) => group.trim()).filter(Boolean)
+      return (!normalized || [item.model, item.billing_model, item.company, item.provider, item.channel_name, ...groups].some((value) => value?.toLowerCase().includes(normalized))) && (company === "all" || item.company === company) && (billingMode === "all" || item.billing_mode === billingMode) && (selectedGroup === "all" || groups.includes(selectedGroup))
+    })
+  }, [data?.items, query, company, billingMode, selectedGroup])
 
   const grouped = useMemo(() => {
     const companies = new Map<string, Map<string, PublicModelPricingItem[]>>()
@@ -218,7 +237,7 @@ export default function PublicModelPricingPage() {
   return <main className="min-h-screen bg-background text-foreground"><div className="mx-auto w-full max-w-[1440px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
     <header className="flex min-h-16 flex-wrap items-start justify-between gap-4 border-b border-border pb-5"><div className="min-w-0"><h1 className="flex items-center gap-2 text-xl font-bold sm:text-2xl"><BadgeDollarSign className="size-5 shrink-0 text-brand sm:size-6" /><span className="truncate">{data?.station_name || "模型价格"}</span></h1><p className="mt-1.5 text-sm text-muted-foreground">仅展示该中转站当前可用模型；Token 价格按每 1M tokens，按次价格按单次请求及分辨率展示</p></div><div className="ml-auto flex items-center gap-2"><span className="whitespace-nowrap text-xs font-medium text-foreground/65">最新更新：{data ? new Date(data.updated_at).toLocaleString("zh-CN", { hour12: false }) : "暂无"}</span><Button type="button" variant="outline" size="icon" className="size-11 sm:size-9" aria-label="刷新模型价格" disabled={refreshing} onClick={() => void load(true)}><RefreshCw className={cn("size-4", refreshing && "animate-spin")} /></Button></div></header>
     {data ? <section className="grid grid-cols-3 border-b border-border" aria-label="价格汇总"><div className="py-4 sm:px-4 sm:first:pl-0"><p className="text-[11px] text-muted-foreground">当前模型</p><p className="mt-1 font-mono text-xl font-bold tabular-nums">{data.summary.models}</p></div><div className="py-4 sm:px-4"><p className="text-[11px] text-muted-foreground">所属平台</p><p className="mt-1 font-mono text-xl font-bold tabular-nums">{data.summary.companies}</p></div><div className="py-4 sm:px-4"><p className="text-[11px] text-muted-foreground">渠道定价</p><p className="mt-1 font-mono text-xl font-bold tabular-nums">{data.summary.channels}</p></div></section> : null}
-    <section className="mt-4 flex flex-wrap items-center gap-2 border-b border-border pb-3"><div className="relative min-w-[240px] flex-1"><Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" /><Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索模型、平台、Provider 或渠道" className="h-11 pl-9 text-base sm:h-10 sm:text-sm" /></div><Select value={company} onValueChange={setCompany}><SelectTrigger className="h-11 w-[calc(50%-4px)] border-brand/40 bg-card text-xs font-semibold hover:border-brand/70 sm:h-10 sm:w-44"><Layers3 className="mr-1.5 size-3.5 text-brand" /><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部平台</SelectItem>{orderedCompanies.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select><Select value={billingMode} onValueChange={setBillingMode}><SelectTrigger className="h-11 w-[calc(50%-4px)] text-xs sm:h-10 sm:w-40"><Tags className="mr-1.5 size-3.5 text-muted-foreground" /><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部计费模式</SelectItem>{(data?.summary.billing_modes ?? []).map((value) => <SelectItem key={value} value={value}>{billingModeLabels[value] || value}</SelectItem>)}</SelectContent></Select></section>
+    <section className="mt-4 flex flex-wrap items-center gap-2 border-b border-border pb-3"><div className="relative min-w-[240px] flex-1"><Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" /><Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索模型、平台、Provider、渠道或分组" className="h-11 pl-9 text-base sm:h-10 sm:text-sm" /></div><Select value={company} onValueChange={setCompany}><SelectTrigger className="h-11 w-[calc(50%-4px)] border-brand/40 bg-card text-xs font-semibold hover:border-brand/70 sm:h-10 sm:w-44"><Layers3 className="mr-1.5 size-3.5 text-brand" /><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部平台</SelectItem>{orderedCompanies.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select><Select value={selectedGroup} onValueChange={setSelectedGroup}><SelectTrigger className="h-11 w-[calc(50%-4px)] border-success/35 bg-card text-xs font-semibold hover:border-success/60 sm:h-10 sm:w-44"><Filter className="mr-1.5 size-3.5 text-success" /><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部分组</SelectItem>{orderedGroups.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select><Select value={billingMode} onValueChange={setBillingMode}><SelectTrigger className="h-11 w-[calc(50%-4px)] text-xs sm:h-10 sm:w-40"><Tags className="mr-1.5 size-3.5 text-muted-foreground" /><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部计费模式</SelectItem>{(data?.summary.billing_modes ?? []).map((value) => <SelectItem key={value} value={value}>{billingModeLabels[value] || value}</SelectItem>)}</SelectContent></Select></section>
     {error ? <p className="mt-4 border border-danger/30 bg-danger/5 px-3 py-2 text-sm font-medium text-danger">{error}</p> : null}
     <section className="mt-5" aria-label="模型价格列表">{loading ? <div className="grid gap-3 min-[1000px]:grid-cols-2">{Array.from({ length: 8 }).map((_, index) => <div key={index} className="rounded-md border border-border p-5 shadow-sm"><Skeleton className="h-5 w-48" /><Skeleton className="mt-5 h-20 w-full" /></div>)}</div> : grouped.length === 0 ? <div className="border border-dashed border-border px-4 py-14 text-center text-sm text-muted-foreground"><Database className="mx-auto mb-2 size-5" />当前中转站暂无匹配的可用模型价格</div> : <div className="space-y-10">{grouped.map(([companyName, models]) => <section key={companyName} className="space-y-4" aria-labelledby={`company-${companyName}`}><div className="flex min-h-16 items-center gap-3 border-b-2 border-brand/60 pb-3"><span className="flex size-11 shrink-0 items-center justify-center rounded-md bg-muted shadow-sm"><CompanyLogo company={companyName} /></span><div className="min-w-0"><p className="text-xs font-semibold text-brand">平台分类</p><h2 id={`company-${companyName}`} className="truncate text-xl font-bold text-foreground">{companyName}</h2></div><span className="ml-auto shrink-0 text-sm font-semibold text-foreground/70">{models.size} 个模型</span></div><div className="grid items-start gap-4 min-[1000px]:grid-cols-2">{[...models.entries()].sort(([left], [right]) => left.localeCompare(right, "en", { numeric: true, sensitivity: "base" })).map(([model, modelItems]) => <ModelPricingCard key={model} model={model} items={modelItems} />)}</div></section>)}</div>}</section>
   </div></main>

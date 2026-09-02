@@ -115,7 +115,8 @@ type relayAccountSchedulableBatchInput struct {
 }
 
 type relayAccountActionBatchInput struct {
-	AccountExternalIDs []int64 `json:"account_external_ids"`
+	AccountExternalIDs      []int64           `json:"account_external_ids"`
+	AccountGroupExternalIDs map[int64][]int64 `json:"account_group_external_ids"`
 }
 
 type relayAccountRuntimeSettingsInput struct {
@@ -827,11 +828,11 @@ func updateRelayAccountsSchedulable(c *gin.Context, d *Deps) {
 }
 
 func applyRelayAccountSuggestions(c *gin.Context, d *Deps) {
-	stationID, ids, ok := relayAccountActionBatchParams(c)
+	stationID, ids, selectedGroups, ok := relayAccountActionBatchParams(c)
 	if !ok {
 		return
 	}
-	result, err := d.Relay.ApplySuggestionsBatch(c.Request.Context(), stationID, ids)
+	result, err := d.Relay.ApplySuggestionsBatchWithSelections(c.Request.Context(), stationID, ids, selectedGroups)
 	if err != nil {
 		fail(c, http.StatusConflict, err)
 		return
@@ -840,11 +841,11 @@ func applyRelayAccountSuggestions(c *gin.Context, d *Deps) {
 }
 
 func addRelayAccountDowngrades(c *gin.Context, d *Deps) {
-	stationID, ids, ok := relayAccountActionBatchParams(c)
+	stationID, ids, selectedGroups, ok := relayAccountActionBatchParams(c)
 	if !ok {
 		return
 	}
-	result, err := d.Relay.AddDowngradesBatch(c.Request.Context(), stationID, ids)
+	result, err := d.Relay.AddDowngradesBatchWithSelections(c.Request.Context(), stationID, ids, selectedGroups)
 	if err != nil {
 		fail(c, http.StatusConflict, err)
 		return
@@ -852,22 +853,22 @@ func addRelayAccountDowngrades(c *gin.Context, d *Deps) {
 	c.JSON(http.StatusOK, gin.H{"data": result})
 }
 
-func relayAccountActionBatchParams(c *gin.Context) (uint, []int64, bool) {
+func relayAccountActionBatchParams(c *gin.Context) (uint, []int64, map[int64][]int64, bool) {
 	stationID, err := uintParam(c, "id")
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
-		return 0, nil, false
+		return 0, nil, nil, false
 	}
 	var in relayAccountActionBatchInput
 	if err := c.ShouldBindJSON(&in); err != nil {
 		fail(c, http.StatusBadRequest, err)
-		return 0, nil, false
+		return 0, nil, nil, false
 	}
 	if err := validateRelayAccountBatchIDs(in.AccountExternalIDs); err != nil {
 		fail(c, http.StatusBadRequest, err)
-		return 0, nil, false
+		return 0, nil, nil, false
 	}
-	return stationID, in.AccountExternalIDs, true
+	return stationID, in.AccountExternalIDs, in.AccountGroupExternalIDs, true
 }
 
 func validateRelayAccountBatchIDs(ids []int64) error {
