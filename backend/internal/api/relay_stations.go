@@ -27,6 +27,7 @@ func registerRelayStations(g *gin.RouterGroup, d *Deps) {
 	gp.PUT("/:id/users/:user_id/status", func(c *gin.Context) { updateRelayStationUserStatus(c, d) })
 	gp.POST("/:id/users/batch-limits", func(c *gin.Context) { updateRelayStationUserLimits(c, d) })
 	gp.POST("/:id/users/batch-delete", func(c *gin.Context) { deleteRelayStationUsers(c, d) })
+	gp.POST("/:id/accounts/batch-clone", func(c *gin.Context) { batchCloneRelayAccounts(c, d) })
 	gp.GET("/:id/users/:user_id/balance-history", func(c *gin.Context) { relayStationUserBalanceHistory(c, d) })
 	gp.GET("/:id/accounts/:external_id/models", func(c *gin.Context) { relayStationAccountModels(c, d) })
 	gp.POST("/:id/accounts/:external_id/test", func(c *gin.Context) { relayStationTestAccount(c, d) })
@@ -129,6 +130,10 @@ type relayAccountRuntimeSettingsInput struct {
 type relayAccountModelTypesInput struct {
 	AccountExternalIDs []int64 `json:"account_external_ids"`
 	ModelType          string  `json:"model_type"`
+}
+
+type relayAccountBatchCloneInput struct {
+	Groups []relay.BatchCloneGroup `json:"groups"`
 }
 
 type relayGroupUpdateInput struct {
@@ -458,6 +463,29 @@ func deleteAllRelayStationAccounts(c *gin.Context, d *Deps) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{"deleted": deleted}})
+}
+
+func batchCloneRelayAccounts(c *gin.Context, d *Deps) {
+	stationID, err := uintParam(c, "id")
+	if err != nil {
+		fail(c, http.StatusBadRequest, err)
+		return
+	}
+	var in relayAccountBatchCloneInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		fail(c, http.StatusBadRequest, err)
+		return
+	}
+	result, err := d.Relay.BatchCloneAccounts(c.Request.Context(), stationID, relay.BatchCloneInput{Groups: in.Groups})
+	if err != nil {
+		status := http.StatusBadGateway
+		if errors.Is(err, relay.ErrInvalidBatchCloneInput) {
+			status = http.StatusBadRequest
+		}
+		fail(c, status, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result})
 }
 
 func deleteAllRelayStationGroups(c *gin.Context, d *Deps) {

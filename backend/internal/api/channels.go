@@ -440,6 +440,15 @@ func channelRates(c *gin.Context, d *Deps) {
 		fail(c, http.StatusInternalServerError, err)
 		return
 	}
+	latestChanges, err := d.Rates.ListLatestRatioChanges(id)
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err)
+		return
+	}
+	latestChangeByGroup := make(map[string]*storage.RateChangeLog, len(latestChanges))
+	for i := range latestChanges {
+		latestChangeByGroup[latestChanges[i].ModelName] = &latestChanges[i]
+	}
 	bindings, err := d.RelayStations.ListChannelRateBoundAccounts(id)
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err)
@@ -459,8 +468,9 @@ func channelRates(c *gin.Context, d *Deps) {
 	result := make([]channelRateView, 0, len(list))
 	for _, rate := range list {
 		result = append(result, channelRateView{
-			RateSnapshot:  rate,
-			BoundAccounts: bindingsByGroup[rate.ModelName],
+			RateSnapshot:      rate,
+			BoundAccounts:     bindingsByGroup[rate.ModelName],
+			LatestRatioChange: latestChangeByGroup[rate.ModelName],
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"data": result})
@@ -475,7 +485,8 @@ type channelRateBoundAccountView struct {
 
 type channelRateView struct {
 	storage.RateSnapshot
-	BoundAccounts []channelRateBoundAccountView `json:"bound_accounts"`
+	BoundAccounts     []channelRateBoundAccountView `json:"bound_accounts"`
+	LatestRatioChange *storage.RateChangeLog        `json:"latest_ratio_change,omitempty"`
 }
 
 type channelRateInput struct {

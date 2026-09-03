@@ -102,43 +102,69 @@ func (r *Rates) Delete(id uint, channelID uint) error {
 
 // SaveManual stores a user-managed group while preserving its stable ID.
 func (r *Rates) SaveManual(snapshot *RateSnapshot) error {
-	var current RateSnapshot
-	if snapshot.ID != 0 {
-		if err := r.db.Where("id = ? AND channel_id = ?", snapshot.ID, snapshot.ChannelID).First(&current).Error; err != nil {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		var current RateSnapshot
+		if snapshot.ID != 0 {
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				Where("id = ? AND channel_id = ?", snapshot.ID, snapshot.ChannelID).
+				First(&current).Error; err != nil {
+				return err
+			}
+			if current.Source == RateSnapshotSourceRelayAccount {
+				return ErrRelayAccountRateReadOnly
+			}
+		}
+
+		var duplicate RateSnapshot
+		query := tx.Where("channel_id = ? AND model_name = ?", snapshot.ChannelID, snapshot.ModelName)
+		if snapshot.ID != 0 {
+			query = query.Where("id <> ?", snapshot.ID)
+		}
+		if err := query.First(&duplicate).Error; err == nil {
+			return gorm.ErrDuplicatedKey
+		} else if err != gorm.ErrRecordNotFound {
 			return err
 		}
-		if current.Source == RateSnapshotSourceRelayAccount {
-			return ErrRelayAccountRateReadOnly
+
+		if snapshot.FirstSeenAt.IsZero() {
+			snapshot.FirstSeenAt = time.Now()
 		}
-	}
-	var duplicate RateSnapshot
-	query := r.db.Where("channel_id = ? AND model_name = ?", snapshot.ChannelID, snapshot.ModelName)
-	if snapshot.ID != 0 {
-		query = query.Where("id <> ?", snapshot.ID)
-	}
-	if err := query.First(&duplicate).Error; err == nil {
-		return gorm.ErrDuplicatedKey
-	} else if err != gorm.ErrRecordNotFound {
-		return err
-	}
-	if snapshot.FirstSeenAt.IsZero() {
-		snapshot.FirstSeenAt = time.Now()
-	}
-	if snapshot.LastSeenAt.IsZero() {
-		snapshot.LastSeenAt = snapshot.FirstSeenAt
-	}
-	snapshot.Source = RateSnapshotSourceManual
-	snapshot.RelayStationID = nil
-	snapshot.RelayAccountExternalID = nil
-	if snapshot.ID == 0 {
-		return r.db.Create(snapshot).Error
-	}
-	return r.db.Model(&current).Updates(map[string]any{
-		"model_name": snapshot.ModelName, "description": snapshot.Description,
-		"ratio": snapshot.Ratio, "completion_ratio": snapshot.CompletionRatio,
-		"source": RateSnapshotSourceManual, "relay_station_id": nil, "relay_account_external_id": nil,
-		"last_seen_at": snapshot.LastSeenAt,
-	}).Error
+		if snapshot.LastSeenAt.IsZero() {
+			snapshot.LastSeenAt = snapshot.FirstSeenAt
+		}
+		snapshot.Source = RateSnapshotSourceManual
+		snapshot.RelayStationID = nil
+		snapshot.RelayAccountExternalID = nil
+
+		if snapshot.ID == 0 {
+			return tx.Create(snapshot).Error
+		}
+
+		oldRatio, oldCompletion := current.Ratio, current.CompletionRatio
+		if err := tx.Model(&current).Updates(map[string]any{
+			"model_name": snapshot.ModelName, "description": snapshot.Description,
+			"ratio": snapshot.Ratio, "completion_ratio": snapshot.CompletionRatio,
+			"source": RateSnapshotSourceManual, "relay_station_id": nil, "relay_account_external_id": nil,
+			"last_seen_at": snapshot.LastSeenAt,
+		}).Error; err != nil {
+			return err
+		}
+		if oldRatio != snapshot.Ratio || oldCompletion != snapshot.CompletionRatio {
+			changedAt := snapshot.LastSeenAt
+			if changedAt.IsZero() {
+				changedAt = time.Now()
+			}
+			if err := tx.Create(&RateChangeLog{
+				ChannelID: snapshot.ChannelID, ModelName: snapshot.ModelName,
+				OldRatio: &oldRatio, NewRatio: snapshot.Ratio,
+				OldCompletionRatio: &oldCompletion, NewCompletionRatio: snapshot.CompletionRatio,
+				ChangedAt: changedAt,
+			}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // DeleteMissing removes snapshots that were not returned by the latest

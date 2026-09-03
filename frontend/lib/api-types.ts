@@ -103,6 +103,7 @@ export interface RateSnapshot {
   first_seen_at: string
   last_seen_at: string
   bound_accounts?: RateBoundAccount[]
+  latest_ratio_change?: RateChangeLog | null
 }
 
 export interface RateBoundAccount {
@@ -320,6 +321,34 @@ export interface RelayAccountBatchActionResult {
   skipped: number
   failed: number
   errors?: string[]
+}
+
+export interface RelayAccountBatchCloneAccount {
+  name: string
+  api_key: string
+  base_url: string
+}
+
+export interface RelayAccountBatchCloneGroup {
+  source_account_external_id: number
+  accounts: RelayAccountBatchCloneAccount[]
+}
+
+export interface RelayAccountBatchCloneResultItem {
+  source_account_external_id: number
+  source_account_name: string
+  name: string
+  external_id?: number
+  success: boolean
+  error?: string
+}
+
+export interface RelayAccountBatchCloneResult {
+  requested: number
+  succeeded: number
+  failed: number
+  results: RelayAccountBatchCloneResultItem[]
+  sync_error?: string
 }
 
 export interface RelayUsageAccountView {

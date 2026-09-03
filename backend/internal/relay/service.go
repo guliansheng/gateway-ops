@@ -3,8 +3,10 @@ package relay
 
 import (
 	"context"
+	crand "crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -89,6 +91,46 @@ type CreateInput struct {
 	Name    string
 	BaseURL string
 	APIKey  string
+}
+
+var ErrInvalidBatchCloneInput = errors.New("批量新增账号参数无效")
+
+const (
+	maxBatchCloneGroups   = 100
+	maxBatchClonePerGroup = 100
+	maxBatchCloneAccounts = 300
+)
+
+type BatchCloneInput struct {
+	Groups []BatchCloneGroup `json:"groups"`
+}
+
+type BatchCloneGroup struct {
+	SourceAccountExternalID int64               `json:"source_account_external_id"`
+	Accounts                []BatchCloneAccount `json:"accounts"`
+}
+
+type BatchCloneAccount struct {
+	Name    string `json:"name"`
+	APIKey  string `json:"api_key"`
+	BaseURL string `json:"base_url"`
+}
+
+type BatchCloneResult struct {
+	Requested int                    `json:"requested"`
+	Succeeded int                    `json:"succeeded"`
+	Failed    int                    `json:"failed"`
+	Results   []BatchCloneResultItem `json:"results"`
+	SyncError string                 `json:"sync_error,omitempty"`
+}
+
+type BatchCloneResultItem struct {
+	SourceAccountExternalID int64  `json:"source_account_external_id"`
+	SourceAccountName       string `json:"source_account_name"`
+	Name                    string `json:"name"`
+	ExternalID              int64  `json:"external_id,omitempty"`
+	Success                 bool   `json:"success"`
+	Error                   string `json:"error,omitempty"`
 }
 
 type UpdateInput struct {
@@ -343,6 +385,223 @@ func (s *Service) DeleteAccount(ctx context.Context, stationID uint, externalID 
 		return fmt.Errorf("账号已从中转站删除，但刷新本地快照失败: %w", err)
 	}
 	return nil
+}
+
+// BatchCloneAccounts duplicates each requested source account independently.
+// The remote duplicate endpoint creates the account first; the following PUT
+// only changes the requested name, API key, Base URL, and disabled state.
+func (s *Service) BatchCloneAccounts(ctx context.Context, stationID uint, in BatchCloneInput) (BatchCloneResult, error) {
+	if err := validateBatchCloneInput(in); err != nil {
+		return BatchCloneResult{}, err
+	}
+
+	result := BatchCloneResult{Results: make([]BatchCloneResultItem, 0, countBatchCloneAccounts(in))}
+	station, err := s.stations.FindByID(stationID)
+	if err != nil {
+		return BatchCloneResult{}, err
+	}
+	localAccounts, err := s.stations.ListAccounts(stationID)
+	if err != nil {
+		return BatchCloneResult{}, fmt.Errorf("读取中转站账号快照失败: %w", err)
+	}
+	localNames := make(map[int64]string, len(localAccounts))
+	localIDs := make(map[int64]struct{}, len(localAccounts))
+	for _, account := range localAccounts {
+		localNames[account.ExternalID] = account.Name
+		localIDs[account.ExternalID] = struct{}{}
+	}
+	apiKey, err := s.cipher.Decrypt(station.APIKeyCipher)
+	if err != nil {
+		return BatchCloneResult{}, fmt.Errorf("decrypt admin API key: %w", err)
+	}
+	remoteAccounts, err := s.fetchAccounts(ctx, station.BaseURL, apiKey)
+	if err != nil {
+		return BatchCloneResult{}, err
+	}
+	remoteByID := make(map[int64]remoteAccount, len(remoteAccounts))
+	for _, account := range remoteAccounts {
+		remoteByID[account.ID] = account
+	}
+
+	for _, group := range in.Groups {
+		source, sourceOK := remoteByID[group.SourceAccountExternalID]
+		sourceName := strings.TrimSpace(localNames[group.SourceAccountExternalID])
+		if sourceOK && strings.TrimSpace(source.Name) != "" {
+			sourceName = strings.TrimSpace(source.Name)
+		}
+		if sourceName == "" {
+			sourceName = fmt.Sprintf("账号 #%d", group.SourceAccountExternalID)
+		}
+		var sourceErr error
+		if _, exists := localIDs[group.SourceAccountExternalID]; !exists {
+			sourceErr = errors.New("源账号不存在或快照已过期，请先刷新后重试")
+		} else if !sourceOK {
+			sourceErr = errors.New("远端源账号不存在或已被删除，请先刷新后重试")
+		} else if source.ParentAccountID != nil {
+			sourceErr = errors.New("影子账号不支持克隆，请选择其母账号")
+		} else if !batchCloneAccountTypeAllowed(source.Type) {
+			sourceErr = errors.New("该账号类型不支持克隆，请选择 API Key、上游、Bedrock 或服务账号")
+		}
+
+		for _, requested := range group.Accounts {
+			name := strings.TrimSpace(requested.Name)
+			if name == "" {
+				name = sourceName
+			}
+			item := BatchCloneResultItem{
+				SourceAccountExternalID: group.SourceAccountExternalID,
+				SourceAccountName:       sourceName,
+				Name:                    name,
+			}
+			result.Requested++
+			if sourceErr != nil {
+				item.Error = sourceErr.Error()
+				result.Failed++
+				result.Results = append(result.Results, item)
+				continue
+			}
+
+			idempotencyKey, keyErr := newBatchCloneIdempotencyKey()
+			if keyErr != nil {
+				item.Error = sanitizeBatchCloneError(keyErr, requested.APIKey, apiKey)
+				result.Failed++
+				result.Results = append(result.Results, item)
+				continue
+			}
+			cloned, cloneErr := s.duplicateRemote(ctx, station.BaseURL, apiKey, source.ID, idempotencyKey)
+			if cloneErr != nil {
+				item.Error = sanitizeBatchCloneError(cloneErr, requested.APIKey, apiKey)
+				result.Failed++
+				result.Results = append(result.Results, item)
+				continue
+			}
+			if cloned != nil {
+				item.ExternalID = cloned.ID
+			}
+			if item.ExternalID <= 0 {
+				item.Error = "远端克隆账号响应缺少有效账号 ID"
+				result.Failed++
+				result.Results = append(result.Results, item)
+				continue
+			}
+
+			body := batchCloneUpdateBody(&source, cloned, name, strings.TrimSpace(requested.APIKey), strings.TrimSpace(requested.BaseURL))
+			if err := s.put(ctx, fmt.Sprintf("%s/api/v1/admin/accounts/%d", station.BaseURL, item.ExternalID), apiKey, body); err != nil {
+				item.Error = sanitizeBatchCloneError(err, requested.APIKey, apiKey)
+				result.Failed++
+				result.Results = append(result.Results, item)
+				continue
+			}
+			item.Success = true
+			result.Succeeded++
+			result.Results = append(result.Results, item)
+		}
+	}
+
+	if err := s.SyncSnapshot(ctx, stationID); err != nil {
+		result.SyncError = sanitizeBatchCloneError(err, apiKey)
+	}
+	return result, nil
+}
+
+func validateBatchCloneInput(in BatchCloneInput) error {
+	if len(in.Groups) == 0 || len(in.Groups) > maxBatchCloneGroups {
+		return fmt.Errorf("%w：groups 必须包含 1 到 %d 个源账号分组", ErrInvalidBatchCloneInput, maxBatchCloneGroups)
+	}
+	seenSources := make(map[int64]struct{}, len(in.Groups))
+	total := 0
+	for _, group := range in.Groups {
+		if group.SourceAccountExternalID <= 0 {
+			return fmt.Errorf("%w：源账号 ID 无效", ErrInvalidBatchCloneInput)
+		}
+		if _, exists := seenSources[group.SourceAccountExternalID]; exists {
+			return fmt.Errorf("%w：源账号不能重复选择", ErrInvalidBatchCloneInput)
+		}
+		seenSources[group.SourceAccountExternalID] = struct{}{}
+		if len(group.Accounts) == 0 || len(group.Accounts) > maxBatchClonePerGroup {
+			return fmt.Errorf("%w：每个源账号必须包含 1 到 %d 个新账号", ErrInvalidBatchCloneInput, maxBatchClonePerGroup)
+		}
+		total += len(group.Accounts)
+		if total > maxBatchCloneAccounts {
+			return fmt.Errorf("%w：一次最多新增 %d 个账号", ErrInvalidBatchCloneInput, maxBatchCloneAccounts)
+		}
+		for _, account := range group.Accounts {
+			if strings.TrimSpace(account.APIKey) == "" {
+				return fmt.Errorf("%w：API Key 不能为空", ErrInvalidBatchCloneInput)
+			}
+			if len([]rune(strings.TrimSpace(account.Name))) > 255 {
+				return fmt.Errorf("%w：账号名称不能超过 255 个字符", ErrInvalidBatchCloneInput)
+			}
+			if len(account.APIKey) > 4096 {
+				return fmt.Errorf("%w：API Key 过长", ErrInvalidBatchCloneInput)
+			}
+			if len([]rune(strings.TrimSpace(account.BaseURL))) > 1024 {
+				return fmt.Errorf("%w：Base URL 不能超过 1024 个字符", ErrInvalidBatchCloneInput)
+			}
+		}
+	}
+	return nil
+}
+
+func countBatchCloneAccounts(in BatchCloneInput) int {
+	total := 0
+	for _, group := range in.Groups {
+		total += len(group.Accounts)
+	}
+	return total
+}
+
+func newBatchCloneIdempotencyKey() (string, error) {
+	raw := make([]byte, 16)
+	if _, err := crand.Read(raw); err != nil {
+		return "", err
+	}
+	return "gatewayops-account-duplicate-" + hex.EncodeToString(raw), nil
+}
+
+func batchCloneAccountTypeAllowed(accountType string) bool {
+	switch strings.ToLower(strings.TrimSpace(accountType)) {
+	case "apikey", "upstream", "bedrock", "service_account":
+		return true
+	default:
+		return false
+	}
+}
+
+func batchCloneUpdateBody(source, cloned *remoteAccount, name, apiKey, baseURL string) map[string]any {
+	raw := map[string]any{}
+	if cloned != nil && len(cloned.Credentials.Raw) > 0 {
+		raw = cloned.Credentials.Raw
+	} else if source != nil {
+		raw = source.Credentials.Raw
+	}
+	credentials := make(map[string]any, len(raw)+1)
+	for key, value := range raw {
+		credentials[key] = value
+	}
+	credentials["api_key"] = apiKey
+	if strings.TrimSpace(baseURL) != "" {
+		credentials["base_url"] = strings.TrimSpace(baseURL)
+	}
+	return map[string]any{
+		"name":        name,
+		"credentials": credentials,
+		"status":      "inactive",
+		"schedulable": false,
+	}
+}
+
+func sanitizeBatchCloneError(err error, credentials ...string) string {
+	message := strings.TrimSpace(err.Error())
+	for _, credential := range credentials {
+		if credential = strings.TrimSpace(credential); credential != "" {
+			message = strings.ReplaceAll(message, credential, "[已隐藏]")
+		}
+	}
+	if message == "" {
+		return "批量新增账号失败"
+	}
+	return message
 }
 
 // DeleteAllAccounts removes every account in one remote workflow and refreshes
@@ -669,6 +928,7 @@ type remoteGroup struct {
 // PUT /api/v1/admin/accounts/:id 使用，rate_multiplier 是账号接入上游的成本倍率。
 type remoteAccount struct {
 	ID                 int64                    `json:"id"`
+	ParentAccountID    *int64                   `json:"parent_account_id"`
 	Name               string                   `json:"name"`
 	Credentials        remoteAccountCredentials `json:"credentials"`
 	Platform           string                   `json:"platform"`
@@ -3694,6 +3954,43 @@ func (s *Service) post(ctx context.Context, endpoint, apiKey string, body, out a
 		return nil
 	}
 	return json.Unmarshal(envelope.Data, out)
+}
+
+func (s *Service) duplicateRemote(ctx context.Context, baseURL, apiKey string, accountID int64, idempotencyKey string) (*remoteAccount, error) {
+	endpoint := fmt.Sprintf("%s/api/v1/admin/accounts/%d/duplicate", strings.TrimRight(baseURL, "/"), accountID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("x-api-key", apiKey)
+	req.Header.Set("Idempotency-Key", idempotencyKey)
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	var envelope remoteEnvelope
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		return nil, err
+	}
+	if envelope.Code != 0 {
+		return nil, errors.New(envelope.Message)
+	}
+	if len(envelope.Data) == 0 || string(envelope.Data) == "null" {
+		return nil, errors.New("远端克隆账号响应缺少账号数据")
+	}
+	var account remoteAccount
+	if err := json.Unmarshal(envelope.Data, &account); err != nil {
+		return nil, err
+	}
+	if account.ID <= 0 {
+		return nil, errors.New("远端克隆账号响应缺少有效账号 ID")
+	}
+	return &account, nil
 }
 
 func normalizeBaseURL(raw string) (string, error) {

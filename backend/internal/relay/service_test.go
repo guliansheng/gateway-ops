@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -15,6 +16,114 @@ import (
 
 	"github.com/guliansheng/gateway-ops/internal/storage"
 )
+
+func TestValidateBatchCloneInput(t *testing.T) {
+	valid := BatchCloneInput{Groups: []BatchCloneGroup{{SourceAccountExternalID: 12, Accounts: []BatchCloneAccount{{APIKey: "sk-new"}}}}}
+	if err := validateBatchCloneInput(valid); err != nil {
+		t.Fatalf("valid batch clone input failed: %v", err)
+	}
+	tests := []BatchCloneInput{
+		{},
+		{Groups: []BatchCloneGroup{{SourceAccountExternalID: 0, Accounts: []BatchCloneAccount{{APIKey: "sk-new"}}}}},
+		{Groups: []BatchCloneGroup{{SourceAccountExternalID: 12, Accounts: nil}}},
+		{Groups: []BatchCloneGroup{{SourceAccountExternalID: 12, Accounts: []BatchCloneAccount{{APIKey: " "}}}}},
+		{Groups: []BatchCloneGroup{{SourceAccountExternalID: 12, Accounts: []BatchCloneAccount{{Name: strings.Repeat("a", 256), APIKey: "sk-new"}}}}},
+		{Groups: []BatchCloneGroup{
+			{SourceAccountExternalID: 12, Accounts: []BatchCloneAccount{{APIKey: "sk-new"}}},
+			{SourceAccountExternalID: 12, Accounts: []BatchCloneAccount{{APIKey: "sk-new-2"}}},
+		}},
+	}
+	for index, input := range tests {
+		t.Run(fmt.Sprintf("invalid-%d", index), func(t *testing.T) {
+			if err := validateBatchCloneInput(input); !errors.Is(err, ErrInvalidBatchCloneInput) {
+				t.Fatalf("error = %v, want ErrInvalidBatchCloneInput", err)
+			}
+		})
+	}
+	tooMany := BatchCloneInput{Groups: []BatchCloneGroup{{SourceAccountExternalID: 12, Accounts: make([]BatchCloneAccount, maxBatchCloneAccounts+1)}}}
+	for index := range tooMany.Groups[0].Accounts {
+		tooMany.Groups[0].Accounts[index].APIKey = "sk-new"
+	}
+	if err := validateBatchCloneInput(tooMany); !errors.Is(err, ErrInvalidBatchCloneInput) {
+		t.Fatalf("too many accounts error = %v, want ErrInvalidBatchCloneInput", err)
+	}
+}
+
+func TestBatchCloneUpdateBodyPreservesClonedCredentials(t *testing.T) {
+	source := &remoteAccount{Credentials: remoteAccountCredentials{Raw: map[string]any{
+		"base_url": "https://api.example/v1", "pool_mode": true, "custom": "keep-me", "api_key": "old-key",
+	}}}
+	cloned := &remoteAccount{Credentials: remoteAccountCredentials{Raw: map[string]any{
+		"base_url": "https://clone.example/v1", "pool_mode": false, "custom": "cloned-value", "api_key": "cloned-old-key",
+	}}}
+	body := batchCloneUpdateBody(source, cloned, "新账号", "sk-new", "https://custom.example/v1")
+	credentials, ok := body["credentials"].(map[string]any)
+	if !ok {
+		t.Fatalf("credentials = %#v, want object", body["credentials"])
+	}
+	if credentials["base_url"] != "https://custom.example/v1" || credentials["custom"] != "cloned-value" || credentials["api_key"] != "sk-new" {
+		t.Fatalf("credentials = %#v, cloned credential fields were not preserved", credentials)
+	}
+	if body["name"] != "新账号" || body["status"] != "inactive" || body["schedulable"] != false {
+		t.Fatalf("update body = %#v, want name/inactive/disabled", body)
+	}
+}
+
+func TestDuplicateRemoteRequiresIdempotencyKey(t *testing.T) {
+	const adminKey = "admin-key"
+	var seenKey string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/admin/accounts/12/duplicate" {
+			t.Errorf("request = %s %s, want POST duplicate endpoint", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("x-api-key"); got != adminKey {
+			t.Errorf("x-api-key = %q, want %q", got, adminKey)
+		}
+		seenKey = r.Header.Get("Idempotency-Key")
+		if seenKey == "" {
+			t.Error("Idempotency-Key is empty")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"message":"ok","data":{"id":99,"name":"clone","credentials":{"base_url":"https://api.example/v1"}}}`))
+	}))
+	defer server.Close()
+
+	svc := &Service{client: server.Client()}
+	account, err := svc.duplicateRemote(context.Background(), server.URL, adminKey, 12, "gatewayops-test-key")
+	if err != nil {
+		t.Fatalf("duplicateRemote error: %v", err)
+	}
+	if account.ID != 99 || seenKey != "gatewayops-test-key" {
+		t.Fatalf("account/key = %#v/%q, want account 99 and requested idempotency key", account, seenKey)
+	}
+}
+
+func TestBatchCloneIdempotencyKeysAreUnique(t *testing.T) {
+	first, err := newBatchCloneIdempotencyKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := newBatchCloneIdempotencyKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second || !strings.HasPrefix(first, "gatewayops-account-duplicate-") {
+		t.Fatalf("keys = %q and %q, want unique prefixed keys", first, second)
+	}
+}
+
+func TestBatchCloneAccountTypeAllowed(t *testing.T) {
+	for _, accountType := range []string{"apikey", "upstream", "bedrock", "service_account", " APIKEY "} {
+		if !batchCloneAccountTypeAllowed(accountType) {
+			t.Errorf("account type %q should be allowed", accountType)
+		}
+	}
+	for _, accountType := range []string{"oauth", "setup-token", "", "unknown"} {
+		if batchCloneAccountTypeAllowed(accountType) {
+			t.Errorf("account type %q should not be allowed", accountType)
+		}
+	}
+}
 
 func TestExtractAccountModelIDs(t *testing.T) {
 	tests := []struct {

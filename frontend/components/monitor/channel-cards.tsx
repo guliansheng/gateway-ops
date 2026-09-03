@@ -29,15 +29,17 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { useConfirm } from "@/components/ui/confirm-dialog"
-import { useChannels, useChannelLatencyTrends, useChannelMetrics, useChannelRates, useLatestRatioChanges } from "@/lib/queries"
+import { useChannels, useChannelLatencyTrends, useChannelMetrics, useChannelRates } from "@/lib/queries"
 import { apiFetch } from "@/lib/api"
 import { useTriggerRefresh } from "@/lib/refresh-context"
-import { channelTypeLabel, money, ratioArrow, relativeTime } from "@/lib/format"
+import { channelTypeLabel, money, relativeTime } from "@/lib/format"
 import { cn } from "@/lib/utils"
 import { syncChannelStream, testLoginStream, type ProgressEvent } from "@/lib/sync-stream"
 import type { Channel, ChannelAccount, RateSnapshot, RelayLatencySample, RelayUsageRange } from "@/lib/api-types"
 import { ChannelFormDialog } from "@/components/monitor/channel-form-dialog"
 import { PlatformBadge } from "@/components/relay/platform-badge"
+import { RateChangeDot, RateTooltipBody } from "@/components/monitor/rate-change"
+import { RecentUsageCard, RecentUsageTooltip, recentUsageTooltipClassName } from "@/components/monitor/recent-usage-tooltip"
 
 type Status = "healthy" | "low" | "failed" | "idle"
 type MonitorStatusFilter = "enabled" | "disabled" | "all"
@@ -212,6 +214,13 @@ const latencyTextClass: Record<LatencyTone, string> = {
   critical: "text-red-600 dark:text-red-400",
 }
 
+const latencyTooltipTextClass: Record<LatencyTone, string> = {
+  good: "text-emerald-700",
+  warn: "text-amber-700",
+  slow: "text-orange-700",
+  critical: "text-red-700",
+}
+
 function formatLatency(value: number | null | undefined) {
   if (value == null || !Number.isFinite(value) || value < 0) return "-"
   const milliseconds = Math.round(value)
@@ -269,9 +278,8 @@ function ChannelLatencyTrend({ samples }: { samples: RelayLatencySample[] }) {
               </span>
             </button>
           </TooltipTrigger>
-          <TooltipContent side="top" align="end" className="max-h-96 w-[540px] max-w-[calc(100vw-24px)] overflow-y-auto border border-slate-200 bg-white p-0 text-[11px] text-slate-900 shadow-xl dark:border-slate-200 dark:bg-white dark:text-slate-900 [&>svg]:hidden">
-            <div className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2 font-medium"><span>最近 {samples.length} 次调用</span><span className="text-slate-500">上半段首字 · 下半段总耗时</span></div>
-            <div className="divide-y divide-slate-100 px-3">
+          <TooltipContent side="top" align="end" className={recentUsageTooltipClassName}>
+            <RecentUsageTooltip count={samples.length}>
               {[...ordered].reverse().map((sample, index) => {
                 const first = latencyTone(sample.first_token_ms, "first")
                 const duration = latencyTone(sample.duration_ms, "duration")
@@ -284,37 +292,45 @@ function ChannelLatencyTrend({ samples }: { samples: RelayLatencySample[] }) {
                 const cacheCreationTotal = cacheCreationTokens || cacheCreation5mTokens + cacheCreation1hTokens
                 const totalTokens = (sample.input_tokens ?? 0) + (sample.output_tokens ?? 0) + (sample.cache_read_tokens ?? 0) + cacheCreationTotal
                 return (
-                  <div key={`${sample.created_at}-detail-${index}`} className="grid grid-cols-[112px_minmax(0,1fr)] gap-2 py-2">
-                    <time dateTime={sample.created_at} className="whitespace-nowrap font-mono text-xs font-semibold leading-5 tabular-nums text-slate-700">{formatSampleTime(sample.created_at)}</time>
-                    <div className="min-w-0">
-                      <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
-                        <div className="min-w-0 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1.5">
-                          <p className="text-[9px] font-semibold uppercase text-emerald-700">Sub2API 分组</p>
-                          <p className="mt-0.5 flex min-w-0 items-center gap-1.5 whitespace-nowrap text-emerald-950">
-                            <span className="min-w-0 truncate font-semibold" title={sub2apiGroup}>{sub2apiGroup}</span>
-                            <span className="shrink-0 rounded bg-emerald-600 px-1.5 py-0.5 font-mono text-xs font-semibold tabular-nums text-white">{sub2apiMultiplier}</span>
-                          </p>
-                        </div>
-                        <div className="min-w-0 rounded-md border border-sky-200 bg-sky-50 px-2 py-1.5">
-                          <p className="text-[9px] font-semibold uppercase text-sky-700">渠道倍率</p>
-                          <p className="mt-0.5 font-mono text-sm font-semibold tabular-nums text-sky-950">{channelMultiplier}</p>
-                        </div>
-                      </div>
-                      <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-2.5 py-2">
-                        <PlatformBadge platform={sample.platform} />
-                        <span className="min-w-0 flex-1 truncate font-mono text-sm font-semibold leading-5 text-slate-950" title={sample.model || "-"}>{sample.model || "-"}</span>
-                        {sample.request_type ? <span className="shrink-0 text-[11px] font-medium text-slate-600">{sample.request_type}</span> : null}
-                      </div>
-                      <p className="mt-1 font-mono text-xs font-semibold tabular-nums text-slate-900">Token 总量 {formatTokens(totalTokens)}</p>
-                      <p className="mt-1 flex flex-wrap gap-x-4 gap-y-1 font-mono text-xs font-semibold tabular-nums">
-                        <span className={latencyTextClass[first]}>首字 {formatLatency(sample.first_token_ms)}</span>
-                        <span className={latencyTextClass[duration]}>总耗时 {formatLatency(sample.duration_ms)}</span>
-                      </p>
+                  <RecentUsageCard key={`${sample.created_at}-detail-${index}`} className="rounded-lg bg-white p-2.5 shadow-sm ring-1 ring-slate-200/80">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <time dateTime={sample.created_at} className="whitespace-nowrap font-mono text-xs font-semibold tabular-nums text-slate-700">{formatSampleTime(sample.created_at)}</time>
+                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500">#{samples.length - index}</span>
                     </div>
-                  </div>
+                    <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_7.5rem]">
+                      <div className="min-w-0 rounded-md bg-slate-50 px-2.5 py-2 ring-1 ring-slate-200/70">
+                        <div className="flex min-w-0 flex-wrap items-center gap-2">
+                          <PlatformBadge platform={sample.platform} />
+                          <span className="min-w-0 flex-1 truncate font-mono text-sm font-semibold leading-5 text-slate-950" title={sample.model || "-"}>{sample.model || "-"}</span>
+                          {sample.request_type ? <span className="shrink-0 text-[11px] font-medium text-slate-600">{sample.request_type}</span> : null}
+                        </div>
+                      </div>
+                      <div className="rounded-md bg-slate-50 px-2.5 py-2 ring-1 ring-slate-200/70">
+                        <p className="text-[9px] font-semibold uppercase text-slate-500">Token</p>
+                        <p className="mt-0.5 font-mono text-sm font-semibold tabular-nums text-slate-950">{formatTokens(totalTokens)}</p>
+                      </div>
+                    </div>
+                    <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      <div className="min-w-0 rounded-md bg-emerald-50/80 px-2.5 py-2 ring-1 ring-emerald-200/70">
+                        <p className="text-[9px] font-semibold uppercase text-emerald-700">Sub2API 分组</p>
+                        <p className="mt-0.5 flex min-w-0 items-center gap-1.5 whitespace-nowrap text-emerald-950">
+                          <span className="min-w-0 truncate font-semibold" title={sub2apiGroup}>{sub2apiGroup}</span>
+                          <span className="shrink-0 rounded bg-emerald-600 px-1.5 py-0.5 font-mono text-xs font-semibold tabular-nums text-white">{sub2apiMultiplier}</span>
+                        </p>
+                      </div>
+                      <div className="min-w-0 rounded-md bg-sky-50/80 px-2.5 py-2 ring-1 ring-sky-200/70">
+                        <p className="text-[9px] font-semibold uppercase text-sky-700">渠道倍率</p>
+                        <p className="mt-0.5 font-mono text-sm font-semibold tabular-nums text-sky-950">{channelMultiplier}</p>
+                      </div>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 rounded-md bg-slate-50 px-2.5 py-2 font-mono text-xs font-semibold tabular-nums ring-1 ring-slate-200/70">
+                      <span className={latencyTooltipTextClass[first]}>首字 {formatLatency(sample.first_token_ms)}</span>
+                      <span className={latencyTooltipTextClass[duration]}>总耗时 {formatLatency(sample.duration_ms)}</span>
+                    </div>
+                  </RecentUsageCard>
                 )
               })}
-            </div>
+            </RecentUsageTooltip>
           </TooltipContent>
         </Tooltip>
       )}
@@ -325,10 +341,6 @@ function ChannelLatencyTrend({ samples }: { samples: RelayLatencySample[] }) {
 /** InlineRates 在渠道卡片内部展示当前所有分组倍率，默认完整展开。 */
 function InlineRates({ channelID }: { channelID: number }) {
   const { data, loading } = useChannelRates(channelID)
-  const rateChanges = useLatestRatioChanges(channelID)
-  const latestChanges = new Map(
-    (rateChanges.data ?? []).map((change) => [change.model_name, change]),
-  )
   const rates = [...(data ?? [])].sort((a, b) => a.ratio - b.ratio)
   const [expanded, setExpanded] = useState(true)
   const [hasOverflow, setHasOverflow] = useState(false)
@@ -387,11 +399,6 @@ function InlineRates({ channelID }: { channelID: number }) {
           )}
         >
           {rates.map((r) => {
-            const latestChangeForRate = latestChanges.get(r.model_name)
-            const lowered = latestChangeForRate != null
-              && latestChangeForRate.old_ratio != null
-              && latestChangeForRate.new_ratio < latestChangeForRate.old_ratio
-
             return (
               <Tooltip key={r.id} delayDuration={150}>
                 <TooltipTrigger asChild>
@@ -401,36 +408,13 @@ function InlineRates({ channelID }: { channelID: number }) {
                       ratioTone(r.ratio),
                     )}
                   >
-                    {latestChangeForRate ? (
-                      <span
-                        aria-label={lowered ? "倍率最近下降" : "倍率最近上升"}
-                        className={cn(
-                          "absolute -right-0.5 -top-0.5 size-2 rounded-full ring-2 ring-background",
-                          lowered ? "bg-success" : "bg-danger",
-                        )}
-                      />
-                    ) : null}
+                    <RateChangeDot change={r.latest_ratio_change} className="absolute -right-0.5 -top-0.5" />
                     <span className="font-medium">{r.model_name}</span>
                     <span className="font-semibold tabular-nums">{r.ratio.toFixed(3)}</span>
                   </span>
                 </TooltipTrigger>
                 <TooltipContent side="top" className="max-w-xs text-xs">
-                  <p className="font-medium">{r.model_name}</p>
-                  {r.description ? (
-                    <p className="mt-0.5 text-muted-foreground">{r.description}</p>
-                  ) : (
-                    <p className="mt-0.5 italic text-muted-foreground">{"(无描述)"}</p>
-                  )}
-                  <p className="mt-0.5 text-muted-foreground">
-                    {"最近更新："}
-                    {relativeTime(r.last_seen_at)}
-                  </p>
-                  {latestChangeForRate ? (
-                    <p className={cn("mt-0.5", lowered ? "text-success" : "text-danger")}>
-                      {"最近倍率变动："}
-                      {ratioArrow(latestChangeForRate.old_ratio, latestChangeForRate.new_ratio)}
-                    </p>
-                  ) : null}
+                  <RateTooltipBody rate={r} />
                 </TooltipContent>
               </Tooltip>
             )
@@ -526,8 +510,17 @@ function ManualRatesEditor({ channelID }: { channelID: number }) {
           {(data ?? []).map((rate) => (
             <div key={rate.id} className="group border-b border-border last:border-b-0 hover:bg-muted/30">
               <div className="flex min-h-11 items-center gap-2 px-2.5">
-                <span className="size-1.5 shrink-0 rounded-full bg-brand/70" />
-                <span className="min-w-0 flex-1 truncate text-xs font-medium" title={rate.model_name}>{rate.model_name}</span>
+                <Tooltip delayDuration={150}>
+                  <TooltipTrigger asChild>
+                    <span className="inline-flex min-w-0 flex-1 items-center gap-1.5 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" tabIndex={0}>
+                      <span className="min-w-0 truncate text-xs font-medium" title={rate.model_name}>{rate.model_name}</span>
+                      <RateChangeDot change={rate.latest_ratio_change} />
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="max-w-xs text-xs">
+                    <RateTooltipBody rate={rate} />
+                  </TooltipContent>
+                </Tooltip>
                 <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] font-medium tabular-nums text-foreground">{rate.ratio.toFixed(3)}×</span>
                 {rate.source === "relay_account" ? <span className="rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-400">自动关联</span> : <><Button type="button" variant="ghost" size="icon" aria-label={`编辑 ${rate.model_name}`} className="size-9 text-muted-foreground opacity-70 transition-opacity hover:text-foreground group-hover:opacity-100" onClick={() => beginEdit(rate)}><Pencil className="size-3.5" /></Button><Button type="button" variant="ghost" size="icon" aria-label={`删除 ${rate.model_name}`} className="size-9 text-muted-foreground opacity-70 transition-opacity hover:text-destructive group-hover:opacity-100" onClick={() => void remove(rate)}><Trash2 className="size-3.5" /></Button></>}
               </div>

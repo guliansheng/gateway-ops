@@ -15,11 +15,12 @@ import { Switch } from "@/components/ui/switch"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useConfirm } from "@/components/ui/confirm-dialog"
 import { apiFetch } from "@/lib/api"
-import type { RelayAccountBatchActionResult, RelayUsageRange, RelayAccountTestResult, RelayAccountView, RelayGroupOption, RelayGroupTestResult, RelayGroupView, RelayOverview, RelayRecentUsage, RelayStation } from "@/lib/api-types"
+import type { RelayAccountBatchActionResult, RelayAccountBatchCloneGroup, RelayAccountBatchCloneResult, RelayUsageRange, RelayAccountTestResult, RelayAccountView, RelayGroupOption, RelayGroupTestResult, RelayGroupView, RelayOverview, RelayRecentUsage, RelayStation } from "@/lib/api-types"
 import { useRelayOverview, useRelayRecentUsage, useRelayStations, useRelayUsage, useRelayUserBalanceHistory, useSyncSettings } from "@/lib/queries"
 import { RelayAdjustmentLog } from "@/components/monitor/relay-adjustment-log"
 import { UserManagement } from "@/components/relay/user-management"
 import { PlatformBadge } from "@/components/relay/platform-badge"
+import { RecentUsageCard, RecentUsageTooltip, recentUsageTooltipClassName } from "@/components/monitor/recent-usage-tooltip"
 import { cn } from "@/lib/utils"
 
 type StationForm = { name: string; base_url: string; api_key: string }
@@ -39,6 +40,10 @@ type AccountAdjustmentDialogState = {
   accounts: RelayAccountView[]
   totalCount: number
 } | null
+type BatchCloneFormRow = { id: string; name: string; api_key: string; base_url: string }
+type BatchCloneFormGroup = { source_account_external_id: number; rows: BatchCloneFormRow[] }
+
+const batchCloneableAccountTypes = new Set(["apikey", "upstream", "bedrock", "service_account"])
 
 const emptyForm: StationForm = { name: "", base_url: "", api_key: "" }
 const rateIntervals = [5, 10, 15, 30, 60, 180, 360, 720, 1440]
@@ -425,9 +430,45 @@ function parseAccountTestOutput(output: string): AccountTestOutputView {
 function LatencyBars({ samples }: { samples: RelayAccountView["latency_samples"] }) {
   const ordered = [...samples].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()).slice(-30)
   if (ordered.length === 0) return <span className="font-mono text-xs text-muted-foreground">-</span>
-  return <Tooltip delayDuration={150}><TooltipTrigger asChild><div className="flex h-8 items-end gap-px" tabIndex={0} aria-label={`最近 ${ordered.length} 次调用延迟`}>
-    {ordered.map((sample, index) => { const first = latencyTone(sample.first_token_ms, "first"); const duration = latencyTone(sample.duration_ms, "duration"); return <span key={`${sample.created_at}-${index}`} className="h-full w-1 rounded-sm opacity-90 transition-opacity hover:opacity-100" style={{ background: `linear-gradient(to top, ${latencyColor[duration]} 0 50%, ${latencyColor[first]} 50% 100%)` }} /> })}
-  </div></TooltipTrigger><TooltipContent side="top" align="end" className="max-h-96 w-[440px] max-w-[calc(100vw-24px)] overflow-y-auto border border-slate-200 bg-white p-0 text-[11px] text-slate-900 shadow-xl dark:border-slate-200 dark:bg-white dark:text-slate-900 [&>svg]:hidden"><div className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2 font-medium"><span>最近 {ordered.length} 次调用</span><span className="text-slate-500">上半段首字 · 下半段总耗时</span></div><div className="divide-y divide-slate-100 px-3">{[...ordered].reverse().map((sample, index) => { const first = latencyTone(sample.first_token_ms, "first"); const duration = latencyTone(sample.duration_ms, "duration"); return <div key={`${sample.created_at}-detail-${index}`} className="grid grid-cols-[132px_minmax(0,1fr)] gap-2 py-2"><span className="whitespace-nowrap font-mono tabular-nums text-slate-500">{new Date(sample.created_at).toLocaleString()}</span><div className="min-w-0"><p className="truncate font-medium text-slate-900" title={sample.user_email || "用户邮箱未知"}>{sample.user_email || "用户邮箱未知"}</p><p className="mt-0.5 truncate text-slate-700" title={sample.model}>{sample.model || "-"}{sample.request_type ? ` · ${sample.request_type}` : ""}</p><p className="mt-1 flex flex-wrap gap-x-3 gap-y-1 font-mono font-semibold tabular-nums"><span className={first === "good" ? "text-emerald-700" : first === "warn" ? "text-amber-700" : first === "slow" ? "text-orange-700" : "text-red-700"}>首字 {formatLatency(sample.first_token_ms)}</span><span className={duration === "good" ? "text-emerald-700" : duration === "warn" ? "text-amber-700" : duration === "slow" ? "text-orange-700" : "text-red-700"}>总耗时 {formatLatency(sample.duration_ms)}</span></p></div></div> })}</div><div className="sticky bottom-0 flex flex-wrap gap-2 border-t border-slate-200 bg-slate-50 px-3 py-2 text-[10px] text-slate-500"><span><i className="mr-1 inline-block size-1.5 rounded-full bg-emerald-500" />{latencyText.good}</span><span><i className="mr-1 inline-block size-1.5 rounded-full bg-amber-400" />{latencyText.warn}</span><span><i className="mr-1 inline-block size-1.5 rounded-full bg-orange-500" />{latencyText.slow}</span><span><i className="mr-1 inline-block size-1.5 rounded-full bg-red-500" />{latencyText.critical}</span></div></TooltipContent></Tooltip>
+  return <Tooltip delayDuration={150}><TooltipTrigger asChild><div className="flex h-8 items-end gap-px" tabIndex={0} aria-label={"最近 " + ordered.length + " 次调用延迟"}>
+    {ordered.map((sample, index) => { const first = latencyTone(sample.first_token_ms, "first"); const duration = latencyTone(sample.duration_ms, "duration"); return <span key={sample.created_at + "-" + index} className="h-full w-1 rounded-sm opacity-90 transition-opacity hover:opacity-100" style={{ background: "linear-gradient(to top, " + latencyColor[duration] + " 0 50%, " + latencyColor[first] + " 50% 100%)" }} /> })}
+  </div></TooltipTrigger><TooltipContent side="top" align="end" className={recentUsageTooltipClassName}>
+    <RecentUsageTooltip count={ordered.length}>
+      {[...ordered].reverse().map((sample, index) => {
+        const first = latencyTone(sample.first_token_ms, "first")
+        const duration = latencyTone(sample.duration_ms, "duration")
+        const cacheCreationTokens = sample.cache_creation_tokens ?? 0
+        const cacheCreation5mTokens = sample.cache_creation_5m_tokens ?? 0
+        const cacheCreation1hTokens = sample.cache_creation_1h_tokens ?? 0
+        const cacheCreationTotal = cacheCreationTokens || cacheCreation5mTokens + cacheCreation1hTokens
+        const totalTokens = (sample.input_tokens ?? 0) + (sample.output_tokens ?? 0) + (sample.cache_read_tokens ?? 0) + cacheCreationTotal
+        return <RecentUsageCard key={sample.created_at + "-detail-" + index}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <time dateTime={sample.created_at} className="whitespace-nowrap font-mono text-xs font-semibold tabular-nums text-slate-700">{new Date(sample.created_at).toLocaleString()}</time>
+            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500">#{ordered.length - index}</span>
+          </div>
+          <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_7.5rem]">
+            <div className="min-w-0 rounded-md bg-slate-50 px-2.5 py-2 ring-1 ring-slate-200/70">
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <PlatformBadge platform={sample.platform} />
+                <span className="min-w-0 flex-1 truncate font-mono text-sm font-semibold leading-5 text-slate-950" title={sample.model || "-"}>{sample.model || "-"}</span>
+                {sample.request_type ? <span className="shrink-0 text-[11px] font-medium text-slate-600">{sample.request_type}</span> : null}
+              </div>
+              <p className="mt-1 truncate text-[11px] text-slate-600" title={sample.user_email || "用户邮箱未知"}>{sample.user_email || "用户邮箱未知"}</p>
+            </div>
+            <div className="rounded-md bg-slate-50 px-2.5 py-2 ring-1 ring-slate-200/70">
+              <p className="text-[9px] font-semibold uppercase text-slate-500">Token</p>
+            <p className="mt-0.5 font-mono text-sm font-semibold tabular-nums text-slate-950">{tokenAmount(totalTokens)}</p>
+            </div>
+          </div>
+          <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 rounded-md bg-slate-50 px-2.5 py-2 font-mono text-xs font-semibold tabular-nums ring-1 ring-slate-200/70">
+            <span className={latencyTextClass[first]}>首字 {formatLatency(sample.first_token_ms)}</span>
+            <span className={latencyTextClass[duration]}>总耗时 {formatLatency(sample.duration_ms)}</span>
+          </div>
+        </RecentUsageCard>
+      })}
+    </RecentUsageTooltip>
+  </TooltipContent></Tooltip>
 }
 
 function AccountName({ account }: { account: RelayAccountView }) {
@@ -1335,6 +1376,103 @@ function BatchGroupEditor({ groups, count, open, busy, onOpenChange, onSave }: {
   return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="max-w-xl"><DialogHeader><DialogTitle>批量调整销售分组</DialogTitle><DialogDescription>将为已选的 {count} 个账号设置相同的销售分组，提交后逐个同步到 Sub2API。</DialogDescription></DialogHeader><div className="max-h-[min(52vh,460px)] space-y-2 overflow-y-auto pr-1">{orderedGroups.map((group) => { const checked = ids.includes(group.external_id); return <label key={group.external_id} className={cn("flex cursor-pointer items-center justify-between gap-3 border px-3 py-2.5 transition-colors", checked ? "border-brand/50 bg-brand/5" : "border-border hover:bg-muted/40")}><span className="flex min-w-0 items-center gap-3"><Checkbox checked={checked} onCheckedChange={(value) => setIDs((current) => value === true ? [...new Set([...current, group.external_id])] : current.filter((id) => id !== group.external_id))} /><span className="min-w-0"><span className="flex flex-wrap items-center gap-1.5"><span className="block truncate text-sm font-medium">{group.name}</span><span className={cn("rounded px-1.5 py-0.5 text-[10px] font-medium", group.is_exclusive ? "bg-warning/10 text-warning" : "bg-blue-500/10 text-blue-700 dark:text-blue-400")}>{group.is_exclusive ? "专属" : "公开"}</span></span><span className="mt-1 block text-[11px] text-muted-foreground">{group.platform || "-"} · {group.require_oauth_only ? "OAuth 类型" : "通用类型"} · 倍率 {multiplier(group.rate_multiplier)}</span></span></span><span className={cn("size-2 rounded-full", group.status === "active" ? "bg-success" : "bg-muted-foreground")} /></label> })}</div><DialogFooter><Button type="button" variant="outline" onClick={() => onOpenChange(false)}>取消</Button><Button type="button" disabled={busy} onClick={() => onSave(ids)}>保存分组</Button></DialogFooter></DialogContent></Dialog>
 }
 
+function newBatchCloneRow(sourceName: string, baseURL: string): BatchCloneFormRow {
+  return { id: `${Date.now()}-${Math.random()}`, name: sourceName, api_key: "", base_url: baseURL }
+}
+
+function BatchCloneDialog({ accounts, open, busy, result, onOpenChange, onSubmit }: { accounts: RelayAccountView[]; open: boolean; busy: boolean; result: RelayAccountBatchCloneResult | null; onOpenChange: (open: boolean) => void; onSubmit: (groups: RelayAccountBatchCloneGroup[]) => void }) {
+  const [formGroups, setFormGroups] = useState<BatchCloneFormGroup[]>([])
+  const [error, setError] = useState("")
+  const accountByID = useMemo(() => new Map(accounts.map((account) => [account.external_id, account])), [accounts])
+  const total = formGroups.reduce((sum, group) => sum + group.rows.length, 0)
+
+  function close() {
+    if (busy) return
+    setFormGroups([])
+    setError("")
+    onOpenChange(false)
+  }
+
+  function toggleSource(account: RelayAccountView, checked: boolean) {
+    setError("")
+    setFormGroups((current) => {
+      if (!checked) return current.filter((group) => group.source_account_external_id !== account.external_id)
+      if (current.some((group) => group.source_account_external_id === account.external_id)) return current
+      return [...current, { source_account_external_id: account.external_id, rows: [newBatchCloneRow(account.name, account.base_url?.trim() || "")] }]
+    })
+  }
+
+  function updateRow(sourceID: number, rowID: string, patch: Partial<BatchCloneFormRow>) {
+    setError("")
+    setFormGroups((current) => current.map((group) => group.source_account_external_id === sourceID ? { ...group, rows: group.rows.map((row) => row.id === rowID ? { ...row, ...patch } : row) } : group))
+  }
+
+  function addRow(sourceID: number) {
+    const source = accountByID.get(sourceID)
+    if (!source) return
+    const group = formGroups.find((item) => item.source_account_external_id === sourceID)
+    if (group && group.rows.length >= 100) {
+      setError("每个源账号最多新增 100 个账号")
+      return
+    }
+    setError("")
+    setFormGroups((current) => current.map((group) => group.source_account_external_id === sourceID ? { ...group, rows: [...group.rows, newBatchCloneRow(source.name, source.base_url?.trim() || "")] } : group))
+  }
+
+  function removeRow(sourceID: number, rowID: string) {
+    setError("")
+    setFormGroups((current) => current.map((group) => group.source_account_external_id === sourceID && group.rows.length > 1 ? { ...group, rows: group.rows.filter((row) => row.id !== rowID) } : group))
+  }
+
+  function submit() {
+    if (formGroups.length === 0) {
+      setError("至少选择一个源账号")
+      return
+    }
+    if (total > 300) {
+      setError("一次最多新增 300 个账号")
+      return
+    }
+    for (const group of formGroups) {
+      const source = accountByID.get(group.source_account_external_id)
+      if (!source) {
+        setError("源账号已不在当前快照中，请关闭后刷新重试")
+        return
+      }
+      for (const row of group.rows) {
+        if (!row.api_key.trim()) {
+          setError(`请填写“${source.name}”分组中每个新账号的 API Key`)
+          return
+        }
+      }
+    }
+    onSubmit(formGroups.map((group) => ({ source_account_external_id: group.source_account_external_id, accounts: group.rows.map((row) => ({ name: row.name.trim(), api_key: row.api_key.trim(), base_url: row.base_url.trim() })) })))
+  }
+
+  return <Dialog open={open} onOpenChange={(next) => { if (next) onOpenChange(true); else close() }}>
+    <DialogContent className="flex w-[calc(100vw-2rem)] max-h-[calc(100dvh-2rem)] max-w-4xl flex-col overflow-hidden p-0">
+      {result ? <>
+        <DialogHeader className="shrink-0 border-b border-border px-4 py-5 sm:px-6"><DialogTitle>批量新增结果</DialogTitle><DialogDescription>已完成逐个克隆和更新，API Key 不会显示在结果中。</DialogDescription></DialogHeader>
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4 sm:px-6">
+          <div className="grid grid-cols-3 gap-2 text-center"><div className="rounded-md border border-border bg-muted/40 px-2 py-2"><p className="text-[11px] text-muted-foreground">请求</p><p className="font-mono text-base font-semibold tabular-nums">{result.requested}</p></div><div className="rounded-md border border-success/25 bg-success/10 px-2 py-2"><p className="text-[11px] text-success">成功</p><p className="font-mono text-base font-semibold tabular-nums text-success">{result.succeeded}</p></div><div className="rounded-md border border-danger/25 bg-danger/10 px-2 py-2"><p className="text-[11px] text-danger">失败</p><p className="font-mono text-base font-semibold tabular-nums text-danger">{result.failed}</p></div></div>
+          {result.sync_error ? <Alert variant="destructive"><CircleAlert className="size-4" /><AlertDescription>账号已在上游处理，但刷新本地快照失败：{result.sync_error}</AlertDescription></Alert> : null}
+          <div className="max-h-[min(52vh,480px)] space-y-2 overflow-y-auto pr-1">{result.results.map((item, index) => <div key={`${item.source_account_external_id}-${item.external_id}-${index}`} className="flex min-w-0 items-start gap-2 rounded-md border border-border bg-card px-3 py-2.5 text-xs"><span className={cn("mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full", item.success ? "bg-success/10 text-success" : "bg-danger/10 text-danger")}>{item.success ? <Check className="size-3" /> : <CircleAlert className="size-3" />}</span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center justify-between gap-2"><span className="min-w-0 break-words font-medium">{item.name}</span><span className={cn("shrink-0 font-mono tabular-nums", item.success ? "text-muted-foreground" : "text-danger")}>{item.success ? `已创建 #${item.external_id}` : "创建失败"}</span></div><p className="mt-1 text-[11px] text-muted-foreground">源账号：{item.source_account_name} · #{item.source_account_external_id}</p>{item.error ? <p className="mt-1 break-words whitespace-pre-wrap text-[11px] text-danger">{item.error}</p> : null}</div></div>)}</div>
+        </div>
+        <DialogFooter className="shrink-0 border-t border-border px-4 py-4 sm:px-6"><Button type="button" onClick={close}>关闭</Button></DialogFooter>
+      </> : <>
+        <DialogHeader className="shrink-0 border-b border-border px-4 py-5 sm:px-6"><DialogTitle>批量新增账号</DialogTitle><DialogDescription>选择多个已有账号作为模板，每个模板下可新增多行。新账号会完整克隆模板，可分别修改名称、API Key 和 Base URL，并默认关闭。</DialogDescription></DialogHeader>
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4 sm:px-6">
+          <div className="space-y-2"><div className="flex items-center justify-between gap-3"><Label>选择源账号</Label><span className="text-[11px] text-muted-foreground">已选 {formGroups.length} 个</span></div><div className="grid max-h-48 gap-2 overflow-y-auto pr-1 sm:grid-cols-2">{accounts.length === 0 ? <p className="col-span-full rounded-md border border-dashed border-border px-3 py-5 text-center text-xs text-muted-foreground">当前没有可用账号</p> : accounts.map((account) => { const checked = formGroups.some((group) => group.source_account_external_id === account.external_id); const id = `batch-clone-source-${account.external_id}`; return <label key={account.external_id} htmlFor={id} className={cn("flex min-w-0 cursor-pointer items-center gap-2 rounded-md border px-3 py-2.5 transition-colors", checked ? "border-brand/50 bg-brand/5" : "border-border hover:bg-muted/40")}><Checkbox id={id} checked={checked} disabled={busy} onCheckedChange={(value) => toggleSource(account, value === true)} /><span className="min-w-0 flex-1"><span className="block truncate text-xs font-medium" title={account.name}>{account.name}</span><span className="mt-0.5 block truncate text-[11px] text-muted-foreground">#{account.external_id} · {account.platform || "-"} · {account.type || "未知类型"}</span></span></label> })}</div></div>
+          {formGroups.length === 0 ? <div className="rounded-md border border-dashed border-border bg-muted/20 px-4 py-8 text-center text-xs text-muted-foreground">选择源账号后，在这里为每个源账号填写要新增的账号。</div> : <div className="space-y-3">{formGroups.map((group) => { const source = accountByID.get(group.source_account_external_id); if (!source) return null; return <div key={group.source_account_external_id} className="space-y-3 rounded-md border border-border p-3"><div className="flex min-w-0 flex-wrap items-center justify-between gap-2"><div className="min-w-0"><p className="truncate text-sm font-semibold" title={source.name}>{source.name}</p><p className="mt-0.5 text-[11px] text-muted-foreground">源账号 #{source.external_id} · {source.type || "未知类型"} · 新账号默认关闭</p></div><span className="shrink-0 rounded bg-brand/10 px-2 py-1 text-[11px] font-medium text-brand">{group.rows.length} 个新账号</span></div><div className="space-y-2">{group.rows.map((row, index) => <div key={row.id} className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_40px]"><div className="space-y-1"><Label htmlFor={`${row.id}-name`} className="text-[11px] text-muted-foreground">账号名称 {index + 1}</Label><Input id={`${row.id}-name`} value={row.name} disabled={busy} onChange={(event) => updateRow(group.source_account_external_id, row.id, { name: event.target.value })} placeholder={source.name} maxLength={255} /></div><div className="space-y-1"><Label htmlFor={`${row.id}-key`} className="text-[11px] text-muted-foreground">API Key</Label><Input id={`${row.id}-key`} type="password" autoComplete="new-password" value={row.api_key} disabled={busy} onChange={(event) => updateRow(group.source_account_external_id, row.id, { api_key: event.target.value })} placeholder="粘贴新账号 API Key" /></div><div className="space-y-1"><Label htmlFor={`${row.id}-base-url`} className="text-[11px] text-muted-foreground">Base URL</Label><Input id={`${row.id}-base-url`} type="url" value={row.base_url} disabled={busy} onChange={(event) => updateRow(group.source_account_external_id, row.id, { base_url: event.target.value })} placeholder="沿用源账号地址" maxLength={1024} /></div><div className="flex items-end justify-end"><Button type="button" variant="ghost" size="icon" className="size-10" aria-label={`删除第 ${index + 1} 个新账号`} title="删除新账号" disabled={busy || group.rows.length <= 1} onClick={() => removeRow(group.source_account_external_id, row.id)}><Trash2 className="size-4 text-danger" /></Button></div></div>)}</div><Button type="button" variant="outline" size="sm" className="h-9 gap-1.5" disabled={busy || total >= 300} onClick={() => addRow(group.source_account_external_id)}><Plus className="size-3.5" />继续添加账号</Button></div> })}</div>}
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3 text-xs"><span className="text-muted-foreground">预计新增 <strong className="font-mono text-foreground">{total}</strong> 个账号</span><span className="text-muted-foreground">名称留空使用源账号名称 · Base URL 默认沿用源账号地址 · 最多 300 个</span></div>
+          {error ? <Alert variant="destructive" className="py-3"><CircleAlert className="size-4" /><AlertDescription>{error}</AlertDescription></Alert> : null}
+        </div>
+        <DialogFooter className="shrink-0 border-t border-border px-4 py-4 sm:px-6"><Button type="button" variant="outline" disabled={busy} onClick={close}>取消</Button><Button type="button" className="gap-1.5" disabled={busy || formGroups.length === 0 || total === 0} onClick={submit}>{busy ? <RefreshCw className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />}开始批量新增</Button></DialogFooter>
+      </>}
+    </DialogContent>
+  </Dialog>
+}
+
 export default function RelayStationsPage() {
   const stations = useRelayStations()
   const { confirm, dialog: confirmDialog } = useConfirm()
@@ -1350,6 +1488,8 @@ export default function RelayStationsPage() {
   const [form, setForm] = useState<StationForm>(emptyForm)
   const [editingID, setEditingID] = useState<number | null>(null)
   const [showForm, setShowForm] = useState(false)
+  const [batchCloneOpen, setBatchCloneOpen] = useState(false)
+  const [batchCloneResult, setBatchCloneResult] = useState<RelayAccountBatchCloneResult | null>(null)
   const [busy, setBusy] = useState(false)
   const [autoRateSyncEnabled, setAutoRateSyncEnabled] = useState(false)
   const [autoRateSyncInterval, setAutoRateSyncInterval] = useState(60)
@@ -1407,6 +1547,7 @@ export default function RelayStationsPage() {
   useEffect(() => { if (!syncSettings.data) return; setAutoRateSyncEnabled(syncSettings.data.relay_rate_enabled); setAutoRateSyncInterval(syncSettings.data.relay_rate_interval_minutes || 60); setAutoSnapshotSyncEnabled(syncSettings.data.relay_snapshot_enabled); setAutoSnapshotSyncInterval(syncSettings.data.relay_snapshot_interval_seconds || (syncSettings.data.relay_snapshot_interval_minutes || 60) * 60) }, [syncSettings.data])
   useEffect(() => { if (!overview.data) return; setAutoAdjustEnabled(overview.data.station.auto_adjust_enabled); setAutoAdjustNoProfitEnabled(overview.data.station.auto_adjust_no_profit_enabled); setAutoPriorityEnabled(overview.data.station.auto_priority_enabled); setAutoPriorityRecallEnabled(overview.data.station.auto_priority_recall_enabled); setAutoPriorityRecallMinutes(overview.data.station.auto_priority_recall_minutes || 180) }, [overview.data])
   useEffect(() => { setSelected([]) }, [selectedID])
+  useEffect(() => { setBatchCloneOpen(false); setBatchCloneResult(null) }, [selectedID])
   useEffect(() => { if (selectedID != null && overview.data) lastOverviewByStation.current.set(selectedID, overview.data) }, [overview.data, selectedID])
 
   const baseOverview = overview.data ?? (selectedID == null ? null : lastOverviewByStation.current.get(selectedID) ?? null)
@@ -1425,6 +1566,7 @@ export default function RelayStationsPage() {
     }
   }, [baseOverview, usage.data, usageRange])
   const managedAccounts = useMemo(() => (currentOverview?.accounts ?? []).filter((account) => account.type?.trim().toLowerCase() !== "oauth"), [currentOverview])
+  const cloneableAccounts = useMemo(() => managedAccounts.filter((account) => batchCloneableAccountTypes.has(account.type?.trim().toLowerCase() ?? "")), [managedAccounts])
   const managedAccountIDs = useMemo(() => new Set(managedAccounts.map((account) => account.external_id)), [managedAccounts])
   const usageTotals = useMemo(() => (usage.data?.accounts ?? []).filter((account) => managedAccountIDs.has(account.external_id)).reduce((totals, account) => ({
     tokens: totals.tokens + account.usage_total_tokens,
@@ -1517,6 +1659,8 @@ export default function RelayStationsPage() {
 
   async function reload() { await Promise.all([stations.refetch(), overview.refetch(), usage.refetch(), recentUsage.refetch()]) }
   function openCreate() { setEditingID(null); setForm(emptyForm); setShowForm(true) }
+  function openBatchClone() { if (cloneableAccounts.length === 0) { toast.info("当前没有支持克隆的账号"); return }; setBatchCloneResult(null); setBatchCloneOpen(true) }
+  function closeBatchClone() { if (busy) return; setBatchCloneOpen(false); setBatchCloneResult(null) }
   function openEdit() { if (selectedStation) { setEditingID(selectedStation.id); setForm({ name: selectedStation.name, base_url: selectedStation.base_url, api_key: "" }); setShowForm(true) } }
   async function saveStation(event: React.FormEvent) { event.preventDefault(); setBusy(true); try { const payload = editingID == null ? form : { name: form.name, base_url: form.base_url, ...(form.api_key ? { api_key: form.api_key } : {}) }; const station = await apiFetch<RelayStation>(editingID == null ? "/relay-stations" : `/relay-stations/${editingID}`, { method: editingID == null ? "POST" : "PUT", body: JSON.stringify(payload) }); setShowForm(false); setSelectedID(station.id); await reload(); toast.success(editingID == null ? "中转站已添加" : "中转站配置已更新") } catch (error) { toast.error(error instanceof Error ? error.message : "保存失败") } finally { setBusy(false) } }
   async function sync() { if (!selectedID) return; setBusy(true); try { await apiFetch(`/relay-stations/${selectedID}/sync`, { method: "POST" }); await reload(); toast.success("已实时探测 API Key 成本并刷新账号快照") } catch (error) { toast.error(error instanceof Error ? error.message : "同步失败"); await reload() } finally { setBusy(false) } }
@@ -1542,6 +1686,7 @@ export default function RelayStationsPage() {
   async function refreshAccounts() { await Promise.all([overview.refetch(), usage.refetch()]); toast.success("账号列表已刷新") }
   async function refreshGroups() { await overview.refetch(); toast.success("分组列表已刷新") }
   async function saveBatchOverride(clear = false) { if (!selectedID || selected.length === 0) return; if (batchMode === "groups") { setBatchGroupDialogOpen(true); return } if (!clear && batchMode === "channel_group" && (!batchChannelID || !batchGroup)) { toast.error("请选择渠道和渠道分组"); return } if (!clear && batchMode === "manual" && (!batchMultiplier || !Number.isFinite(Number(batchMultiplier)) || Number(batchMultiplier) < 0)) { toast.error("手工倍率必须是非负数"); return } setBusy(true); try { await apiFetch(`/relay-stations/${selectedID}/accounts/cost-overrides`, { method: "PUT", body: JSON.stringify({ account_external_ids: selected, clear, mode: batchMode, monitor_channel_id: batchChannelID ? Number(batchChannelID) : undefined, upstream_group: batchGroup, manual_multiplier: batchMode === "manual" ? Number(batchMultiplier) : undefined }) }); setSelected([]); await reload(); toast.success(clear ? "已清除账号成本覆盖" : "账号成本覆盖已保存") } catch (error) { toast.error(error instanceof Error ? error.message : "保存成本覆盖失败") } finally { setBusy(false) } }
+  async function submitBatchClone(groups: RelayAccountBatchCloneGroup[]) { if (!selectedID) return; setBusy(true); try { const result = await apiFetch<RelayAccountBatchCloneResult>(`/relay-stations/${selectedID}/accounts/batch-clone`, { method: "POST", body: JSON.stringify({ groups }) }); setBatchCloneResult(result); await reload(); if (result.sync_error) toast.warning(`已新增 ${result.succeeded} 个账号，但本地快照刷新失败`); else if (result.failed) toast.warning(`批量新增完成：成功 ${result.succeeded} 个，失败 ${result.failed} 个`); else toast.success(`已批量新增 ${result.succeeded} 个账号`) } catch (error) { toast.error(error instanceof Error ? error.message : "批量新增账号失败") } finally { setBusy(false) } }
   async function saveBatchRuntimeSettings() { if (!selectedID || selected.length === 0 || (batchMode !== "concurrency" && batchMode !== "priority" && batchMode !== "retry_count")) return; const value = Number(batchRuntimeValue); if (batchMode === "retry_count") { if (!Number.isInteger(value) || value < 0 || value > 10) { toast.error("同账号重试次数必须是 0 到 10 的整数"); return } const selectedAccounts = currentOverview?.accounts.filter((account) => selected.includes(account.external_id)) ?? []; const unsupported = selectedAccounts.find((account) => !["apikey", "bedrock"].includes((account.type || "").toLowerCase())); if (unsupported) { toast.error(`账号“${unsupported.name}”不支持同账号重试次数，仅支持 API Key 或 Bedrock 账号`); return } const poolModeOff = selectedAccounts.find((account) => account.pool_mode !== true); if (poolModeOff) { toast.error(`账号“${poolModeOff.name}”未开启池模式，请先在 Sub2API 账号编辑中开启池模式`); return } } else { if (!Number.isInteger(value) || value < 1 || value > 1000) { toast.error(`${batchMode === "concurrency" ? "并发数" : "优先级"}必须是 1 到 1000 的整数`); return } if (batchMode === "priority" && value === 1 && currentOverview?.accounts.some((account) => selected.includes(account.external_id) && account.type?.toLowerCase() !== "oauth")) { toast.error("优先级 1 仅保留给 OAuth 账号"); return } } setBusy(true); try { const field = batchMode === "retry_count" ? "pool_mode_retry_count" : batchMode; await apiFetch(`/relay-stations/${selectedID}/accounts/runtime-settings`, { method: "PUT", body: JSON.stringify({ account_external_ids: selected, [field]: value }) }); setSelected([]); setBatchRuntimeValue(""); await reload(); toast.success(`已批量设置账号${batchMode === "concurrency" ? "并发数" : batchMode === "priority" ? "优先级" : "同账号重试次数"}`) } catch (error) { toast.error(error instanceof Error ? error.message : "批量设置失败") } finally { setBusy(false) } }
   async function saveBatchModelType() { if (!selectedID || selected.length === 0) return; setBusy(true); try { await apiFetch(`/relay-stations/${selectedID}/accounts/model-types`, { method: "PUT", body: JSON.stringify({ account_external_ids: selected, model_type: batchModelType }) }); setSelected([]); setBatchModelType(""); await reload(); toast.success("已批量设置账号模型类型") } catch (error) { toast.error(error instanceof Error ? error.message : "批量设置模型类型失败") } finally { setBusy(false) } }
   async function saveBatchGroups(ids: number[]) { if (!selectedID || selected.length === 0) return; if (ids.length === 0) { toast.error("至少选择一个销售分组"); return } setBusy(true); try { await apiFetch(`/relay-stations/${selectedID}/accounts/groups`, { method: "PUT", body: JSON.stringify({ account_external_ids: selected, group_external_ids: ids }) }); setBatchGroupDialogOpen(false); setSelected([]); await reload(); toast.success("已批量调整账号销售分组") } catch (error) { toast.error(error instanceof Error ? error.message : "批量调整分组失败") } finally { setBusy(false) } }
@@ -1622,7 +1767,7 @@ export default function RelayStationsPage() {
         <CardHeader className="gap-3 px-4 py-3">
           <div className="flex items-center justify-between gap-3"><div className="min-w-0"><CardTitle className="flex items-center gap-2 text-sm font-semibold"><ShieldAlert className="size-4 text-brand" />账号列表</CardTitle>{accountListOpen ? <p className="mt-1 text-xs text-muted-foreground">展示非 OAuth 账号的调度、成本、销售分组与风险；成本覆盖优先于实时探测。</p> : null}</div><div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">{accountListOpen ? <>{usage.loading ? <span className="flex items-center gap-1 text-xs text-muted-foreground" aria-live="polite"><RefreshCw className="size-3 animate-spin" />消费统计读取中</span> : usage.error ? <span className="max-w-[min(34rem,50vw)] text-right text-xs leading-5 text-danger" title={usage.error}>消费统计读取失败</span> : usage.data && !usage.data.complete ? <span className="max-w-[min(38rem,50vw)] text-right text-xs leading-5 text-warning">有 {usage.data.failed_accounts} 个账号的区间消费读取失败，账号卡片中的消费数据可能不完整。</span> : null}<span className="shrink-0 text-xs text-muted-foreground">{filteredAccounts.length} / {managedAccounts.length} 个</span></> : null}<Button type="button" variant="ghost" size="icon" className="size-9 shrink-0" aria-label={accountListOpen ? "收起账号列表" : "展开账号列表"} aria-expanded={accountListOpen} onClick={() => setAccountListOpen((value) => !value)}><ChevronDown className={cn("size-4 transition-transform duration-200", accountListOpen && "rotate-180")} /></Button></div></div>
           {accountListOpen ? <div className="flex flex-wrap items-center justify-end gap-2"><div className="mr-auto flex flex-wrap items-center gap-4" aria-live="polite"><div className="flex min-w-32 items-center gap-2"><span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-amber-400/15 text-amber-600 dark:text-amber-400"><Box className="size-4" /></span><div><p className="text-[10px] text-muted-foreground">总 Token</p><p className="font-mono text-sm font-semibold tabular-nums text-foreground">{usage.loading && !usage.data ? "读取中…" : compactNumber.format(usageTotals.tokens)}</p></div></div><div className="flex min-w-32 items-center gap-2"><span className="flex size-9 shrink-0 items-center justify-center rounded-md bg-success/10 text-success"><CircleDollarSign className="size-4" /></span><div><p className="text-[10px] text-muted-foreground">总消费</p><p className="font-mono text-sm font-semibold tabular-nums text-success">{usage.loading && !usage.data ? "读取中…" : chargeAmount(usageTotals.charge)}</p></div></div></div><div className="relative"><Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" /><Input value={accountNameFilter} onChange={(event) => setAccountNameFilter(event.target.value)} placeholder="输入账号名称" aria-label="按账号名称筛选" className="h-11 w-44 pl-8 text-xs sm:h-9 sm:w-40" /></div><Select value={usageRange} onValueChange={(value) => setUsageRange(value as RelayUsageRange)}><SelectTrigger className="h-11 w-24 text-xs sm:h-9" aria-label="账号消费统计时间范围"><SelectValue /></SelectTrigger><SelectContent>{usageRanges.map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select><Select value={modelTypeFilter} onValueChange={setModelTypeFilter}><SelectTrigger className="h-11 w-32 text-xs sm:h-9" aria-label="按模型类型筛选"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部模型类型</SelectItem><SelectItem value="__unassigned">未绑定模型类型</SelectItem>{accountModelTypeOptions.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select><Select value={schedulableFilter} onValueChange={(value) => setSchedulableFilter(value as "enabled" | "disabled" | "all")}><SelectTrigger className="h-11 w-28 text-xs sm:h-9"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="enabled">调度开启</SelectItem><SelectItem value="disabled">调度关闭</SelectItem><SelectItem value="all">全部调度</SelectItem></SelectContent></Select><Select value={riskFilter} onValueChange={(value) => setRiskFilter(value as RiskFilter)}><SelectTrigger className="h-11 w-28 text-xs sm:h-9" aria-label="按账号状态筛选"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部账号</SelectItem><SelectItem value="adjustable">可调组</SelectItem><SelectItem value="downgradable">可降级</SelectItem>{Object.entries(stateMeta).map(([value, meta]) => <SelectItem key={value} value={value}>{meta.label}</SelectItem>)}</SelectContent></Select><Select value={groupFilter} onValueChange={setGroupFilter}><SelectTrigger className="h-11 w-36 text-xs sm:h-9"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部销售分组</SelectItem>{publicFirst(currentOverview.groups).map((group) => <SelectItem key={group.external_id} value={String(group.external_id)}><span className="flex w-full min-w-0 items-center justify-between gap-3"><span className="truncate">{group.name} · {group.platform || "-"}</span><span className={cn("shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium", group.is_exclusive ? "bg-warning/10 text-warning" : "bg-blue-500/10 text-blue-700 dark:text-blue-400")}>{group.is_exclusive ? "专属" : "公开"}</span></span></SelectItem>)}</SelectContent></Select><Button type="button" variant="outline" size="sm" className="h-11 gap-1.5 sm:h-9" onClick={resetFilters}><RotateCcw className="size-3.5" />重置</Button><Button type="button" variant="outline" size="sm" className="h-11 gap-1.5 sm:h-9" disabled={busy || overview.refreshing} onClick={() => void refreshAccounts()}><RefreshCw className={cn("size-3.5", overview.refreshing && "animate-spin")} />刷新</Button></div> : null}
-          {accountListOpen ? <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border pt-2"><span className="ml-auto whitespace-nowrap text-xs text-muted-foreground">作用于当前筛选的 <strong className="font-semibold text-foreground">{filteredAccounts.length}</strong> 个账号</span><Button type="button" variant="outline" size="sm" className="h-9 gap-1.5" title={`启用当前筛选结果中 ${filteredEnableCount} 个未开启调度的账号`} disabled={busy || filteredEnableCount === 0} onClick={() => void runFilteredAccountAction("schedulable", true, "一键启用调度")}><Power className="size-3.5" />全部启用</Button><Button type="button" variant="outline" size="sm" className="h-9 gap-1.5" title={`禁用当前筛选结果中 ${filteredDisableCount} 个已开启调度的账号`} disabled={busy || filteredDisableCount === 0} onClick={() => void runFilteredAccountAction("schedulable", false, "一键禁用调度")}><PowerOff className="size-3.5" />全部禁用</Button><Button type="button" variant="outline" size="sm" className="h-9 gap-1.5" title={`接受当前筛选结果中 ${filteredSuggestionCount} 个账号的推荐调组`} disabled={busy || filteredSuggestionCount === 0} onClick={() => void runFilteredAccountAction("apply-suggestions", undefined, "接受推荐调组")}><ListChecks className="size-3.5" />接受推荐调组 <span className="text-[10px] text-muted-foreground">{filteredSuggestionCount}</span></Button><Button type="button" variant="outline" size="sm" className="h-9 gap-1.5" title={`接受当前筛选结果中 ${filteredDowngradeCount} 个账号的推荐降级`} disabled={busy || filteredDowngradeCount === 0} onClick={() => void runFilteredAccountAction("add-downgrades", undefined, "接受推荐降级")}><TrendingDown className="size-3.5" />接受推荐降级 <span className="text-[10px] text-muted-foreground">{filteredDowngradeCount}</span></Button></div> : null}
+          {accountListOpen ? <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border pt-2"><span className="ml-auto whitespace-nowrap text-xs text-muted-foreground">作用于当前筛选的 <strong className="font-semibold text-foreground">{filteredAccounts.length}</strong> 个账号</span><Button type="button" variant="outline" size="sm" className="h-9 gap-1.5" title={`启用当前筛选结果中 ${filteredEnableCount} 个未开启调度的账号`} disabled={busy || filteredEnableCount === 0} onClick={() => void runFilteredAccountAction("schedulable", true, "一键启用调度")}><Power className="size-3.5" />全部启用</Button><Button type="button" variant="outline" size="sm" className="h-9 gap-1.5" title={`禁用当前筛选结果中 ${filteredDisableCount} 个已开启调度的账号`} disabled={busy || filteredDisableCount === 0} onClick={() => void runFilteredAccountAction("schedulable", false, "一键禁用调度")}><PowerOff className="size-3.5" />全部禁用</Button><Button type="button" variant="outline" size="sm" className="h-9 gap-1.5" title={`接受当前筛选结果中 ${filteredSuggestionCount} 个账号的推荐调组`} disabled={busy || filteredSuggestionCount === 0} onClick={() => void runFilteredAccountAction("apply-suggestions", undefined, "接受推荐调组")}><ListChecks className="size-3.5" />接受推荐调组 <span className="text-[10px] text-muted-foreground">{filteredSuggestionCount}</span></Button><Button type="button" variant="outline" size="sm" className="h-9 gap-1.5" title={`接受当前筛选结果中 ${filteredDowngradeCount} 个账号的推荐降级`} disabled={busy || filteredDowngradeCount === 0} onClick={() => void runFilteredAccountAction("add-downgrades", undefined, "接受推荐降级")}><TrendingDown className="size-3.5" />接受推荐降级 <span className="text-[10px] text-muted-foreground">{filteredDowngradeCount}</span></Button><Button type="button" variant="outline" size="sm" className="h-9 gap-1.5" disabled={busy || !cloneableAccounts.length} onClick={openBatchClone}><Plus className="size-3.5" />批量新增账号</Button></div> : null}
         </CardHeader>
         {accountListOpen ? <CardContent className="border-t border-border p-0">
           {selected.length ? <div className="border-b border-brand/20 bg-brand/5 px-4 py-2.5"><div className="flex flex-wrap items-center gap-2"><div className="mr-2 flex items-center gap-2 text-xs font-medium text-brand"><Users className="size-4" />已选 {selected.length} 个账号</div><Select value={batchMode} onValueChange={(value) => { setBatchMode(value as BatchMode); setBatchRuntimeValue("") }}><SelectTrigger className="h-9 w-40 text-xs"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="groups">批量调整分组</SelectItem><SelectItem value="model_type">设置模型类型</SelectItem><SelectItem value="concurrency">设置并发数</SelectItem><SelectItem value="priority">设置优先级</SelectItem><SelectItem value="retry_count">设置同账号重试次数</SelectItem><SelectItem value="channel_group">渠道分组绑定</SelectItem><SelectItem value="manual">手工设置倍率</SelectItem></SelectContent></Select>{batchMode === "model_type" ? <><Select value={batchModelType || "__empty"} onValueChange={(value) => setBatchModelType(value === "__empty" ? "" : value)}><SelectTrigger className="h-9 w-44 text-xs"><SelectValue placeholder="选择模型类型" /></SelectTrigger><SelectContent><SelectItem value="__empty">清除类型</SelectItem>{modelTypeOptions.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select><Button size="sm" className="h-9 gap-1.5" disabled={busy} onClick={() => void saveBatchModelType()}><Save className="size-3.5" />保存</Button></> : batchMode === "channel_group" ? <><Select value={batchChannelID} onValueChange={(value) => { setBatchChannelID(value); setBatchGroup("") }}><SelectTrigger className="h-9 w-48 text-xs"><SelectValue placeholder="选择当前渠道" /></SelectTrigger><SelectContent>{currentOverview.monitor_channels.map((channel) => <SelectItem key={channel.id} value={String(channel.id)}>{channel.name}</SelectItem>)}</SelectContent></Select><Select value={batchGroup} onValueChange={(value) => setBatchGroup(value)} disabled={!batchChannelID}><SelectTrigger className="h-9 w-52 text-xs"><SelectValue placeholder="选择渠道分组" /></SelectTrigger><SelectContent>{batchGroups.map((group) => <SelectItem key={group} value={group}>{group}</SelectItem>)}</SelectContent></Select></> : batchMode === "manual" ? <Input className="h-9 w-44 font-mono text-xs" inputMode="decimal" value={batchMultiplier} onChange={(event) => setBatchMultiplier(event.target.value)} placeholder="成本倍率，如 0.8" /> : batchMode === "concurrency" || batchMode === "priority" || batchMode === "retry_count" ? <Input className="h-9 w-36 font-mono text-xs" inputMode="numeric" value={batchRuntimeValue} onChange={(event) => setBatchRuntimeValue(event.target.value)} placeholder={batchMode === "retry_count" ? "同账号重试次数 0-10" : batchMode === "concurrency" ? "并发数 1-1000" : "优先级 1-1000"} aria-label={batchMode === "retry_count" ? "批量设置同账号重试次数" : batchMode === "concurrency" ? "批量设置并发数" : "批量设置优先级"} /> : <Button size="sm" variant="outline" className="h-9 gap-1.5" disabled={busy} onClick={() => setBatchGroupDialogOpen(true)}><SlidersHorizontal className="size-3.5" />选择销售分组</Button>}{batchMode === "groups" || batchMode === "model_type" ? null : batchMode === "concurrency" || batchMode === "priority" || batchMode === "retry_count" ? <Button size="sm" className="h-9 gap-1.5" disabled={busy} onClick={() => void saveBatchRuntimeSettings()}><Save className="size-3.5" />保存</Button> : <><Button size="sm" className="h-9 gap-1.5" disabled={busy} onClick={() => void saveBatchOverride()}><Save className="size-3.5" />保存覆盖</Button><Button size="sm" variant="outline" className="h-9 gap-1.5" disabled={busy} onClick={() => void saveBatchOverride(true)}><X className="size-3.5" />清除覆盖</Button></>}</div></div> : null}
@@ -1633,6 +1778,7 @@ export default function RelayStationsPage() {
 
       <RelayAdjustmentLog rows={currentOverview.adjustments} refreshing={overview.refreshing} />
     </div> : overview.error ? <Alert variant="destructive"><CircleAlert /><AlertTitle>读取失败</AlertTitle><AlertDescription>{overview.error}</AlertDescription></Alert> : null}</div></div> : <div className="border border-dashed border-border px-4 py-12 text-center"><Server className="mx-auto size-8 text-muted-foreground" /><p className="mt-3 text-sm font-medium">还没有配置中转站</p><Button className="mt-4 gap-1.5" size="sm" onClick={openCreate}><Plus className="size-3.5" />添加中转站</Button></div>}
+    <BatchCloneDialog accounts={cloneableAccounts} open={batchCloneOpen} busy={busy} result={batchCloneResult} onOpenChange={(open) => { if (!open) closeBatchClone() }} onSubmit={(groups) => void submitBatchClone(groups)} />
     <GroupEditor account={groupEditor} groups={currentOverview?.groups.map((group) => ({ external_id: group.external_id, name: group.name, platform: group.platform, status: group.status, is_exclusive: group.is_exclusive, require_oauth_only: group.require_oauth_only, account_types: group.account_types, model_types: group.model_types, rate_multiplier: group.rate_multiplier })) ?? []} open={groupEditor != null} busy={busy} onOpenChange={(open) => { if (!open) setGroupEditor(null) }} onSave={(ids) => void saveGroups(ids)} />
     <BatchGroupEditor groups={currentOverview?.groups.map((group) => ({ external_id: group.external_id, name: group.name, platform: group.platform, status: group.status, is_exclusive: group.is_exclusive, require_oauth_only: group.require_oauth_only, account_types: group.account_types, model_types: group.model_types, rate_multiplier: group.rate_multiplier })) ?? []} count={selected.length} open={batchGroupDialogOpen} busy={busy} onOpenChange={setBatchGroupDialogOpen} onSave={(ids) => void saveBatchGroups(ids)} />
     <Dialog open={testGroup != null} onOpenChange={(open) => { if (!open && testingGroupID == null) setTestGroup(null) }}>

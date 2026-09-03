@@ -11,6 +11,7 @@ import { apiFetch } from "@/lib/api"
 import type { PublicGroupMonitorCall, PublicGroupMonitorGroup, PublicGroupMonitorStatus, PublicGroupMonitorView } from "@/lib/api-types"
 import { cn } from "@/lib/utils"
 import { PlatformBadge } from "@/components/relay/platform-badge"
+import { RecentUsageCard, RecentUsageTooltip, recentUsageTooltipNarrowClassName } from "@/components/monitor/recent-usage-tooltip"
 
 const refreshIntervalSeconds = 30
 const refreshIntervalMS = refreshIntervalSeconds * 1_000
@@ -76,13 +77,6 @@ const latencyColor: Record<LatencyTone, string> = {
   critical: "#ef4444",
 }
 
-const latencyText: Record<LatencyTone, string> = {
-  good: "正常",
-  warn: "需关注",
-  slow: "较慢",
-  critical: "严重延迟",
-}
-
 const latencyTextClass: Record<LatencyTone, string> = {
   good: "text-emerald-600 dark:text-emerald-400",
   warn: "text-amber-600 dark:text-amber-400",
@@ -131,12 +125,27 @@ function LatencyBars({ calls, groupName }: { calls: PublicGroupMonitorCall[]; gr
         </span>
       </button>
     </TooltipTrigger>
-    <TooltipContent side="top" align="end" className="max-h-96 w-[440px] max-w-[calc(100vw-24px)] overflow-y-auto border border-slate-200 bg-white p-0 text-[11px] text-slate-900 shadow-xl dark:border-slate-200 dark:bg-white dark:text-slate-900 [&>svg]:hidden">
-      <div className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-3 py-2 font-medium"><span>最近 {ordered.length} 次调用</span><span className="text-slate-500">上半段首字 · 下半段总耗时</span></div>
-      <div className="divide-y divide-slate-100 px-3">
-        {[...ordered].reverse().map((call, index) => { const first = latencyTone(call.first_token_ms, "first"); const duration = latencyTone(call.duration_ms, "duration"); return <div key={`${call.created_at}-detail-${index}`} className="grid grid-cols-[132px_minmax(0,1fr)] gap-2 py-2"><span className="whitespace-nowrap font-mono tabular-nums text-slate-500">{formatTime(call.created_at)}</span><div className="min-w-0"><p className="truncate font-medium text-slate-900" title={call.model || "-"}>{call.model || "-"}</p>{call.success ? <p className="mt-1 flex flex-wrap gap-x-3 gap-y-1 font-mono font-semibold tabular-nums"><span className={latencyTextClass[first]}>首字 {formatLatency(call.first_token_ms)}</span><span className={latencyTextClass[duration]}>总耗时 {formatLatency(call.duration_ms)}</span></p> : <p className="mt-1 font-mono font-semibold tabular-nums text-red-600">调用失败{call.duration_ms != null ? ` · 总耗时 ${formatLatency(call.duration_ms)}` : ""}</p>}</div></div> })}
-      </div>
-      <div className="sticky bottom-0 flex flex-wrap gap-2 border-t border-slate-200 bg-slate-50 px-3 py-2 text-[10px] text-slate-500"><span><i className="mr-1 inline-block size-1.5 rounded-full bg-emerald-500" />{latencyText.good}</span><span><i className="mr-1 inline-block size-1.5 rounded-full bg-amber-400" />{latencyText.warn}</span><span><i className="mr-1 inline-block size-1.5 rounded-full bg-orange-500" />{latencyText.slow}</span><span><i className="mr-1 inline-block size-1.5 rounded-full bg-red-500" />{latencyText.critical}</span></div>
+    <TooltipContent side="top" align="end" className={recentUsageTooltipNarrowClassName}>
+      <RecentUsageTooltip count={ordered.length}>
+        {[...ordered].reverse().map((call, index) => {
+          const first = latencyTone(call.first_token_ms, "first")
+          const duration = latencyTone(call.duration_ms, "duration")
+          return (
+            <RecentUsageCard key={`${call.created_at}-detail-${index}`}>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <time dateTime={call.created_at} className="whitespace-nowrap font-mono text-xs font-semibold tabular-nums text-slate-700">{formatTime(call.created_at)}</time>
+                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500">#{ordered.length - index}</span>
+              </div>
+              <div className="mt-2 min-w-0 rounded-md bg-slate-50 px-2.5 py-2 ring-1 ring-slate-200/70">
+                <p className="truncate font-mono text-sm font-semibold leading-5 text-slate-950" title={call.model || "-"}>{call.model || "-"}</p>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 rounded-md bg-slate-50 px-2.5 py-2 font-mono text-xs font-semibold tabular-nums ring-1 ring-slate-200/70">
+                {call.success ? <><span className={latencyTextClass[first]}>首字 {formatLatency(call.first_token_ms)}</span><span className={latencyTextClass[duration]}>总耗时 {formatLatency(call.duration_ms)}</span></> : <span className="text-red-600">调用失败{call.duration_ms != null ? ` · 总耗时 ${formatLatency(call.duration_ms)}` : ""}</span>}
+              </div>
+            </RecentUsageCard>
+          )
+        })}
+      </RecentUsageTooltip>
     </TooltipContent>
   </Tooltip>
 }

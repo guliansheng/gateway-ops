@@ -10,6 +10,7 @@ import { useChannels, useChannelRates } from "@/lib/queries"
 import { channelTypeLabel, relativeTime } from "@/lib/format"
 import { cn } from "@/lib/utils"
 import type { Channel } from "@/lib/api-types"
+import { RateChangeDot, RateTooltipBody } from "@/components/monitor/rate-change"
 
 /**
  * 按倍率给 chip 上色：
@@ -67,16 +68,16 @@ function ChannelRateRow({ channel }: { channel: Channel }) {
         ) : (
           <div className="flex flex-wrap gap-1.5">
             {rates.map((r) => {
-              const updated = `最近更新：${relativeTime(r.last_seen_at)}`
               const chip = (
                 <span
                   key={r.id}
                   className={cn(
-                    "inline-flex cursor-default items-center gap-1.5 rounded-md px-2 py-0.5 text-xs ring-1 ring-inset transition-colors",
+                    "relative inline-flex cursor-default items-center gap-1.5 rounded-md px-2 py-0.5 text-xs ring-1 ring-inset transition-colors",
                     "hover:bg-muted/60",
                     ratioTone(r.ratio),
                   )}
                 >
+                  <RateChangeDot change={r.latest_ratio_change} className="absolute -right-0.5 -top-0.5" />
                   <span className="font-medium">{r.model_name}</span>
                   <span className="font-semibold tabular-nums">{r.ratio.toFixed(3)}</span>
                 </span>
@@ -85,13 +86,7 @@ function ChannelRateRow({ channel }: { channel: Channel }) {
                 <Tooltip key={r.id} delayDuration={150}>
                   <TooltipTrigger asChild>{chip}</TooltipTrigger>
                   <TooltipContent side="top" className="max-w-xs text-xs">
-                    <p className="font-medium">{r.model_name}</p>
-                    {r.description ? (
-                      <p className="mt-0.5 text-muted-foreground">{r.description}</p>
-                    ) : (
-                      <p className="mt-0.5 text-muted-foreground italic">(无描述)</p>
-                    )}
-                    <p className="mt-0.5 text-muted-foreground">{updated}</p>
+                    <RateTooltipBody rate={r} />
                   </TooltipContent>
                 </Tooltip>
               )
