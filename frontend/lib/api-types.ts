@@ -328,6 +328,7 @@ export interface RelayAccountBatchCloneAccount {
   name: string
   api_key: string
   base_url: string
+  model_type?: string
 }
 
 export interface RelayAccountBatchCloneGroup {

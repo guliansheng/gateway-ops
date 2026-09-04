@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
-import { Activity, Archive, ArrowDown, ArrowUp, ArrowUpDown, Box, Check, ChevronDown, CircleAlert, CircleDollarSign, CircleHelp, Clock3, Cog, ExternalLink, Gauge, GripVertical, History, Layers3, ListChecks, PencilLine, Play, Plus, Power, PowerOff, RefreshCw, RotateCcw, Save, Search, Server, ShieldAlert, ShieldCheck, SlidersHorizontal, Trash2, TrendingDown, Users, X } from "lucide-react"
+import { Activity, Archive, ArrowDown, ArrowUp, ArrowUpDown, Box, Check, ChevronDown, CircleAlert, CircleDollarSign, CircleHelp, Clock3, Cog, Copy, ExternalLink, Gauge, GripVertical, History, KeyRound, Layers3, ListChecks, PencilLine, Play, Plus, Power, PowerOff, RefreshCw, RotateCcw, Save, Search, Server, ShieldAlert, ShieldCheck, SlidersHorizontal, Trash2, TrendingDown, Users, X } from "lucide-react"
 import { toast } from "sonner"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
@@ -40,7 +40,7 @@ type AccountAdjustmentDialogState = {
   accounts: RelayAccountView[]
   totalCount: number
 } | null
-type BatchCloneFormRow = { id: string; name: string; api_key: string; base_url: string }
+type BatchCloneFormRow = { id: string; name: string; api_key: string; base_url: string; model_type: string }
 type BatchCloneFormGroup = { source_account_external_id: number; rows: BatchCloneFormRow[] }
 
 const batchCloneableAccountTypes = new Set(["apikey", "upstream", "bedrock", "service_account"])
@@ -1379,11 +1379,46 @@ function BatchGroupEditor({ groups, count, open, busy, onOpenChange, onSave }: {
   return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="max-w-xl"><DialogHeader><DialogTitle>批量调整销售分组</DialogTitle><DialogDescription>将为已选的 {count} 个账号设置相同的销售分组，提交后逐个同步到 Sub2API。</DialogDescription></DialogHeader><div className="max-h-[min(52vh,460px)] space-y-2 overflow-y-auto pr-1">{orderedGroups.map((group) => { const checked = ids.includes(group.external_id); return <label key={group.external_id} className={cn("flex cursor-pointer items-center justify-between gap-3 border px-3 py-2.5 transition-colors", checked ? "border-brand/50 bg-brand/5" : "border-border hover:bg-muted/40")}><span className="flex min-w-0 items-center gap-3"><Checkbox checked={checked} onCheckedChange={(value) => setIDs((current) => value === true ? [...new Set([...current, group.external_id])] : current.filter((id) => id !== group.external_id))} /><span className="min-w-0"><span className="flex flex-wrap items-center gap-1.5"><span className="block truncate text-sm font-medium">{group.name}</span><span className={cn("rounded px-1.5 py-0.5 text-[10px] font-medium", group.is_exclusive ? "bg-warning/10 text-warning" : "bg-blue-500/10 text-blue-700 dark:text-blue-400")}>{group.is_exclusive ? "专属" : "公开"}</span></span><span className="mt-1 block text-[11px] text-muted-foreground">{group.platform || "-"} · {group.require_oauth_only ? "OAuth 类型" : "通用类型"} · 倍率 {multiplier(group.rate_multiplier)}</span></span></span><span className={cn("size-2 rounded-full", group.status === "active" ? "bg-success" : "bg-muted-foreground")} /></label> })}</div><DialogFooter><Button type="button" variant="outline" onClick={() => onOpenChange(false)}>取消</Button><Button type="button" disabled={busy} onClick={() => onSave(ids)}>保存分组</Button></DialogFooter></DialogContent></Dialog>
 }
 
-function newBatchCloneRow(sourceName: string, baseURL: string): BatchCloneFormRow {
-  return { id: `${Date.now()}-${Math.random()}`, name: sourceName, api_key: "", base_url: baseURL }
+function newBatchCloneRow(source: RelayAccountView): BatchCloneFormRow {
+  return { id: `${Date.now()}-${Math.random()}`, name: source.name, api_key: "", base_url: source.base_url?.trim() || "", model_type: source.model_type?.trim() || "" }
 }
 
-function BatchCloneDialog({ accounts, open, busy, result, onOpenChange, onSubmit }: { accounts: RelayAccountView[]; open: boolean; busy: boolean; result: RelayAccountBatchCloneResult | null; onOpenChange: (open: boolean) => void; onSubmit: (groups: RelayAccountBatchCloneGroup[]) => void }) {
+function cloneBatchCloneRow(row: BatchCloneFormRow): BatchCloneFormRow {
+  return { ...row, id: `${Date.now()}-${Math.random()}` }
+}
+
+const compactSourceTagClass = "inline-flex max-w-full shrink-0 items-center gap-1 rounded bg-brand/10 px-1.5 py-0.5 text-[10px] font-medium text-brand"
+
+function AccountTypeBadge({ type }: { type?: string }) {
+  const value = type?.trim().toLowerCase().replace(/[-\s]/g, "_") || ""
+  const meta = value === "apikey" || value === "api_key"
+    ? { label: "API Key", Icon: KeyRound }
+    : value === "oauth"
+      ? { label: "OAuth", Icon: ShieldCheck }
+      : value === "bedrock"
+        ? { label: "Bedrock", Icon: Box }
+        : value === "service_account"
+          ? { label: "服务账号", Icon: Users }
+          : value === "upstream"
+            ? { label: "上游", Icon: Server }
+            : { label: type?.trim() || "未知类型", Icon: CircleHelp }
+  const Icon = meta.Icon
+  return <span className={cn(compactSourceTagClass, "bg-muted text-muted-foreground")} title={type || "未知账号类型"}><Icon className="size-3" />{meta.label}</span>
+}
+
+function SourceAccountMeta({ account }: { account: RelayAccountView }) {
+  return <div className="mt-1 flex min-w-0 items-center gap-1.5 overflow-x-auto whitespace-nowrap pb-0.5">
+    {(account.current_groups ?? []).length > 0 ? (account.current_groups ?? []).map((group) => <span key={group.external_id} className={cn(compactSourceTagClass, "max-w-40 truncate")} title={`${group.name} · 倍率 ${multiplier(group.rate_multiplier)}`}>{group.name}</span>) : <span className={cn(compactSourceTagClass, "bg-muted text-muted-foreground")}>未分配分组</span>}
+    <PlatformBadge platform={account.platform} compact />
+    <AccountTypeBadge type={account.type} />
+  </div>
+}
+
+function AccountRateBadge({ account }: { account: RelayAccountView }) {
+  return <span className="inline-flex shrink-0 items-center rounded bg-brand/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold tabular-nums text-brand" title="当前账号成本倍率">账号倍率 {multiplier(account.cost_multiplier)}</span>
+}
+
+function BatchCloneDialog({ accounts, availableModelTypes, open, busy, result, onOpenChange, onSubmit }: { accounts: RelayAccountView[]; availableModelTypes: string[]; open: boolean; busy: boolean; result: RelayAccountBatchCloneResult | null; onOpenChange: (open: boolean) => void; onSubmit: (groups: RelayAccountBatchCloneGroup[]) => void }) {
   const [formGroups, setFormGroups] = useState<BatchCloneFormGroup[]>([])
   const [error, setError] = useState("")
   const [sourceAccountQuery, setSourceAccountQuery] = useState("")
@@ -1394,6 +1429,10 @@ function BatchCloneDialog({ accounts, open, busy, result, onOpenChange, onSubmit
     accounts.forEach((account) => (account.current_groups ?? []).forEach((group) => groups.set(group.external_id, group)))
     return publicFirst(Array.from(groups.values()))
   }, [accounts])
+  const modelTypeOptions = useMemo(() => {
+    const values = [...availableModelTypes, ...accounts.flatMap((account) => [account.model_type, ...(account.current_groups ?? []).flatMap((group) => group.model_types ?? [])])]
+    return Array.from(new Set(values.map((value) => value?.trim().toLowerCase()).filter(Boolean) as string[])).sort((a, b) => a.localeCompare(b, "zh-CN"))
+  }, [accounts, availableModelTypes])
   const filteredSourceAccounts = useMemo(() => {
     const query = sourceAccountQuery.trim().toLowerCase()
     return accounts.filter((account) => {
@@ -1419,7 +1458,7 @@ function BatchCloneDialog({ accounts, open, busy, result, onOpenChange, onSubmit
     setFormGroups((current) => {
       if (!checked) return current.filter((group) => group.source_account_external_id !== account.external_id)
       if (current.some((group) => group.source_account_external_id === account.external_id)) return current
-      return [...current, { source_account_external_id: account.external_id, rows: [newBatchCloneRow(account.name, account.base_url?.trim() || "")] }]
+      return [...current, { source_account_external_id: account.external_id, rows: [newBatchCloneRow(account)] }]
     })
   }
 
@@ -1437,7 +1476,57 @@ function BatchCloneDialog({ accounts, open, busy, result, onOpenChange, onSubmit
       return
     }
     setError("")
-    setFormGroups((current) => current.map((group) => group.source_account_external_id === sourceID ? { ...group, rows: [...group.rows, newBatchCloneRow(source.name, source.base_url?.trim() || "")] } : group))
+    setFormGroups((current) => current.map((group) => group.source_account_external_id === sourceID ? { ...group, rows: [...group.rows, newBatchCloneRow(source)] } : group))
+  }
+
+  function copyRow(sourceID: number, rowID: string) {
+    const group = formGroups.find((item) => item.source_account_external_id === sourceID)
+    if (!group) return
+    if (group.rows.length >= 100) {
+      setError("每个源账号最多新增 100 个账号")
+      return
+    }
+    if (total >= 300) {
+      setError("一次最多新增 300 个账号")
+      return
+    }
+    setError("")
+    setFormGroups((current) => current.map((item) => {
+      if (item.source_account_external_id !== sourceID) return item
+      const index = item.rows.findIndex((row) => row.id === rowID)
+      if (index < 0) return item
+      const rows = [...item.rows]
+      rows.splice(index + 1, 0, cloneBatchCloneRow(item.rows[index]))
+      return { ...item, rows }
+    }))
+  }
+
+  function copyGroup(sourceID: number) {
+    const group = formGroups.find((item) => item.source_account_external_id === sourceID)
+    if (!group) return
+    if (group.rows.length * 2 > 100) {
+      setError("复制本组后会超过该源账号最多 100 个新增账号的限制")
+      return
+    }
+    if (total + group.rows.length > 300) {
+      setError("复制本组后会超过一次最多新增 300 个账号的限制")
+      return
+    }
+    setError("")
+    setFormGroups((current) => current.map((item) => item.source_account_external_id === sourceID ? { ...item, rows: [...item.rows, ...item.rows.map(cloneBatchCloneRow)] } : item))
+  }
+
+  function copyAll() {
+    if (formGroups.some((group) => group.rows.length * 2 > 100)) {
+      setError("复制全部后会超过某个源账号最多 100 个新增账号的限制")
+      return
+    }
+    if (total * 2 > 300) {
+      setError("复制全部后会超过一次最多新增 300 个账号的限制")
+      return
+    }
+    setError("")
+    setFormGroups((current) => current.map((group) => ({ ...group, rows: [...group.rows, ...group.rows.map(cloneBatchCloneRow)] })))
   }
 
   function removeRow(sourceID: number, rowID: string) {
@@ -1467,11 +1556,11 @@ function BatchCloneDialog({ accounts, open, busy, result, onOpenChange, onSubmit
         }
       }
     }
-    onSubmit(formGroups.map((group) => ({ source_account_external_id: group.source_account_external_id, accounts: group.rows.map((row) => ({ name: row.name.trim(), api_key: row.api_key.trim(), base_url: row.base_url.trim() })) })))
+    onSubmit(formGroups.map((group) => ({ source_account_external_id: group.source_account_external_id, accounts: group.rows.map((row) => ({ name: row.name.trim(), api_key: row.api_key.trim(), base_url: row.base_url.trim(), model_type: row.model_type.trim() })) })))
   }
 
   return <Dialog open={open} onOpenChange={(next) => { if (next) onOpenChange(true); else close() }}>
-    <DialogContent className="flex w-[calc(100vw-2rem)] max-h-[calc(100dvh-2rem)] sm:max-w-[800px] flex-col overflow-hidden p-0">
+    <DialogContent className="flex w-[calc(100vw-2rem)] max-h-[calc(100dvh-2rem)] sm:max-w-[900px] flex-col overflow-hidden p-0">
       {result ? <>
         <DialogHeader className="shrink-0 border-b border-border px-4 py-5 sm:px-6"><DialogTitle>批量新增结果</DialogTitle><DialogDescription>已完成逐个克隆和更新，API Key 不会显示在结果中。</DialogDescription></DialogHeader>
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4 sm:px-6">
@@ -1481,7 +1570,7 @@ function BatchCloneDialog({ accounts, open, busy, result, onOpenChange, onSubmit
         </div>
         <DialogFooter className="shrink-0 border-t border-border px-4 py-4 sm:px-6"><Button type="button" onClick={close}>关闭</Button></DialogFooter>
       </> : <>
-        <DialogHeader className="shrink-0 border-b border-border px-4 py-5 sm:px-6"><DialogTitle>批量新增账号</DialogTitle><DialogDescription>选择多个已有账号作为模板，每个模板下可新增多行。新账号会完整克隆模板，可分别修改名称、API Key 和 Base URL，并默认关闭。</DialogDescription></DialogHeader>
+        <DialogHeader className="shrink-0 border-b border-border px-4 py-5 sm:px-6"><DialogTitle>批量新增账号</DialogTitle><DialogDescription>选择多个已有账号作为模板，每个模板下可新增多行。新账号会完整克隆模板，可分别修改名称、API Key、Base URL 和模型类型，并默认关闭。</DialogDescription></DialogHeader>
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4 sm:px-6">
           <div className="flex flex-wrap gap-2">
             <div className="relative min-w-48 flex-1">
@@ -1493,13 +1582,40 @@ function BatchCloneDialog({ accounts, open, busy, result, onOpenChange, onSubmit
               <SelectContent>
                 <SelectItem value="all">全部分组</SelectItem>
                 <SelectItem value="__unassigned">未分配分组</SelectItem>
-                {sourceGroupOptions.map((group) => <SelectItem key={group.external_id} value={String(group.external_id)}>{group.name}</SelectItem>)}
+                {sourceGroupOptions.map((group) => <SelectItem key={group.external_id} value={String(group.external_id)}>{group.name} · 倍率 {multiplier(group.rate_multiplier)}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
-          <div className="space-y-2"><div className="flex items-center justify-between gap-3"><Label>选择源账号</Label><span className="text-[11px] text-muted-foreground">已选 {formGroups.length} 个 · 匹配 {filteredSourceAccounts.length} 个</span></div><div className="grid max-h-48 gap-2 overflow-y-auto pr-1 sm:grid-cols-2">{accounts.length === 0 ? <p className="col-span-full rounded-md border border-dashed border-border px-3 py-5 text-center text-xs text-muted-foreground">当前没有可用账号</p> : filteredSourceAccounts.length === 0 ? <p className="col-span-full rounded-md border border-dashed border-border px-3 py-5 text-center text-xs text-muted-foreground">没有匹配的源账号</p> : filteredSourceAccounts.map((account) => { const checked = formGroups.some((group) => group.source_account_external_id === account.external_id); const id = `batch-clone-source-${account.external_id}`; return <label key={account.external_id} htmlFor={id} className={cn("flex min-w-0 cursor-pointer items-start gap-2 rounded-md border px-3 py-2.5 transition-colors", checked ? "border-brand/50 bg-brand/5" : "border-border hover:bg-muted/40")}><Checkbox id={id} checked={checked} disabled={busy} onCheckedChange={(value) => toggleSource(account, value === true)} /><span className="min-w-0 flex-1"><span className="block truncate text-xs font-medium" title={account.name}>{account.name}</span><span className="mt-1 flex flex-wrap gap-1">{(account.current_groups ?? []).length > 0 ? (account.current_groups ?? []).map((group) => <span key={group.external_id} className="max-w-full truncate rounded bg-brand/10 px-1.5 py-0.5 text-[10px] font-medium text-brand" title={group.name}>{group.name}</span>) : <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">未分配分组</span>}</span><span className="mt-1 block truncate text-[11px] text-muted-foreground">{account.platform || "-"} · {account.type || "未知类型"}</span></span></label> })}</div></div>
-          {formGroups.length === 0 ? <div className="rounded-md border border-dashed border-border bg-muted/20 px-4 py-8 text-center text-xs text-muted-foreground">选择源账号后，在这里为每个源账号填写要新增的账号。</div> : <div className="space-y-3">{formGroups.map((group) => { const source = accountByID.get(group.source_account_external_id); if (!source) return null; return <div key={group.source_account_external_id} className="space-y-3 rounded-md border border-border p-3"><div className="flex min-w-0 flex-wrap items-center justify-between gap-2"><div className="min-w-0"><p className="truncate text-sm font-semibold" title={source.name}>{source.name}</p><div className="mt-1 flex flex-wrap gap-1">{(source.current_groups ?? []).length > 0 ? (source.current_groups ?? []).map((item) => <span key={item.external_id} className="max-w-full truncate rounded bg-brand/10 px-1.5 py-0.5 text-[10px] font-medium text-brand" title={item.name}>{item.name}</span>) : <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">未分配分组</span>}</div><p className="mt-1 text-[11px] text-muted-foreground">{source.type || "未知类型"} · 新账号默认关闭</p></div><span className="shrink-0 rounded bg-brand/10 px-2 py-1 text-[11px] font-medium text-brand">{group.rows.length} 个新账号</span></div><div className="space-y-2">{group.rows.map((row, index) => <div key={row.id} className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_40px]"><div className="space-y-1"><Label htmlFor={`${row.id}-name`} className="text-[11px] text-muted-foreground">账号名称 {index + 1}</Label><Input id={`${row.id}-name`} value={row.name} disabled={busy} onChange={(event) => updateRow(group.source_account_external_id, row.id, { name: event.target.value })} placeholder={source.name} maxLength={255} /></div><div className="space-y-1"><Label htmlFor={`${row.id}-key`} className="text-[11px] text-muted-foreground">API Key</Label><Input id={`${row.id}-key`} type="password" autoComplete="new-password" value={row.api_key} disabled={busy} onChange={(event) => updateRow(group.source_account_external_id, row.id, { api_key: event.target.value })} placeholder="粘贴新账号 API Key" /></div><div className="space-y-1"><Label htmlFor={`${row.id}-base-url`} className="text-[11px] text-muted-foreground">Base URL</Label><Input id={`${row.id}-base-url`} type="url" value={row.base_url} disabled={busy} onChange={(event) => updateRow(group.source_account_external_id, row.id, { base_url: event.target.value })} placeholder="沿用源账号地址" maxLength={1024} /></div><div className="flex items-end justify-end"><Button type="button" variant="ghost" size="icon" className="size-10" aria-label={`删除第 ${index + 1} 个新账号`} title="删除新账号" disabled={busy || group.rows.length <= 1} onClick={() => removeRow(group.source_account_external_id, row.id)}><Trash2 className="size-4 text-danger" /></Button></div></div>)}</div><Button type="button" variant="outline" size="sm" className="h-9 gap-1.5" disabled={busy || total >= 300} onClick={() => addRow(group.source_account_external_id)}><Plus className="size-3.5" />继续添加账号</Button></div> })}</div>}
-          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3 text-xs"><span className="text-muted-foreground">预计新增 <strong className="font-mono text-foreground">{total}</strong> 个账号</span><span className="text-muted-foreground">名称留空使用源账号名称 · Base URL 默认沿用源账号地址 · 最多 300 个</span></div>
+          <div className="space-y-2"><div className="flex items-center justify-between gap-3"><Label>选择源账号</Label><span className="text-[11px] text-muted-foreground">已选 {formGroups.length} 个 · 匹配 {filteredSourceAccounts.length} 个</span></div><div className="grid max-h-48 gap-2 overflow-y-auto pr-1 sm:grid-cols-2">{accounts.length === 0 ? <p className="col-span-full rounded-md border border-dashed border-border px-3 py-5 text-center text-xs text-muted-foreground">当前没有可用账号</p> : filteredSourceAccounts.length === 0 ? <p className="col-span-full rounded-md border border-dashed border-border px-3 py-5 text-center text-xs text-muted-foreground">没有匹配的源账号</p> : filteredSourceAccounts.map((account) => { const checked = formGroups.some((group) => group.source_account_external_id === account.external_id); const id = `batch-clone-source-${account.external_id}`; return <label key={account.external_id} htmlFor={id} className={cn("flex min-w-0 cursor-pointer items-start gap-2 rounded-md border px-3 py-2.5 transition-colors", checked ? "border-brand/50 bg-brand/5" : "border-border hover:bg-muted/40")}><Checkbox id={id} checked={checked} disabled={busy} onCheckedChange={(value) => toggleSource(account, value === true)} /><span className="min-w-0 flex-1"><span className="flex min-w-0 items-center gap-1.5"><span className="min-w-0 truncate text-xs font-medium" title={account.name}>{account.name}</span><AccountRateBadge account={account} /></span><SourceAccountMeta account={account} /></span></label> })}</div></div>
+          {formGroups.length === 0 ? <div className="rounded-md border border-dashed border-border bg-muted/20 px-4 py-8 text-center text-xs text-muted-foreground">选择源账号后，在这里为每个源账号填写要新增的账号。</div> : <div className="space-y-3">
+            <div className="flex items-center justify-between gap-2"><Label>新增账号</Label><Button type="button" variant="outline" size="sm" className="h-9 gap-1.5" aria-label="整体复制新增账号" disabled={busy || total * 2 > 300 || formGroups.some((group) => group.rows.length * 2 > 100)} onClick={copyAll}><Copy className="size-3.5" />整体复制</Button></div>
+            {formGroups.map((group) => {
+              const source = accountByID.get(group.source_account_external_id)
+              if (!source) return null
+              const copyGroupDisabled = busy || group.rows.length * 2 > 100 || total + group.rows.length > 300
+              return <div key={group.source_account_external_id} className="space-y-3 rounded-md border border-border p-3">
+                <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="flex min-w-0 items-center gap-1.5"><p className="min-w-0 truncate text-sm font-semibold" title={source.name}>{source.name}</p><AccountRateBadge account={source} /></div>
+                    <SourceAccountMeta account={source} />
+                    <p className="mt-1 text-[11px] text-muted-foreground">新账号默认关闭</p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1.5"><Button type="button" variant="outline" size="sm" className="h-8 gap-1.5 px-2.5 text-xs" disabled={copyGroupDisabled} onClick={() => copyGroup(group.source_account_external_id)}><Copy className="size-3.5" />复制本组</Button><span className="rounded bg-brand/10 px-2 py-1 text-[11px] font-medium text-brand">{group.rows.length} 个新账号</span></div>
+                </div>
+                <div className="space-y-2">
+                  {group.rows.map((row, index) => <div key={row.id} className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_84px]">
+                    <div className="space-y-1"><Label htmlFor={`${row.id}-name`} className="text-[11px] text-muted-foreground">账号名称 {index + 1}</Label><Input id={`${row.id}-name`} value={row.name} disabled={busy} onChange={(event) => updateRow(group.source_account_external_id, row.id, { name: event.target.value })} placeholder={source.name} maxLength={255} /></div>
+                    <div className="space-y-1"><Label htmlFor={`${row.id}-key`} className="text-[11px] text-muted-foreground">API Key</Label><Input id={`${row.id}-key`} type="password" autoComplete="new-password" value={row.api_key} disabled={busy} onChange={(event) => updateRow(group.source_account_external_id, row.id, { api_key: event.target.value })} placeholder="粘贴新账号 API Key" /></div>
+                    <div className="space-y-1"><Label htmlFor={`${row.id}-base-url`} className="text-[11px] text-muted-foreground">Base URL</Label><Input id={`${row.id}-base-url`} type="url" value={row.base_url} disabled={busy} onChange={(event) => updateRow(group.source_account_external_id, row.id, { base_url: event.target.value })} placeholder="沿用源账号地址" maxLength={1024} /></div>
+                    <div className="space-y-1"><Label htmlFor={`${row.id}-model-type`} className="text-[11px] text-muted-foreground">模型类型</Label><Select value={row.model_type || "__empty"} onValueChange={(value) => updateRow(group.source_account_external_id, row.id, { model_type: value === "__empty" ? "" : value })} disabled={busy}><SelectTrigger id={`${row.id}-model-type`} className="h-10 w-full text-sm" aria-label={`设置第 ${index + 1} 个新账号模型类型`}><SelectValue placeholder="未绑定模型类型" /></SelectTrigger><SelectContent><SelectItem value="__empty">未绑定模型类型</SelectItem>{modelTypeOptions.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select></div>
+                    <div className="flex items-end justify-end gap-1"><Tooltip delayDuration={250}><TooltipTrigger asChild><Button type="button" variant="ghost" size="icon" className="size-10" aria-label={`复制第 ${index + 1} 个新账号到本组`} title="复制到本组" disabled={busy || group.rows.length >= 100 || total >= 300} onClick={() => copyRow(group.source_account_external_id, row.id)}><Copy className="size-4 text-brand" /></Button></TooltipTrigger><TooltipContent side="top">复制到本组</TooltipContent></Tooltip><Tooltip delayDuration={250}><TooltipTrigger asChild><Button type="button" variant="ghost" size="icon" className="size-10" aria-label={`删除第 ${index + 1} 个新账号`} title="删除新账号" disabled={busy || group.rows.length <= 1} onClick={() => removeRow(group.source_account_external_id, row.id)}><Trash2 className="size-4 text-danger" /></Button></TooltipTrigger><TooltipContent side="top">删除新账号</TooltipContent></Tooltip></div>
+                  </div>)}
+                </div>
+                <Button type="button" variant="outline" size="sm" className="h-9 gap-1.5" disabled={busy || total >= 300 || group.rows.length >= 100} onClick={() => addRow(group.source_account_external_id)}><Plus className="size-3.5" />继续添加账号</Button>
+              </div>
+            })}
+          </div>}
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3 text-xs"><span className="text-muted-foreground">预计新增 <strong className="font-mono text-foreground">{total}</strong> 个账号</span><span className="text-muted-foreground">名称留空使用源账号名称 · Base URL 默认沿用源账号地址 · 模型类型默认沿用源账号 · 最多 300 个</span></div>
           {error ? <Alert variant="destructive" className="py-3"><CircleAlert className="size-4" /><AlertDescription>{error}</AlertDescription></Alert> : null}
         </div>
         <DialogFooter className="shrink-0 border-t border-border px-4 py-4 sm:px-6"><Button type="button" variant="outline" disabled={busy} onClick={close}>取消</Button><Button type="button" className="gap-1.5" disabled={busy || formGroups.length === 0 || total === 0} onClick={submit}>{busy ? <RefreshCw className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />}开始批量新增</Button></DialogFooter>
@@ -1813,7 +1929,7 @@ export default function RelayStationsPage() {
 
       <RelayAdjustmentLog rows={currentOverview.adjustments} refreshing={overview.refreshing} />
     </div> : overview.error ? <Alert variant="destructive"><CircleAlert /><AlertTitle>读取失败</AlertTitle><AlertDescription>{overview.error}</AlertDescription></Alert> : null}</div></div> : <div className="border border-dashed border-border px-4 py-12 text-center"><Server className="mx-auto size-8 text-muted-foreground" /><p className="mt-3 text-sm font-medium">还没有配置中转站</p><Button className="mt-4 gap-1.5" size="sm" onClick={openCreate}><Plus className="size-3.5" />添加中转站</Button></div>}
-    <BatchCloneDialog accounts={cloneableAccounts} open={batchCloneOpen} busy={busy} result={batchCloneResult} onOpenChange={(open) => { if (!open) closeBatchClone() }} onSubmit={(groups) => void submitBatchClone(groups)} />
+    <BatchCloneDialog accounts={cloneableAccounts} availableModelTypes={Array.from(new Set([...modelTypeOptions, ...accountModelTypeOptions]))} open={batchCloneOpen} busy={busy} result={batchCloneResult} onOpenChange={(open) => { if (!open) closeBatchClone() }} onSubmit={(groups) => void submitBatchClone(groups)} />
     <GroupEditor account={groupEditor} groups={currentOverview?.groups.map((group) => ({ external_id: group.external_id, name: group.name, platform: group.platform, status: group.status, is_exclusive: group.is_exclusive, require_oauth_only: group.require_oauth_only, account_types: group.account_types, model_types: group.model_types, rate_multiplier: group.rate_multiplier })) ?? []} open={groupEditor != null} busy={busy} onOpenChange={(open) => { if (!open) setGroupEditor(null) }} onSave={(ids) => void saveGroups(ids)} />
     <BatchGroupEditor groups={currentOverview?.groups.map((group) => ({ external_id: group.external_id, name: group.name, platform: group.platform, status: group.status, is_exclusive: group.is_exclusive, require_oauth_only: group.require_oauth_only, account_types: group.account_types, model_types: group.model_types, rate_multiplier: group.rate_multiplier })) ?? []} count={selected.length} open={batchGroupDialogOpen} busy={busy} onOpenChange={setBatchGroupDialogOpen} onSave={(ids) => void saveBatchGroups(ids)} />
     <Dialog open={testGroup != null} onOpenChange={(open) => { if (!open && testingGroupID == null) setTestGroup(null) }}>

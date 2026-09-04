@@ -28,6 +28,7 @@ func TestValidateBatchCloneInput(t *testing.T) {
 		{Groups: []BatchCloneGroup{{SourceAccountExternalID: 12, Accounts: nil}}},
 		{Groups: []BatchCloneGroup{{SourceAccountExternalID: 12, Accounts: []BatchCloneAccount{{APIKey: " "}}}}},
 		{Groups: []BatchCloneGroup{{SourceAccountExternalID: 12, Accounts: []BatchCloneAccount{{Name: strings.Repeat("a", 256), APIKey: "sk-new"}}}}},
+		{Groups: []BatchCloneGroup{{SourceAccountExternalID: 12, Accounts: []BatchCloneAccount{{APIKey: "sk-new", ModelType: strings.Repeat("a", 65)}}}}},
 		{Groups: []BatchCloneGroup{
 			{SourceAccountExternalID: 12, Accounts: []BatchCloneAccount{{APIKey: "sk-new"}}},
 			{SourceAccountExternalID: 12, Accounts: []BatchCloneAccount{{APIKey: "sk-new-2"}}},
@@ -66,6 +67,9 @@ func TestBatchCloneUpdateBodyPreservesClonedCredentials(t *testing.T) {
 	}
 	if body["name"] != "新账号" || body["status"] != "inactive" || body["schedulable"] != false {
 		t.Fatalf("update body = %#v, want name/inactive/disabled", body)
+	}
+	if _, exists := body["model_type"]; exists {
+		t.Fatal("model_type must remain GatewayOps-local and stay out of the remote update body")
 	}
 }
 

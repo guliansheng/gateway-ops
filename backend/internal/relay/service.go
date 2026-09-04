@@ -111,9 +111,10 @@ type BatchCloneGroup struct {
 }
 
 type BatchCloneAccount struct {
-	Name    string `json:"name"`
-	APIKey  string `json:"api_key"`
-	BaseURL string `json:"base_url"`
+	Name      string `json:"name"`
+	APIKey    string `json:"api_key"`
+	BaseURL   string `json:"base_url"`
+	ModelType string `json:"model_type"`
 }
 
 type BatchCloneResult struct {
@@ -393,6 +394,8 @@ func (s *Service) DeleteAccount(ctx context.Context, stationID uint, externalID 
 // BatchCloneAccounts duplicates each requested source account independently.
 // The remote duplicate endpoint creates the account first; the following PUT
 // only changes the requested name, API key, Base URL, and disabled state.
+// ModelType is a GatewayOps-local binding and is persisted after the remote
+// snapshot has been refreshed; it is never sent to Sub2API.
 func (s *Service) BatchCloneAccounts(ctx context.Context, stationID uint, in BatchCloneInput) (BatchCloneResult, error) {
 	if err := validateBatchCloneInput(in); err != nil {
 		return BatchCloneResult{}, err
@@ -409,6 +412,7 @@ func (s *Service) BatchCloneAccounts(ctx context.Context, stationID uint, in Bat
 	}
 	localNames := make(map[int64]string, len(localAccounts))
 	localIDs := make(map[int64]struct{}, len(localAccounts))
+	modelTypeUpdates := make(map[string][]int64)
 	for _, account := range localAccounts {
 		localNames[account.ExternalID] = account.Name
 		localIDs[account.ExternalID] = struct{}{}
@@ -496,13 +500,25 @@ func (s *Service) BatchCloneAccounts(ctx context.Context, stationID uint, in Bat
 				continue
 			}
 			item.Success = true
+			if modelType := strings.ToLower(strings.TrimSpace(requested.ModelType)); modelType != "" {
+				modelTypeUpdates[modelType] = append(modelTypeUpdates[modelType], item.ExternalID)
+			}
 			result.Succeeded++
 			result.Results = append(result.Results, item)
 		}
 	}
 
+	var syncErrors []string
 	if err := s.SyncSnapshot(ctx, stationID); err != nil {
-		result.SyncError = sanitizeBatchCloneError(err, apiKey)
+		syncErrors = append(syncErrors, sanitizeBatchCloneError(err, apiKey))
+	}
+	for modelType, accountIDs := range modelTypeUpdates {
+		if err := s.stations.SetAccountModelTypes(stationID, accountIDs, modelType); err != nil {
+			syncErrors = append(syncErrors, fmt.Sprintf("保存新增账号模型类型失败: %v", err))
+		}
+	}
+	if len(syncErrors) > 0 {
+		result.SyncError = strings.Join(syncErrors, "；")
 	}
 	return result, nil
 }
@@ -540,6 +556,9 @@ func validateBatchCloneInput(in BatchCloneInput) error {
 			}
 			if len([]rune(strings.TrimSpace(account.BaseURL))) > 1024 {
 				return fmt.Errorf("%w：Base URL 不能超过 1024 个字符", ErrInvalidBatchCloneInput)
+			}
+			if len([]rune(strings.TrimSpace(account.ModelType))) > 64 {
+				return fmt.Errorf("%w：模型类型不能超过 64 个字符", ErrInvalidBatchCloneInput)
 			}
 		}
 	}
