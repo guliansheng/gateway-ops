@@ -48,13 +48,13 @@ function writeMonitorBrowserCache(stationID: number, data: PublicGroupMonitorVie
   }
 }
 
-const statusMeta: Record<PublicGroupMonitorStatus, { label: string; className: string; icon: typeof CheckCircle2 }> = {
-  available: { label: "可用", className: "text-success", icon: CheckCircle2 },
-  degraded: { label: "不稳定", className: "text-warning", icon: TriangleAlert },
-  unavailable: { label: "不可用", className: "text-danger", icon: CircleX },
-  idle: { label: "暂无调用", className: "text-muted-foreground", icon: Clock3 },
-  disabled: { label: "已停用", className: "text-muted-foreground", icon: Ban },
-  unknown: { label: "状态未知", className: "text-warning", icon: CircleHelp },
+const statusMeta: Record<PublicGroupMonitorStatus, { label: string; className: string; pillClassName: string; icon: typeof CheckCircle2 }> = {
+  available: { label: "可用", className: "text-success", pillClassName: "border-success/25 bg-success/10", icon: CheckCircle2 },
+  degraded: { label: "不稳定", className: "text-warning", pillClassName: "border-warning/25 bg-warning/10", icon: TriangleAlert },
+  unavailable: { label: "不可用", className: "text-danger", pillClassName: "border-danger/25 bg-danger/10", icon: CircleX },
+  idle: { label: "暂无调用", className: "text-muted-foreground", pillClassName: "border-border bg-muted/60", icon: Clock3 },
+  disabled: { label: "已停用", className: "text-muted-foreground", pillClassName: "border-border bg-muted/60", icon: Ban },
+  unknown: { label: "状态未知", className: "text-warning", pillClassName: "border-warning/25 bg-warning/10", icon: CircleHelp },
 }
 
 type LatencyTone = "good" | "warn" | "slow" | "critical"
@@ -115,17 +115,17 @@ function formatTime(value: string | null | undefined) {
 function LatencyBars({ calls, groupName }: { calls: PublicGroupMonitorCall[]; groupName: string }) {
   const ordered = useMemo(() => [...calls].reverse(), [calls])
   if (ordered.length === 0) {
-    return <span className="block w-[420px] text-xs text-muted-foreground">暂无调用记录</span>
+    return <span className="block w-full text-xs text-muted-foreground">暂无调用记录</span>
   }
   return <Tooltip delayDuration={160}>
     <TooltipTrigger asChild>
-      <button type="button" className="block h-10 w-[420px] rounded-sm px-1 py-1 transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={`查看${groupName}最近${ordered.length}次调用`}>
-        <span className="flex h-8 w-[420px] items-stretch gap-px overflow-hidden" aria-hidden="true">
-          {ordered.map((call, index) => call.success ? <span key={`${call.created_at}-${index}`} className="h-full w-[6px] shrink-0 rounded-[3px] opacity-90 transition-opacity hover:opacity-100" style={{ background: `linear-gradient(to top, ${latencyColor[latencyTone(call.duration_ms, "duration")]} 0 50%, ${latencyColor[latencyTone(call.first_token_ms, "first")]} 50% 100%)` }} /> : <span key={`${call.created_at}-${index}`} className="h-full w-[6px] shrink-0 rounded-[3px] bg-red-500 opacity-90 transition-opacity hover:opacity-100" />)}
+      <button type="button" className="block h-10 w-full rounded-sm px-1 py-1 transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={`查看${groupName}最近${ordered.length}次调用`}>
+        <span className="flex h-8 w-full items-stretch gap-px overflow-hidden" aria-hidden="true">
+          {ordered.map((call, index) => call.success ? <span key={`${call.created_at}-${index}`} className="min-w-0 flex-1 rounded-[3px] opacity-90 transition-opacity hover:opacity-100" style={{ background: `linear-gradient(to top, ${latencyColor[latencyTone(call.duration_ms, "duration")]} 0 50%, ${latencyColor[latencyTone(call.first_token_ms, "first")]} 50% 100%)` }} /> : <span key={`${call.created_at}-${index}`} className="min-w-0 flex-1 rounded-[3px] bg-red-500 opacity-90 transition-opacity hover:opacity-100" />)}
         </span>
       </button>
     </TooltipTrigger>
-    <TooltipContent side="top" align="end" className={recentUsageTooltipNarrowClassName}>
+    <TooltipContent side="bottom" align="end" className={recentUsageTooltipNarrowClassName}>
       <RecentUsageTooltip count={ordered.length}>
         {[...ordered].reverse().map((call, index) => {
           const first = latencyTone(call.first_token_ms, "first")
@@ -153,18 +153,48 @@ function LatencyBars({ calls, groupName }: { calls: PublicGroupMonitorCall[]; gr
 function Status({ status }: { status: PublicGroupMonitorStatus }) {
   const meta = statusMeta[status]
   const Icon = meta.icon
-  return <span className={cn("inline-flex items-center gap-1.5 text-xs font-semibold", meta.className)}><Icon className="size-3.5" />{meta.label}</span>
+  return <span className={cn("inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-semibold", meta.className, meta.pillClassName)}><Icon className="size-3.5" />{meta.label}</span>
+}
+
+function successRate(group: PublicGroupMonitorGroup) {
+  const total = group.success_count + group.failure_count
+  return total > 0 ? `${((group.success_count / total) * 100).toFixed(1)}%` : "-"
 }
 
 function MonitorRow({ group }: { group: PublicGroupMonitorGroup }) {
-  return <article className="border border-border bg-card p-4 shadow-none transition-colors hover:border-brand/40">
-    <div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0 flex-1"><div className="flex min-w-0 flex-wrap items-center gap-2"><h2 className="truncate text-sm font-semibold text-foreground" title={group.name}>{group.name}</h2><span className="inline-flex shrink-0 items-center rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 font-mono text-[11px] font-semibold tabular-nums text-emerald-700 dark:border-emerald-800/70 dark:bg-emerald-950/30 dark:text-emerald-400">倍率 {group.rate_multiplier.toFixed(3)}</span><PlatformBadge platform={group.platform} /></div><p className="mt-1.5 line-clamp-2 text-[11px] leading-5 text-muted-foreground" title={group.description || "暂无描述"}>{group.description || "暂无描述"}</p></div><Status status={group.status} /></div>
-    <div className="mt-4 flex min-w-0 flex-wrap items-end justify-between gap-x-5 gap-y-3"><div className="min-w-0 flex-1"><div className="mb-1.5 flex min-w-0 items-center justify-between gap-3 text-[11px] text-muted-foreground"><span className="flex min-w-0 items-center gap-2"><span className="shrink-0">最近调用</span>{group.failure_summary ? <span className="truncate font-semibold text-warning" title={group.failure_summary}>{group.failure_summary}</span> : null}</span><span className="shrink-0 font-mono tabular-nums">{formatTime(group.latest_call_at)}</span></div><LatencyBars calls={group.calls} groupName={group.name} /></div><div className="flex shrink-0 items-end gap-4 text-right"><div><p className="text-[10px] text-muted-foreground">成功</p><p className="mt-1 font-mono text-base font-semibold tabular-nums text-success">{group.success_count}</p></div><div><p className="text-[10px] text-muted-foreground">失败</p><p className={cn("mt-1 font-mono text-base font-semibold tabular-nums", group.failure_count ? "text-danger" : "text-muted-foreground")}>{group.failure_count}</p></div></div></div>
+  return <article className="group overflow-hidden rounded-[5px] border border-border/80 bg-card shadow-sm transition-[border-color,box-shadow] duration-200 hover:border-brand/40 hover:shadow-md">
+    <div className="p-4 sm:p-5">
+      <div className="flex min-w-0 flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 flex-wrap items-center gap-2.5">
+            <h2 className="min-w-0 truncate text-base font-semibold text-foreground" title={group.name}>{group.name}</h2>
+            <span className="inline-flex shrink-0 items-center rounded-md border border-brand/20 bg-brand/5 px-2 py-1 font-mono text-[11px] font-semibold tabular-nums text-brand">倍率 {group.rate_multiplier.toFixed(3)}</span>
+            <PlatformBadge platform={group.platform} />
+          </div>
+          <p className="mt-2 line-clamp-2 text-xs leading-5 text-muted-foreground" title={group.description || "暂无描述"}>{group.description || "暂无描述"}</p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <Status status={group.status} />
+          <span className="inline-flex items-center rounded-md border border-brand/20 bg-brand/5 px-2.5 py-1.5 font-mono text-xs font-semibold tabular-nums text-brand">成功率 {successRate(group)}</span>
+        </div>
+      </div>
+
+      <div className="mt-4 border-t border-border/70 pt-3.5">
+        <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 text-[11px]">
+          <span className="flex min-w-0 items-center gap-2 text-muted-foreground"><span className="font-medium text-foreground/80">最近调用</span>{group.failure_summary ? <span className="truncate text-xs font-semibold text-warning" title={group.failure_summary}>{group.failure_summary}</span> : null}</span>
+          <span className="shrink-0 font-mono text-sm font-semibold tabular-nums text-foreground">{formatTime(group.latest_call_at)}</span>
+        </div>
+        <div className="mt-2 rounded-md bg-muted/35 px-2 py-1.5">
+          <LatencyBars calls={group.calls} groupName={group.name} />
+        </div>
+      </div>
+
+    </div>
   </article>
 }
 
 function LoadingCards() {
-  return <div className="grid min-h-[420px] gap-3 min-[1150px]:grid-cols-2">{Array.from({ length: 6 }).map((_, index) => <div key={index} className="border border-border bg-card p-4"><div className="flex items-start justify-between gap-3"><div><Skeleton className="h-4 w-32" /><Skeleton className="mt-2 h-3 w-24" /></div><Skeleton className="h-4 w-16" /></div><div className="mt-5 flex items-end justify-between gap-4"><div><Skeleton className="mb-2 h-3 w-24" /><Skeleton className="h-8 w-[420px] max-w-full" /></div><Skeleton className="h-8 w-20" /></div></div>)}</div>
+  return <div className="grid min-h-[420px] gap-3 min-[1150px]:grid-cols-2">{Array.from({ length: 6 }).map((_, index) => <div key={index} className="overflow-hidden rounded-[5px] border border-border/80 bg-card p-4 shadow-sm sm:p-5"><div className="flex items-start justify-between gap-3"><div><Skeleton className="h-4 w-32" /><Skeleton className="mt-2 h-3 w-24" /></div><div className="flex gap-2"><Skeleton className="h-7 w-16 rounded-md" /><Skeleton className="h-7 w-20 rounded-md" /></div></div><div className="mt-5 border-t border-border/70 pt-3.5"><Skeleton className="mb-2 h-3 w-24" /><Skeleton className="h-10 w-full rounded-md" /></div></div>)}</div>
 }
 
 export default function PublicRelayMonitorPage() {

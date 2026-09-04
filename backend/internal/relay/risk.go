@@ -93,33 +93,6 @@ func (s *Service) Risks(stationID uint) ([]AccountRisk, error) {
 
 	// 同一同步快照内重复使用渠道倍率，避免批量风险列表触发大量查询。
 	rateCache := make(map[uint][]storage.RateSnapshot)
-	resolveOverride := func(item storage.RelayAccountCostOverride) (*float64, bool) {
-		switch item.Mode {
-		case "manual":
-			if item.ManualMultiplier != nil && *item.ManualMultiplier >= 0 {
-				return item.ManualMultiplier, true
-			}
-		case "channel_group", "auto_link":
-			if item.MonitorChannelID == nil || strings.TrimSpace(item.UpstreamGroup) == "" || s.rates == nil {
-				return nil, false
-			}
-			rates, ok := rateCache[*item.MonitorChannelID]
-			if !ok {
-				rates, err = s.rates.ListByChannel(*item.MonitorChannelID)
-				if err != nil {
-					return nil, false
-				}
-				rateCache[*item.MonitorChannelID] = rates
-			}
-			for _, rate := range rates {
-				if rate.ModelName == item.UpstreamGroup && rate.Ratio >= 0 {
-					value := rate.Ratio
-					return &value, true
-				}
-			}
-		}
-		return nil, false
-	}
 
 	risks := make([]AccountRisk, 0, len(accounts))
 	for _, account := range accounts {
@@ -127,7 +100,7 @@ func (s *Service) Risks(stationID uint) ([]AccountRisk, error) {
 		if item, ok := overrideByAccount[account.ExternalID]; ok {
 			copy := item
 			override = &copy
-			if cost, ok := resolveOverride(item); ok {
+			if cost, ok := s.resolveAccountCostOverride(item, rateCache); ok {
 				account.RateMultiplier = cost
 				account.RateSource = item.Mode
 				observed := item.UpdatedAt
@@ -145,6 +118,60 @@ func (s *Service) Risks(stationID uint) ([]AccountRisk, error) {
 		risks = append(risks, risk)
 	}
 	return risks, nil
+}
+
+func (s *Service) resolveAccountCostOverride(item storage.RelayAccountCostOverride, rateCache map[uint][]storage.RateSnapshot) (*float64, bool) {
+	switch item.Mode {
+	case "manual":
+		if item.ManualMultiplier != nil && *item.ManualMultiplier >= 0 {
+			return item.ManualMultiplier, true
+		}
+	case "channel_group", "auto_link":
+		if item.MonitorChannelID == nil || strings.TrimSpace(item.UpstreamGroup) == "" || s.rates == nil {
+			return nil, false
+		}
+		rates, ok := rateCache[*item.MonitorChannelID]
+		if !ok {
+			var err error
+			rates, err = s.rates.ListByChannel(*item.MonitorChannelID)
+			if err != nil {
+				return nil, false
+			}
+			rateCache[*item.MonitorChannelID] = rates
+		}
+		for _, rate := range rates {
+			if rate.ModelName == item.UpstreamGroup && rate.Ratio >= 0 {
+				value := rate.Ratio
+				return &value, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func (s *Service) currentAccountCostMultipliers(stationID uint, accounts []storage.RelayAccount) (map[int64]float64, error) {
+	overrides, err := s.stations.ListCostOverrides(stationID)
+	if err != nil {
+		return nil, err
+	}
+	overrideByAccount := make(map[int64]storage.RelayAccountCostOverride, len(overrides))
+	for _, item := range overrides {
+		overrideByAccount[item.RelayAccountExternalID] = item
+	}
+	rateCache := make(map[uint][]storage.RateSnapshot)
+	multipliers := make(map[int64]float64, len(accounts))
+	for _, account := range accounts {
+		if item, ok := overrideByAccount[account.ExternalID]; ok {
+			if multiplier, ok := s.resolveAccountCostOverride(item, rateCache); ok {
+				multipliers[account.ExternalID] = *multiplier
+			}
+			continue
+		}
+		if account.RateMultiplier != nil && *account.RateMultiplier >= 0 && account.RateSource != "" {
+			multipliers[account.ExternalID] = *account.RateMultiplier
+		}
+	}
+	return multipliers, nil
 }
 
 // 保留旧测试和外部包内调用的签名；利润空间参数已不再参与判定。

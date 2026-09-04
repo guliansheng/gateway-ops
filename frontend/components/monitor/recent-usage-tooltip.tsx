@@ -1,8 +1,8 @@
 import type { ReactNode } from "react"
 import { cn } from "@/lib/utils"
 
-export const recentUsageTooltipClassName = "max-h-96 w-[560px] max-w-[calc(100vw-24px)] overflow-y-auto border border-slate-200 bg-white p-0 text-[11px] text-slate-900 shadow-xl dark:border-slate-200 dark:bg-white dark:text-slate-900 [&>svg]:hidden"
-export const recentUsageTooltipNarrowClassName = "max-h-96 w-[340px] max-w-[calc(100vw-24px)] overflow-y-auto border border-slate-200 bg-white p-0 text-[11px] text-slate-900 shadow-xl dark:border-slate-200 dark:bg-white dark:text-slate-900 [&>svg]:hidden"
+export const recentUsageTooltipClassName = "max-h-[calc(var(--spacing)*125)] w-[560px] max-w-[calc(100vw-24px)] overflow-y-auto border border-slate-200 bg-white p-0 text-[11px] text-slate-900 shadow-xl dark:border-slate-200 dark:bg-white dark:text-slate-900 [&>svg]:hidden"
+export const recentUsageTooltipNarrowClassName = "max-h-[calc(var(--spacing)*100)] w-[340px] max-w-[calc(100vw-24px)] overflow-y-auto border border-slate-200 bg-white p-0 text-[11px] text-slate-900 shadow-xl dark:border-slate-200 dark:bg-white dark:text-slate-900 [&>svg]:hidden"
 
 export function RecentUsageTooltip({ count, children }: { count: number; children: ReactNode }) {
   return (

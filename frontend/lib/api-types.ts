@@ -313,6 +313,7 @@ export interface RelayAccountView {
   can_apply: boolean
   usage_total_tokens: number | null
   user_charge_amount: number | null
+  account_cost_amount: number | null
 }
 
 export interface RelayAccountBatchActionResult {
@@ -355,6 +356,7 @@ export interface RelayUsageAccountView {
   external_id: number
   usage_total_tokens: number
   user_charge_amount: number
+  account_cost_amount: number | null
   request_count: number
 }
 

@@ -160,9 +160,12 @@ type GroupSortOrderUpdate struct {
 }
 
 type AccountUsageStats struct {
-	TotalTokens int64   `json:"total_tokens"`
-	UserCharge  float64 `json:"user_charge"`
-	AccountCost float64 `json:"account_cost"`
+	TotalTokens      int64   `json:"total_tokens"`
+	UserCharge       float64 `json:"user_charge"`
+	// AccountCost is recalculated from BaseCost and the account's current
+	// effective cost multiplier by UsageStats.
+	AccountCost      float64 `json:"account_cost"`
+	AccountCostKnown bool    `json:"-"`
 	// BaseCost is Sub2API's raw model cost before the account multiplier. It is
 	// used when an explicit channel-group binding supplies the missing account
 	// multiplier and Sub2API has not materialized account_cost yet.
@@ -1355,7 +1358,25 @@ func (s *Service) UsageStats(ctx context.Context, stationID uint, rangeName stri
 	for _, account := range accounts {
 		accountIDs = append(accountIDs, account.ExternalID)
 	}
-	return s.usageStatsForAccountIDs(ctx, stationID, rangeName, since, accountIDs)
+	usage, err := s.usageStatsForAccountIDs(ctx, stationID, rangeName, since, accountIDs)
+	if err != nil {
+		return usage, err
+	}
+	multipliers, err := s.currentAccountCostMultipliers(stationID, accounts)
+	if err != nil {
+		return usage, err
+	}
+	for accountID, stats := range usage.Accounts {
+		multiplier, ok := multipliers[accountID]
+		stats.AccountCostKnown = ok
+		if ok {
+			stats.AccountCost = stats.BaseCost * multiplier
+		} else {
+			stats.AccountCost = 0
+		}
+		usage.Accounts[accountID] = stats
+	}
+	return usage, nil
 }
 
 // usageStatsForAccountIDs reads interval usage only for the specified remote

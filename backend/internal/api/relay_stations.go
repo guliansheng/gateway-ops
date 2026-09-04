@@ -192,10 +192,11 @@ type relayOverview struct {
 }
 
 type relayUsageAccountView struct {
-	ExternalID       int64   `json:"external_id"`
-	UsageTotalTokens int64   `json:"usage_total_tokens"`
-	UserChargeAmount float64 `json:"user_charge_amount"`
-	RequestCount     int64   `json:"request_count"`
+	ExternalID        int64   `json:"external_id"`
+	UsageTotalTokens  int64   `json:"usage_total_tokens"`
+	UserChargeAmount  float64 `json:"user_charge_amount"`
+	AccountCostAmount  *float64 `json:"account_cost_amount"`
+	RequestCount      int64   `json:"request_count"`
 }
 
 type relayUsageView struct {
@@ -1197,11 +1198,16 @@ func relayStationUsage(c *gin.Context, d *Deps) {
 	}
 	accounts := make([]relayUsageAccountView, 0, len(usage.Accounts))
 	for externalID, stats := range usage.Accounts {
+		var accountCostAmount *float64
+		if stats.AccountCostKnown {
+			accountCostAmount = &stats.AccountCost
+		}
 		accounts = append(accounts, relayUsageAccountView{
-			ExternalID:       externalID,
-			UsageTotalTokens: stats.TotalTokens,
-			UserChargeAmount: stats.UserCharge,
-			RequestCount:     stats.Requests,
+			ExternalID:        externalID,
+			UsageTotalTokens:  stats.TotalTokens,
+			UserChargeAmount:  stats.UserCharge,
+			AccountCostAmount: accountCostAmount,
+			RequestCount:      stats.Requests,
 		})
 	}
 	sort.Slice(accounts, func(i, j int) bool { return accounts[i].ExternalID < accounts[j].ExternalID })

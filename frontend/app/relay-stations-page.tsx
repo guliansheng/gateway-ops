@@ -768,7 +768,7 @@ function RecentUsageTable({
                         <UsageTokenBreakdown row={row} />
                         <span className="space-y-0.5 font-mono tabular-nums">
                           <span className="block whitespace-nowrap font-medium text-brand">
-                            扣费 {money(row.user_charge)}
+                            用户扣费 {money(row.user_charge)}
                           </span>
                           <span className="block whitespace-nowrap text-[10px] text-muted-foreground">
                             原始 {money(row.original_cost)}
@@ -1031,7 +1031,10 @@ function RiskRow({
           {tokenAmount(account.usage_total_tokens)} Token
         </p>
         <p className="mt-0.5 text-[11px] font-medium tabular-nums text-brand">
-          扣费 {chargeAmount(account.user_charge_amount)}
+          用户扣费 {chargeAmount(account.user_charge_amount)}
+        </p>
+        <p className="mt-0.5 text-[11px] font-medium tabular-nums text-warning">
+          成本 {chargeAmount(account.account_cost_amount)}
         </p>
       </div>
       <div>
@@ -1383,13 +1386,31 @@ function newBatchCloneRow(sourceName: string, baseURL: string): BatchCloneFormRo
 function BatchCloneDialog({ accounts, open, busy, result, onOpenChange, onSubmit }: { accounts: RelayAccountView[]; open: boolean; busy: boolean; result: RelayAccountBatchCloneResult | null; onOpenChange: (open: boolean) => void; onSubmit: (groups: RelayAccountBatchCloneGroup[]) => void }) {
   const [formGroups, setFormGroups] = useState<BatchCloneFormGroup[]>([])
   const [error, setError] = useState("")
+  const [sourceAccountQuery, setSourceAccountQuery] = useState("")
+  const [sourceGroupFilter, setSourceGroupFilter] = useState("all")
   const accountByID = useMemo(() => new Map(accounts.map((account) => [account.external_id, account])), [accounts])
+  const sourceGroupOptions = useMemo(() => {
+    const groups = new Map<number, RelayGroupOption>()
+    accounts.forEach((account) => (account.current_groups ?? []).forEach((group) => groups.set(group.external_id, group)))
+    return publicFirst(Array.from(groups.values()))
+  }, [accounts])
+  const filteredSourceAccounts = useMemo(() => {
+    const query = sourceAccountQuery.trim().toLowerCase()
+    return accounts.filter((account) => {
+      if (query && !account.name.toLowerCase().includes(query)) return false
+      if (sourceGroupFilter === "__unassigned") return (account.current_groups ?? []).length === 0
+      if (sourceGroupFilter !== "all" && !(account.current_groups ?? []).some((group) => String(group.external_id) === sourceGroupFilter)) return false
+      return true
+    })
+  }, [accounts, sourceAccountQuery, sourceGroupFilter])
   const total = formGroups.reduce((sum, group) => sum + group.rows.length, 0)
 
   function close() {
     if (busy) return
     setFormGroups([])
     setError("")
+    setSourceAccountQuery("")
+    setSourceGroupFilter("all")
     onOpenChange(false)
   }
 
@@ -1450,20 +1471,34 @@ function BatchCloneDialog({ accounts, open, busy, result, onOpenChange, onSubmit
   }
 
   return <Dialog open={open} onOpenChange={(next) => { if (next) onOpenChange(true); else close() }}>
-    <DialogContent className="flex w-[calc(100vw-2rem)] max-h-[calc(100dvh-2rem)] max-w-4xl flex-col overflow-hidden p-0">
+    <DialogContent className="flex w-[calc(100vw-2rem)] max-h-[calc(100dvh-2rem)] sm:max-w-[800px] flex-col overflow-hidden p-0">
       {result ? <>
         <DialogHeader className="shrink-0 border-b border-border px-4 py-5 sm:px-6"><DialogTitle>批量新增结果</DialogTitle><DialogDescription>已完成逐个克隆和更新，API Key 不会显示在结果中。</DialogDescription></DialogHeader>
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4 sm:px-6">
           <div className="grid grid-cols-3 gap-2 text-center"><div className="rounded-md border border-border bg-muted/40 px-2 py-2"><p className="text-[11px] text-muted-foreground">请求</p><p className="font-mono text-base font-semibold tabular-nums">{result.requested}</p></div><div className="rounded-md border border-success/25 bg-success/10 px-2 py-2"><p className="text-[11px] text-success">成功</p><p className="font-mono text-base font-semibold tabular-nums text-success">{result.succeeded}</p></div><div className="rounded-md border border-danger/25 bg-danger/10 px-2 py-2"><p className="text-[11px] text-danger">失败</p><p className="font-mono text-base font-semibold tabular-nums text-danger">{result.failed}</p></div></div>
           {result.sync_error ? <Alert variant="destructive"><CircleAlert className="size-4" /><AlertDescription>账号已在上游处理，但刷新本地快照失败：{result.sync_error}</AlertDescription></Alert> : null}
-          <div className="max-h-[min(52vh,480px)] space-y-2 overflow-y-auto pr-1">{result.results.map((item, index) => <div key={`${item.source_account_external_id}-${item.external_id}-${index}`} className="flex min-w-0 items-start gap-2 rounded-md border border-border bg-card px-3 py-2.5 text-xs"><span className={cn("mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full", item.success ? "bg-success/10 text-success" : "bg-danger/10 text-danger")}>{item.success ? <Check className="size-3" /> : <CircleAlert className="size-3" />}</span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center justify-between gap-2"><span className="min-w-0 break-words font-medium">{item.name}</span><span className={cn("shrink-0 font-mono tabular-nums", item.success ? "text-muted-foreground" : "text-danger")}>{item.success ? `已创建 #${item.external_id}` : "创建失败"}</span></div><p className="mt-1 text-[11px] text-muted-foreground">源账号：{item.source_account_name} · #{item.source_account_external_id}</p>{item.error ? <p className="mt-1 break-words whitespace-pre-wrap text-[11px] text-danger">{item.error}</p> : null}</div></div>)}</div>
+          <div className="max-h-[min(52vh,480px)] space-y-2 overflow-y-auto pr-1">{result.results.map((item, index) => <div key={`${item.source_account_external_id}-${item.external_id}-${index}`} className="flex min-w-0 items-start gap-2 rounded-md border border-border bg-card px-3 py-2.5 text-xs"><span className={cn("mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full", item.success ? "bg-success/10 text-success" : "bg-danger/10 text-danger")}>{item.success ? <Check className="size-3" /> : <CircleAlert className="size-3" />}</span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center justify-between gap-2"><span className="min-w-0 break-words font-medium">{item.name}</span><span className={cn("shrink-0 font-mono tabular-nums", item.success ? "text-muted-foreground" : "text-danger")}>{item.success ? "已创建" : "创建失败"}</span></div><p className="mt-1 text-[11px] text-muted-foreground">源账号：{item.source_account_name}</p>{item.error ? <p className="mt-1 break-words whitespace-pre-wrap text-[11px] text-danger">{item.error}</p> : null}</div></div>)}</div>
         </div>
         <DialogFooter className="shrink-0 border-t border-border px-4 py-4 sm:px-6"><Button type="button" onClick={close}>关闭</Button></DialogFooter>
       </> : <>
         <DialogHeader className="shrink-0 border-b border-border px-4 py-5 sm:px-6"><DialogTitle>批量新增账号</DialogTitle><DialogDescription>选择多个已有账号作为模板，每个模板下可新增多行。新账号会完整克隆模板，可分别修改名称、API Key 和 Base URL，并默认关闭。</DialogDescription></DialogHeader>
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4 sm:px-6">
-          <div className="space-y-2"><div className="flex items-center justify-between gap-3"><Label>选择源账号</Label><span className="text-[11px] text-muted-foreground">已选 {formGroups.length} 个</span></div><div className="grid max-h-48 gap-2 overflow-y-auto pr-1 sm:grid-cols-2">{accounts.length === 0 ? <p className="col-span-full rounded-md border border-dashed border-border px-3 py-5 text-center text-xs text-muted-foreground">当前没有可用账号</p> : accounts.map((account) => { const checked = formGroups.some((group) => group.source_account_external_id === account.external_id); const id = `batch-clone-source-${account.external_id}`; return <label key={account.external_id} htmlFor={id} className={cn("flex min-w-0 cursor-pointer items-center gap-2 rounded-md border px-3 py-2.5 transition-colors", checked ? "border-brand/50 bg-brand/5" : "border-border hover:bg-muted/40")}><Checkbox id={id} checked={checked} disabled={busy} onCheckedChange={(value) => toggleSource(account, value === true)} /><span className="min-w-0 flex-1"><span className="block truncate text-xs font-medium" title={account.name}>{account.name}</span><span className="mt-0.5 block truncate text-[11px] text-muted-foreground">#{account.external_id} · {account.platform || "-"} · {account.type || "未知类型"}</span></span></label> })}</div></div>
-          {formGroups.length === 0 ? <div className="rounded-md border border-dashed border-border bg-muted/20 px-4 py-8 text-center text-xs text-muted-foreground">选择源账号后，在这里为每个源账号填写要新增的账号。</div> : <div className="space-y-3">{formGroups.map((group) => { const source = accountByID.get(group.source_account_external_id); if (!source) return null; return <div key={group.source_account_external_id} className="space-y-3 rounded-md border border-border p-3"><div className="flex min-w-0 flex-wrap items-center justify-between gap-2"><div className="min-w-0"><p className="truncate text-sm font-semibold" title={source.name}>{source.name}</p><p className="mt-0.5 text-[11px] text-muted-foreground">源账号 #{source.external_id} · {source.type || "未知类型"} · 新账号默认关闭</p></div><span className="shrink-0 rounded bg-brand/10 px-2 py-1 text-[11px] font-medium text-brand">{group.rows.length} 个新账号</span></div><div className="space-y-2">{group.rows.map((row, index) => <div key={row.id} className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_40px]"><div className="space-y-1"><Label htmlFor={`${row.id}-name`} className="text-[11px] text-muted-foreground">账号名称 {index + 1}</Label><Input id={`${row.id}-name`} value={row.name} disabled={busy} onChange={(event) => updateRow(group.source_account_external_id, row.id, { name: event.target.value })} placeholder={source.name} maxLength={255} /></div><div className="space-y-1"><Label htmlFor={`${row.id}-key`} className="text-[11px] text-muted-foreground">API Key</Label><Input id={`${row.id}-key`} type="password" autoComplete="new-password" value={row.api_key} disabled={busy} onChange={(event) => updateRow(group.source_account_external_id, row.id, { api_key: event.target.value })} placeholder="粘贴新账号 API Key" /></div><div className="space-y-1"><Label htmlFor={`${row.id}-base-url`} className="text-[11px] text-muted-foreground">Base URL</Label><Input id={`${row.id}-base-url`} type="url" value={row.base_url} disabled={busy} onChange={(event) => updateRow(group.source_account_external_id, row.id, { base_url: event.target.value })} placeholder="沿用源账号地址" maxLength={1024} /></div><div className="flex items-end justify-end"><Button type="button" variant="ghost" size="icon" className="size-10" aria-label={`删除第 ${index + 1} 个新账号`} title="删除新账号" disabled={busy || group.rows.length <= 1} onClick={() => removeRow(group.source_account_external_id, row.id)}><Trash2 className="size-4 text-danger" /></Button></div></div>)}</div><Button type="button" variant="outline" size="sm" className="h-9 gap-1.5" disabled={busy || total >= 300} onClick={() => addRow(group.source_account_external_id)}><Plus className="size-3.5" />继续添加账号</Button></div> })}</div>}
+          <div className="flex flex-wrap gap-2">
+            <div className="relative min-w-48 flex-1">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+            <Input value={sourceAccountQuery} onChange={(event) => setSourceAccountQuery(event.target.value)} placeholder="按源账号名称筛选" aria-label="按源账号名称筛选" className="h-10 pl-8 text-sm" disabled={busy} />
+            </div>
+            <Select value={sourceGroupFilter} onValueChange={setSourceGroupFilter} disabled={busy}>
+              <SelectTrigger className="h-10 w-full text-sm sm:w-52" aria-label="按源账号分组筛选"><SelectValue placeholder="按所在分组筛选" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部分组</SelectItem>
+                <SelectItem value="__unassigned">未分配分组</SelectItem>
+                {sourceGroupOptions.map((group) => <SelectItem key={group.external_id} value={String(group.external_id)}>{group.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2"><div className="flex items-center justify-between gap-3"><Label>选择源账号</Label><span className="text-[11px] text-muted-foreground">已选 {formGroups.length} 个 · 匹配 {filteredSourceAccounts.length} 个</span></div><div className="grid max-h-48 gap-2 overflow-y-auto pr-1 sm:grid-cols-2">{accounts.length === 0 ? <p className="col-span-full rounded-md border border-dashed border-border px-3 py-5 text-center text-xs text-muted-foreground">当前没有可用账号</p> : filteredSourceAccounts.length === 0 ? <p className="col-span-full rounded-md border border-dashed border-border px-3 py-5 text-center text-xs text-muted-foreground">没有匹配的源账号</p> : filteredSourceAccounts.map((account) => { const checked = formGroups.some((group) => group.source_account_external_id === account.external_id); const id = `batch-clone-source-${account.external_id}`; return <label key={account.external_id} htmlFor={id} className={cn("flex min-w-0 cursor-pointer items-start gap-2 rounded-md border px-3 py-2.5 transition-colors", checked ? "border-brand/50 bg-brand/5" : "border-border hover:bg-muted/40")}><Checkbox id={id} checked={checked} disabled={busy} onCheckedChange={(value) => toggleSource(account, value === true)} /><span className="min-w-0 flex-1"><span className="block truncate text-xs font-medium" title={account.name}>{account.name}</span><span className="mt-1 flex flex-wrap gap-1">{(account.current_groups ?? []).length > 0 ? (account.current_groups ?? []).map((group) => <span key={group.external_id} className="max-w-full truncate rounded bg-brand/10 px-1.5 py-0.5 text-[10px] font-medium text-brand" title={group.name}>{group.name}</span>) : <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">未分配分组</span>}</span><span className="mt-1 block truncate text-[11px] text-muted-foreground">{account.platform || "-"} · {account.type || "未知类型"}</span></span></label> })}</div></div>
+          {formGroups.length === 0 ? <div className="rounded-md border border-dashed border-border bg-muted/20 px-4 py-8 text-center text-xs text-muted-foreground">选择源账号后，在这里为每个源账号填写要新增的账号。</div> : <div className="space-y-3">{formGroups.map((group) => { const source = accountByID.get(group.source_account_external_id); if (!source) return null; return <div key={group.source_account_external_id} className="space-y-3 rounded-md border border-border p-3"><div className="flex min-w-0 flex-wrap items-center justify-between gap-2"><div className="min-w-0"><p className="truncate text-sm font-semibold" title={source.name}>{source.name}</p><div className="mt-1 flex flex-wrap gap-1">{(source.current_groups ?? []).length > 0 ? (source.current_groups ?? []).map((item) => <span key={item.external_id} className="max-w-full truncate rounded bg-brand/10 px-1.5 py-0.5 text-[10px] font-medium text-brand" title={item.name}>{item.name}</span>) : <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">未分配分组</span>}</div><p className="mt-1 text-[11px] text-muted-foreground">{source.type || "未知类型"} · 新账号默认关闭</p></div><span className="shrink-0 rounded bg-brand/10 px-2 py-1 text-[11px] font-medium text-brand">{group.rows.length} 个新账号</span></div><div className="space-y-2">{group.rows.map((row, index) => <div key={row.id} className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_40px]"><div className="space-y-1"><Label htmlFor={`${row.id}-name`} className="text-[11px] text-muted-foreground">账号名称 {index + 1}</Label><Input id={`${row.id}-name`} value={row.name} disabled={busy} onChange={(event) => updateRow(group.source_account_external_id, row.id, { name: event.target.value })} placeholder={source.name} maxLength={255} /></div><div className="space-y-1"><Label htmlFor={`${row.id}-key`} className="text-[11px] text-muted-foreground">API Key</Label><Input id={`${row.id}-key`} type="password" autoComplete="new-password" value={row.api_key} disabled={busy} onChange={(event) => updateRow(group.source_account_external_id, row.id, { api_key: event.target.value })} placeholder="粘贴新账号 API Key" /></div><div className="space-y-1"><Label htmlFor={`${row.id}-base-url`} className="text-[11px] text-muted-foreground">Base URL</Label><Input id={`${row.id}-base-url`} type="url" value={row.base_url} disabled={busy} onChange={(event) => updateRow(group.source_account_external_id, row.id, { base_url: event.target.value })} placeholder="沿用源账号地址" maxLength={1024} /></div><div className="flex items-end justify-end"><Button type="button" variant="ghost" size="icon" className="size-10" aria-label={`删除第 ${index + 1} 个新账号`} title="删除新账号" disabled={busy || group.rows.length <= 1} onClick={() => removeRow(group.source_account_external_id, row.id)}><Trash2 className="size-4 text-danger" /></Button></div></div>)}</div><Button type="button" variant="outline" size="sm" className="h-9 gap-1.5" disabled={busy || total >= 300} onClick={() => addRow(group.source_account_external_id)}><Plus className="size-3.5" />继续添加账号</Button></div> })}</div>}
           <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3 text-xs"><span className="text-muted-foreground">预计新增 <strong className="font-mono text-foreground">{total}</strong> 个账号</span><span className="text-muted-foreground">名称留空使用源账号名称 · Base URL 默认沿用源账号地址 · 最多 300 个</span></div>
           {error ? <Alert variant="destructive" className="py-3"><CircleAlert className="size-4" /><AlertDescription>{error}</AlertDescription></Alert> : null}
         </div>
@@ -1558,7 +1593,7 @@ export default function RelayStationsPage() {
       ...baseOverview,
       accounts: baseOverview.accounts.map((account) => {
         const stats = usageByAccount.get(account.external_id)
-        return { ...account, usage_total_tokens: stats?.usage_total_tokens ?? null, user_charge_amount: stats?.user_charge_amount ?? null }
+        return { ...account, usage_total_tokens: stats?.usage_total_tokens ?? null, user_charge_amount: stats?.user_charge_amount ?? null, account_cost_amount: stats?.account_cost_amount ?? null }
       }),
       range: usage.data?.range ?? usageRange,
       usage_complete: usage.data?.complete ?? false,
