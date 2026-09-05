@@ -1570,7 +1570,7 @@ function BatchCloneDialog({ accounts, availableModelTypes, open, busy, result, o
         </div>
         <DialogFooter className="shrink-0 border-t border-border px-4 py-4 sm:px-6"><Button type="button" onClick={close}>关闭</Button></DialogFooter>
       </> : <>
-        <DialogHeader className="shrink-0 border-b border-border px-4 py-5 sm:px-6"><DialogTitle>批量新增账号</DialogTitle><DialogDescription>选择多个已有账号作为模板，每个模板下可新增多行。新账号会完整克隆模板，可分别修改名称、API Key、Base URL 和模型类型，并默认关闭。</DialogDescription></DialogHeader>
+        <DialogHeader className="shrink-0 border-b border-border px-4 py-5 sm:px-6"><DialogTitle>批量新增账号</DialogTitle><DialogDescription>选择多个已有账号作为模板，每个模板下可新增多行。新账号会完整克隆模板，可分别修改名称、API Key、Base URL 和模型类型，并默认关闭调度、状态正常。</DialogDescription></DialogHeader>
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4 sm:px-6">
           <div className="flex flex-wrap gap-2">
             <div className="relative min-w-48 flex-1">
@@ -1598,7 +1598,7 @@ function BatchCloneDialog({ accounts, availableModelTypes, open, busy, result, o
                   <div className="min-w-0">
                     <div className="flex min-w-0 items-center gap-1.5"><p className="min-w-0 truncate text-sm font-semibold" title={source.name}>{source.name}</p><AccountRateBadge account={source} /></div>
                     <SourceAccountMeta account={source} />
-                    <p className="mt-1 text-[11px] text-muted-foreground">新账号默认关闭</p>
+                    <p className="mt-1 text-[11px] text-muted-foreground">新账号默认关闭调度，状态正常</p>
                   </div>
                   <div className="flex shrink-0 items-center gap-1.5"><Button type="button" variant="outline" size="sm" className="h-8 gap-1.5 px-2.5 text-xs" disabled={copyGroupDisabled} onClick={() => copyGroup(group.source_account_external_id)}><Copy className="size-3.5" />复制本组</Button><span className="rounded bg-brand/10 px-2 py-1 text-[11px] font-medium text-brand">{group.rows.length} 个新账号</span></div>
                 </div>

@@ -65,8 +65,8 @@ func TestBatchCloneUpdateBodyPreservesClonedCredentials(t *testing.T) {
 	if credentials["base_url"] != "https://custom.example/v1" || credentials["custom"] != "cloned-value" || credentials["api_key"] != "sk-new" {
 		t.Fatalf("credentials = %#v, cloned credential fields were not preserved", credentials)
 	}
-	if body["name"] != "新账号" || body["status"] != "inactive" || body["schedulable"] != false {
-		t.Fatalf("update body = %#v, want name/inactive/disabled", body)
+	if body["name"] != "新账号" || body["status"] != "active" || body["schedulable"] != false {
+		t.Fatalf("update body = %#v, want name/active/disabled", body)
 	}
 	if _, exists := body["model_type"]; exists {
 		t.Fatal("model_type must remain GatewayOps-local and stay out of the remote update body")

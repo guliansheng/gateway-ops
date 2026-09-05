@@ -393,7 +393,8 @@ func (s *Service) DeleteAccount(ctx context.Context, stationID uint, externalID 
 
 // BatchCloneAccounts duplicates each requested source account independently.
 // The remote duplicate endpoint creates the account first; the following PUT
-// only changes the requested name, API key, Base URL, and disabled state.
+// only changes the requested name, API key, Base URL, active state, and
+// disabled scheduling state.
 // ModelType is a GatewayOps-local binding and is persisted after the remote
 // snapshot has been refreshed; it is never sent to Sub2API.
 func (s *Service) BatchCloneAccounts(ctx context.Context, stationID uint, in BatchCloneInput) (BatchCloneResult, error) {
@@ -608,7 +609,7 @@ func batchCloneUpdateBody(source, cloned *remoteAccount, name, apiKey, baseURL s
 	return map[string]any{
 		"name":        name,
 		"credentials": credentials,
-		"status":      "inactive",
+		"status":      "active",
 		"schedulable": false,
 	}
 }
