@@ -35,7 +35,7 @@ import { useTriggerRefresh } from "@/lib/refresh-context"
 import { channelTypeLabel, money, relativeTime } from "@/lib/format"
 import { cn } from "@/lib/utils"
 import { syncChannelStream, testLoginStream, type ProgressEvent } from "@/lib/sync-stream"
-import type { Channel, ChannelAccount, RateSnapshot, RelayLatencySample, RelayUsageRange } from "@/lib/api-types"
+import type { Channel, ChannelAccount, RateBoundAccount, RateSnapshot, RelayLatencySample, RelayUsageRange } from "@/lib/api-types"
 import { ChannelFormDialog } from "@/components/monitor/channel-form-dialog"
 import { PlatformBadge } from "@/components/relay/platform-badge"
 import { RateChangeDot, RateTooltipBody } from "@/components/monitor/rate-change"
@@ -429,6 +429,45 @@ function InlineRates({ channelID }: { channelID: number }) {
   )
 }
 
+function BoundAccountsPreview({ accounts }: { accounts?: RateBoundAccount[] }) {
+  const boundAccounts = accounts ?? []
+  const count = boundAccounts.length
+
+  return (
+    <Tooltip delayDuration={150}>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "inline-flex min-h-5 min-w-0 items-center gap-1 rounded-md border px-1.5 py-0.5 text-left text-[10px] font-medium tabular-nums transition-colors hover:border-brand/40 hover:bg-brand/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            count > 0 ? "border-brand/20 bg-brand/10 text-brand" : "border-border bg-muted/60 text-muted-foreground",
+          )}
+          aria-label={`查看已绑定的 ${count} 个账号`}
+        >
+          <span className="shrink-0">{count} 个账号</span>
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="top" align="start" className="max-w-sm p-2 text-xs">
+        {count === 0 ? (
+          <p>该分组暂无绑定账号</p>
+        ) : (
+          <div className="min-w-52">
+            <p className="mb-1.5 font-medium">已绑定账号 · {count} 个</p>
+            <ul className="max-h-56 space-y-1.5 overflow-y-auto pr-1">
+              {boundAccounts.map((account) => (
+                <li key={`${account.relay_station_id}-${account.relay_account_external_id}`} className="flex min-w-0 items-start justify-between gap-3">
+                  <span className="min-w-0 break-words leading-4">{account.relay_station_name} · {account.relay_account_name}</span>
+                  <span className="shrink-0 font-mono text-[10px] text-background/70">#{account.relay_account_external_id}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
 function ManualRatesEditor({ channelID }: { channelID: number }) {
   const { data, loading, refetch } = useChannelRates(channelID)
   const [editingID, setEditingID] = useState<number | null>(null)
@@ -506,13 +545,13 @@ function ManualRatesEditor({ channelID }: { channelID: number }) {
         </div>
       </div>
       {loading ? <p className="mt-2 px-1 text-[11px] text-muted-foreground">加载分组中…</p> : (data ?? []).length === 0 ? <p className="mt-2 px-1 text-[11px] text-muted-foreground">暂无渠道分组</p> : (
-        <div className="mt-2 overflow-hidden rounded-lg border border-border bg-card">
+        <div className={cn("mt-2 grid grid-cols-1 gap-2 @sm:grid-cols-2", (data ?? []).length > 6 && "max-h-72 overflow-y-auto pr-1")}>
           {(data ?? []).map((rate) => (
-            <div key={rate.id} className="group border-b border-border last:border-b-0 hover:bg-muted/30">
-              <div className="flex min-h-11 items-center gap-2 px-2.5">
+            <div key={rate.id} className="group min-w-0 rounded-lg border border-border/80 bg-card p-2 transition-colors hover:border-brand/40 hover:bg-muted/20">
+              <div className="flex min-w-0 items-start gap-1.5">
                 <Tooltip delayDuration={150}>
                   <TooltipTrigger asChild>
-                    <span className="inline-flex min-w-0 flex-1 items-center gap-1.5 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" tabIndex={0}>
+                    <span className="inline-flex min-w-0 flex-1 items-center gap-1.5 rounded-sm pt-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" tabIndex={0}>
                       <span className="min-w-0 truncate text-xs font-medium" title={rate.model_name}>{rate.model_name}</span>
                       <RateChangeDot change={rate.latest_ratio_change} />
                     </span>
@@ -521,14 +560,12 @@ function ManualRatesEditor({ channelID }: { channelID: number }) {
                     <RateTooltipBody rate={rate} />
                   </TooltipContent>
                 </Tooltip>
-                <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] font-medium tabular-nums text-foreground">{rate.ratio.toFixed(3)}×</span>
-                {rate.source === "relay_account" ? <span className="rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-400">自动关联</span> : <><Button type="button" variant="ghost" size="icon" aria-label={`编辑 ${rate.model_name}`} className="size-9 text-muted-foreground opacity-70 transition-opacity hover:text-foreground group-hover:opacity-100" onClick={() => beginEdit(rate)}><Pencil className="size-3.5" /></Button><Button type="button" variant="ghost" size="icon" aria-label={`删除 ${rate.model_name}`} className="size-9 text-muted-foreground opacity-70 transition-opacity hover:text-destructive group-hover:opacity-100" onClick={() => void remove(rate)}><Trash2 className="size-3.5" /></Button></>}
+                {rate.source === "relay_account" ? null : <div className="-mr-1 -mt-1 flex shrink-0 items-center"><Button type="button" variant="ghost" size="icon" aria-label={`编辑 ${rate.model_name}`} className="size-9 text-muted-foreground opacity-70 transition-opacity hover:text-foreground group-hover:opacity-100" onClick={() => beginEdit(rate)}><Pencil className="size-3.5" /></Button><Button type="button" variant="ghost" size="icon" aria-label={`删除 ${rate.model_name}`} className="size-9 text-muted-foreground opacity-70 transition-opacity hover:text-destructive group-hover:opacity-100" onClick={() => void remove(rate)}><Trash2 className="size-3.5" /></Button></div>}
               </div>
-              <div className="flex flex-wrap items-center gap-1.5 border-t border-border/70 bg-muted/15 px-2.5 py-2">
-                <span className="mr-1 text-[10px] font-medium text-muted-foreground">已绑定 {rate.bound_accounts?.length ?? 0} 个账号</span>
-                {(rate.bound_accounts ?? []).length === 0 ? <span className="text-[10px] text-muted-foreground">暂无</span> : (rate.bound_accounts ?? []).map((account) => (
-                  <span key={`${account.relay_station_id}-${account.relay_account_external_id}`} className="max-w-full truncate rounded bg-brand/10 px-1.5 py-0.5 text-[10px] font-medium text-brand" title={`${account.relay_station_name} · ${account.relay_account_name} · #${account.relay_account_external_id}`}>{account.relay_station_name} · {account.relay_account_name}</span>
-                ))}
+              <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-1.5">
+                <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] font-medium tabular-nums text-foreground">{rate.ratio.toFixed(3)}×</span>
+                {rate.source === "relay_account" ? <span className="shrink-0 rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-400">自动关联</span> : null}
+                <BoundAccountsPreview accounts={rate.bound_accounts} />
               </div>
             </div>
           ))}

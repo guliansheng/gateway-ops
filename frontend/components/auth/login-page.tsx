@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label"
 import { Button } from "@/components/ui/button"
 import { useAuth } from "@/lib/auth-context"
 import type { ApiError } from "@/lib/api"
+import { Activity } from "lucide-react"
 
 export function LoginPage() {
   const { login } = useAuth()
@@ -76,6 +77,11 @@ export function LoginPage() {
               {submitting ? "登录中…" : "登录"}
             </Button>
           </form>
+          <div className="mt-5 border-t border-border pt-4">
+            <Button asChild variant="outline" className="w-full gap-2">
+              <a href="/public/service-status"><Activity className="size-4" />查看公开服务状态</a>
+            </Button>
+          </div>
         </CardContent>
       </Card>
     </div>

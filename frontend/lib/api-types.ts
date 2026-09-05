@@ -774,6 +774,93 @@ export interface PublicModelPricingView {
   }
 }
 
+export type PublicServiceStatusIndicator = "none" | "minor" | "major" | "critical" | "unknown" | string
+
+export interface PublicServiceStatusSummary {
+  indicator: PublicServiceStatusIndicator
+  description: string
+}
+
+export interface PublicServiceStatusComponent {
+  id: string
+  name: string
+  status: string
+  description?: string
+  updated_at?: string | null
+  history: PublicServiceStatusDay[]
+}
+
+export interface PublicServiceStatusBlip {
+  id: string
+  name: string
+  status: string
+  impact: string
+}
+
+export interface PublicServiceStatusDay {
+  date: string
+  status: string
+  incidents?: PublicServiceStatusBlip[]
+}
+
+export interface PublicServiceStatusGroup {
+  id: string
+  name: string
+  description?: string
+  status: string
+  uptime: number
+  history: PublicServiceStatusDay[]
+  components: PublicServiceStatusComponent[]
+}
+
+export interface PublicServiceStatusIncidentUpdate {
+  body: string
+  status: string
+  created_at?: string | null
+  updated_at?: string | null
+  display_at?: string | null
+  affected_components?: {
+    code: string
+    name: string
+    old_status: string
+    new_status: string
+  }[]
+}
+
+export interface PublicServiceStatusIncident {
+  id: string
+  name: string
+  status: string
+  impact: string
+  shortlink?: string
+  created_at?: string | null
+  updated_at?: string | null
+  resolved_at?: string | null
+  components?: { id: string; name: string }[]
+  incident_updates?: PublicServiceStatusIncidentUpdate[]
+}
+
+export interface PublicServiceStatus {
+  id: "openai" | "claude" | string
+  name: string
+  url: string
+  history_url: string
+  updated_at?: string | null
+  status: PublicServiceStatusSummary
+  components: PublicServiceStatusComponent[]
+  groups: PublicServiceStatusGroup[]
+  incidents: PublicServiceStatusIncident[]
+  past_incidents: PublicServiceStatusIncident[]
+  scheduled_maintenances: PublicServiceStatusIncident[]
+  error?: string
+}
+
+export interface PublicServiceStatusView {
+  updated_at: string
+  days: number
+  services: PublicServiceStatus[]
+}
+
 export interface RelayMonitorChannelOption {
   id: number
   name: string

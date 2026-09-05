@@ -62,6 +62,7 @@ export function MonitorHeader() {
     { to: "/", label: "首页", icon: Home, end: true },
     { to: "/channels", label: "渠道管理", icon: LayoutList },
     { to: "/relay-stations", label: "中转站管理", icon: Server },
+    { to: "/public/service-status", label: "服务状态", icon: Activity },
   ]
 
   const operationItems = [
@@ -89,18 +90,31 @@ export function MonitorHeader() {
 
         <nav className="hidden items-center gap-1 lg:flex" aria-label="主菜单">
           {navItems.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.end}
-              className={({ isActive }) => cn(
-                "inline-flex h-9 items-center gap-1.5 rounded-md px-3 text-sm transition-colors",
-                isActive ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
-              )}
-            >
-              <item.icon className="size-3.5" />
-              {item.label}
-            </NavLink>
+            item.to === "/public/service-status" ? (
+              <a
+                key={item.to}
+                href={item.to}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex h-9 items-center gap-1.5 rounded-md px-3 text-sm text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+              >
+                <item.icon className="size-3.5" />
+                {item.label}
+              </a>
+            ) : (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                end={item.end}
+                className={({ isActive }) => cn(
+                  "inline-flex h-9 items-center gap-1.5 rounded-md px-3 text-sm transition-colors",
+                  isActive ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+                )}
+              >
+                <item.icon className="size-3.5" />
+                {item.label}
+              </NavLink>
+            )
           ))}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -135,7 +149,10 @@ export function MonitorHeader() {
               <div className="space-y-0.5">
                 {navItems.map((item) => {
                   const active = isPathActive(item.to, item.end)
-                  return <DropdownMenuItem key={item.to} asChild className={cn("min-h-11 rounded-md px-3 sm:min-h-9", active && "bg-brand/10 font-medium text-brand focus:bg-brand/10 focus:text-brand")}><Link to={item.to}><item.icon className={cn(active && "text-brand")} />{item.label}{active ? <span className="ml-auto size-1.5 rounded-full bg-brand" /> : null}</Link></DropdownMenuItem>
+                  const content = item.to === "/public/service-status"
+                    ? <a href={item.to} target="_blank" rel="noopener noreferrer"><item.icon className={cn(active && "text-brand")} />{item.label}{active ? <span className="ml-auto size-1.5 rounded-full bg-brand" /> : null}</a>
+                    : <Link to={item.to}><item.icon className={cn(active && "text-brand")} />{item.label}{active ? <span className="ml-auto size-1.5 rounded-full bg-brand" /> : null}</Link>
+                  return <DropdownMenuItem key={item.to} asChild className={cn("min-h-11 rounded-md px-3 sm:min-h-9", active && "bg-brand/10 font-medium text-brand focus:bg-brand/10 focus:text-brand")}>{content}</DropdownMenuItem>
                 })}
               </div>
 
