@@ -15,6 +15,7 @@ const (
 	SettingRelayRateConfigured          = "sync.relay.rate.configured"
 	SettingRelayRateEnabled             = "sync.relay.rate.enabled"
 	SettingRelayRateInterval            = "sync.relay.rate.interval_minutes"
+	SettingRelayRateIntervalSeconds     = "sync.relay.rate.interval_seconds"
 	SettingRelaySnapshotConfigured      = "sync.relay.snapshot.configured"
 	SettingRelaySnapshotEnabled         = "sync.relay.snapshot.enabled"
 	SettingRelaySnapshotInterval        = "sync.relay.snapshot.interval_minutes"
@@ -47,7 +48,8 @@ func (s *Settings) Set(key, value string) error {
 func (s *Settings) SyncSettings() (SyncSettings, error) {
 	settings := SyncSettings{
 		ChannelIntervalMinutes:       30,
-		RelayRateIntervalMinutes:     60,
+		RelayRateIntervalMinutes:     1,
+		RelayRateIntervalSeconds:     10,
 		RelaySnapshotIntervalMinutes: 60,
 		RelaySnapshotIntervalSeconds: 3600,
 	}
@@ -59,16 +61,16 @@ func (s *Settings) SyncSettings() (SyncSettings, error) {
 		*target, err = strconv.ParseBool(value)
 		return err
 	}
-	readInt := func(key string, target *int) error {
+	readInt := func(key string, target *int) (bool, error) {
 		value, found, err := s.Get(key)
 		if err != nil || !found {
-			return err
+			return found, err
 		}
 		*target, err = strconv.Atoi(value)
 		if err == nil && *target < 1 {
 			*target = 1
 		}
-		return err
+		return found, err
 	}
 	var err error
 	if _, settings.ChannelConfigured, err = s.Get(SettingChannelSyncConfigured); err != nil {
@@ -85,20 +87,24 @@ func (s *Settings) SyncSettings() (SyncSettings, error) {
 	if err = readBool(settingLegacyRelaySyncEnabled, &legacyRelayEnabled); err != nil {
 		return settings, err
 	}
-	if err = readInt(SettingChannelSyncInterval, &settings.ChannelIntervalMinutes); err != nil {
+	if _, err = readInt(SettingChannelSyncInterval, &settings.ChannelIntervalMinutes); err != nil {
 		return settings, err
 	}
 	legacyRelayInterval := 60
-	if err = readInt(settingLegacyRelaySyncInterval, &legacyRelayInterval); err != nil {
+	legacyRelayIntervalConfigured, err := readInt(settingLegacyRelaySyncInterval, &legacyRelayInterval)
+	if err != nil {
 		return settings, err
 	}
-	settings.RelayRateConfigured = legacyRelayConfigured
-	settings.RelayRateEnabled = legacyRelayEnabled
-	settings.RelayRateIntervalMinutes = legacyRelayInterval
-	settings.RelaySnapshotConfigured = legacyRelayConfigured
-	settings.RelaySnapshotEnabled = legacyRelayEnabled
-	settings.RelaySnapshotIntervalMinutes = legacyRelayInterval
-	settings.RelaySnapshotIntervalSeconds = legacyRelayInterval * 60
+	if legacyRelayConfigured || legacyRelayIntervalConfigured {
+		settings.RelayRateConfigured = legacyRelayConfigured
+		settings.RelayRateEnabled = legacyRelayEnabled
+		settings.RelayRateIntervalMinutes = legacyRelayInterval
+		settings.RelayRateIntervalSeconds = legacyRelayInterval * 60
+		settings.RelaySnapshotConfigured = legacyRelayConfigured
+		settings.RelaySnapshotEnabled = legacyRelayEnabled
+		settings.RelaySnapshotIntervalMinutes = legacyRelayInterval
+		settings.RelaySnapshotIntervalSeconds = legacyRelayInterval * 60
+	}
 
 	if _, configured, getErr := s.Get(SettingRelayRateConfigured); getErr != nil {
 		return settings, getErr
@@ -107,8 +113,17 @@ func (s *Settings) SyncSettings() (SyncSettings, error) {
 		if err = readBool(SettingRelayRateEnabled, &settings.RelayRateEnabled); err != nil {
 			return settings, err
 		}
-		if err = readInt(SettingRelayRateInterval, &settings.RelayRateIntervalMinutes); err != nil {
-			return settings, err
+		if configured, readErr := readInt(SettingRelayRateInterval, &settings.RelayRateIntervalMinutes); readErr != nil {
+			return settings, readErr
+		} else if configured {
+			settings.RelayRateIntervalSeconds = settings.RelayRateIntervalMinutes * 60
+		}
+		if _, configured, getErr := s.Get(SettingRelayRateIntervalSeconds); getErr != nil {
+			return settings, getErr
+		} else if configured {
+			if _, readErr := readInt(SettingRelayRateIntervalSeconds, &settings.RelayRateIntervalSeconds); readErr != nil {
+				return settings, readErr
+			}
 		}
 	}
 	if _, configured, getErr := s.Get(SettingRelaySnapshotConfigured); getErr != nil {
@@ -118,14 +133,16 @@ func (s *Settings) SyncSettings() (SyncSettings, error) {
 		if err = readBool(SettingRelaySnapshotEnabled, &settings.RelaySnapshotEnabled); err != nil {
 			return settings, err
 		}
-		if err = readInt(SettingRelaySnapshotInterval, &settings.RelaySnapshotIntervalMinutes); err != nil {
+		if _, readErr := readInt(SettingRelaySnapshotInterval, &settings.RelaySnapshotIntervalMinutes); readErr != nil {
+			err = readErr
 			return settings, err
 		}
 		settings.RelaySnapshotIntervalSeconds = settings.RelaySnapshotIntervalMinutes * 60
 		if _, secondsConfigured, getErr := s.Get(SettingRelaySnapshotIntervalSeconds); getErr != nil {
 			return settings, getErr
 		} else if secondsConfigured {
-			if err = readInt(SettingRelaySnapshotIntervalSeconds, &settings.RelaySnapshotIntervalSeconds); err != nil {
+			if _, readErr := readInt(SettingRelaySnapshotIntervalSeconds, &settings.RelaySnapshotIntervalSeconds); readErr != nil {
+				err = readErr
 				return settings, err
 			}
 		}
@@ -137,9 +154,17 @@ func (s *Settings) SaveSyncSettings(settings SyncSettings) error {
 	if settings.ChannelIntervalMinutes < 1 {
 		settings.ChannelIntervalMinutes = 30
 	}
-	if settings.RelayRateIntervalMinutes < 1 {
-		settings.RelayRateIntervalMinutes = 60
+	if settings.RelayRateIntervalSeconds < 5 {
+		if settings.RelayRateIntervalMinutes > 0 {
+			settings.RelayRateIntervalSeconds = settings.RelayRateIntervalMinutes * 60
+		} else {
+			settings.RelayRateIntervalSeconds = 10
+		}
 	}
+	if settings.RelayRateIntervalSeconds < 5 {
+		settings.RelayRateIntervalSeconds = 10
+	}
+	settings.RelayRateIntervalMinutes = (settings.RelayRateIntervalSeconds + 59) / 60
 	if settings.RelaySnapshotIntervalSeconds < 5 {
 		if settings.RelaySnapshotIntervalMinutes > 0 {
 			settings.RelaySnapshotIntervalSeconds = settings.RelaySnapshotIntervalMinutes * 60
@@ -155,6 +180,7 @@ func (s *Settings) SaveSyncSettings(settings SyncSettings) error {
 		SettingRelayRateConfigured:          "true",
 		SettingRelayRateEnabled:             strconv.FormatBool(settings.RelayRateEnabled),
 		SettingRelayRateInterval:            strconv.Itoa(settings.RelayRateIntervalMinutes),
+		SettingRelayRateIntervalSeconds:     strconv.Itoa(settings.RelayRateIntervalSeconds),
 		SettingRelaySnapshotConfigured:      "true",
 		SettingRelaySnapshotEnabled:         strconv.FormatBool(settings.RelaySnapshotEnabled),
 		SettingRelaySnapshotInterval:        strconv.Itoa(settings.RelaySnapshotIntervalMinutes),

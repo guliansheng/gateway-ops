@@ -48,6 +48,7 @@ export default function ChannelsPage() {
           channel_interval_minutes: interval,
           relay_rate_enabled: current.relay_rate_enabled,
           relay_rate_interval_minutes: current.relay_rate_interval_minutes,
+          relay_rate_interval_seconds: current.relay_rate_interval_seconds,
           relay_snapshot_enabled: current.relay_snapshot_enabled,
           relay_snapshot_interval_minutes: current.relay_snapshot_interval_minutes,
           relay_snapshot_interval_seconds: current.relay_snapshot_interval_seconds,

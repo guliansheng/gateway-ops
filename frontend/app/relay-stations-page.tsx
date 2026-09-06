@@ -46,7 +46,7 @@ type BatchCloneFormGroup = { source_account_external_id: number; rows: BatchClon
 const batchCloneableAccountTypes = new Set(["apikey", "upstream", "bedrock", "service_account"])
 
 const emptyForm: StationForm = { name: "", base_url: "", api_key: "" }
-const rateIntervals = [5, 10, 15, 30, 60, 180, 360, 720, 1440]
+const rateIntervals = [5, 10, 20, 30, 60, 300, 600, 1800, 3600, 18000, 43200, 86400]
 const snapshotIntervals = [5, 10, 30, 60, 120, 180, 300, 600, 900, 1800, 3600, 10800]
 const usageRanges: { value: RelayUsageRange; label: string }[] = [
   { value: "all", label: "全部" },
@@ -173,9 +173,10 @@ function capacityTone(account: RelayAccountView) {
 }
 
 function intervalLabel(value: number) {
-  if (value < 60) return `${value} 分钟`
-  if (value === 1440) return "每天"
-  return `${value / 60} 小时`
+  if (value < 60) return `${value} 秒`
+  if (value === 86400) return "每天"
+  if (value % 3600 === 0) return `${value / 3600} 小时`
+  return `${value / 60} 分钟`
 }
 
 function snapshotIntervalLabel(value: number) {
@@ -1643,7 +1644,7 @@ export default function RelayStationsPage() {
   const [batchCloneResult, setBatchCloneResult] = useState<RelayAccountBatchCloneResult | null>(null)
   const [busy, setBusy] = useState(false)
   const [autoRateSyncEnabled, setAutoRateSyncEnabled] = useState(false)
-  const [autoRateSyncInterval, setAutoRateSyncInterval] = useState(60)
+  const [autoRateSyncInterval, setAutoRateSyncInterval] = useState(10)
   const [autoSnapshotSyncEnabled, setAutoSnapshotSyncEnabled] = useState(false)
   const [autoSnapshotSyncInterval, setAutoSnapshotSyncInterval] = useState(3600)
   const [autoAdjustEnabled, setAutoAdjustEnabled] = useState(false)
@@ -1695,7 +1696,7 @@ export default function RelayStationsPage() {
   const accountAdjustmentResolver = useRef<((selection: AccountAdjustmentSelection | null) => void) | null>(null)
 
   useEffect(() => { if (selectedID == null && stations.data?.[0]) setSelectedID(stations.data[0].id); if (selectedID != null && stations.data && !stations.data.some((station) => station.id === selectedID)) setSelectedID(stations.data[0]?.id ?? null) }, [stations.data, selectedID])
-  useEffect(() => { if (!syncSettings.data) return; setAutoRateSyncEnabled(syncSettings.data.relay_rate_enabled); setAutoRateSyncInterval(syncSettings.data.relay_rate_interval_minutes || 60); setAutoSnapshotSyncEnabled(syncSettings.data.relay_snapshot_enabled); setAutoSnapshotSyncInterval(syncSettings.data.relay_snapshot_interval_seconds || (syncSettings.data.relay_snapshot_interval_minutes || 60) * 60) }, [syncSettings.data])
+  useEffect(() => { if (!syncSettings.data) return; setAutoRateSyncEnabled(syncSettings.data.relay_rate_enabled); setAutoRateSyncInterval(syncSettings.data.relay_rate_interval_seconds || (syncSettings.data.relay_rate_interval_minutes || 0) * 60 || 10); setAutoSnapshotSyncEnabled(syncSettings.data.relay_snapshot_enabled); setAutoSnapshotSyncInterval(syncSettings.data.relay_snapshot_interval_seconds || (syncSettings.data.relay_snapshot_interval_minutes || 60) * 60) }, [syncSettings.data])
   useEffect(() => { if (!overview.data) return; setAutoAdjustEnabled(overview.data.station.auto_adjust_enabled); setAutoAdjustNoProfitEnabled(overview.data.station.auto_adjust_no_profit_enabled); setAutoPriorityEnabled(overview.data.station.auto_priority_enabled); setAutoPriorityRecallEnabled(overview.data.station.auto_priority_recall_enabled); setAutoPriorityRecallMinutes(overview.data.station.auto_priority_recall_minutes || 180) }, [overview.data])
   useEffect(() => { setSelected([]) }, [selectedID])
   useEffect(() => { setBatchCloneOpen(false); setBatchCloneResult(null) }, [selectedID])
@@ -1816,7 +1817,7 @@ export default function RelayStationsPage() {
   async function saveStation(event: React.FormEvent) { event.preventDefault(); setBusy(true); try { const payload = editingID == null ? form : { name: form.name, base_url: form.base_url, ...(form.api_key ? { api_key: form.api_key } : {}) }; const station = await apiFetch<RelayStation>(editingID == null ? "/relay-stations" : `/relay-stations/${editingID}`, { method: editingID == null ? "POST" : "PUT", body: JSON.stringify(payload) }); setShowForm(false); setSelectedID(station.id); await reload(); toast.success(editingID == null ? "中转站已添加" : "中转站配置已更新") } catch (error) { toast.error(error instanceof Error ? error.message : "保存失败") } finally { setBusy(false) } }
   async function sync() { if (!selectedID) return; setBusy(true); try { await apiFetch(`/relay-stations/${selectedID}/sync`, { method: "POST" }); await reload(); toast.success("已实时探测 API Key 成本并刷新账号快照") } catch (error) { toast.error(error instanceof Error ? error.message : "同步失败"); await reload() } finally { setBusy(false) } }
   async function syncAll() { setBusy(true); try { const result = await apiFetch<{ synced: number; failed: number }>("/relay-stations/sync-all", { method: "POST" }); await reload(); toast.success(`已同步 ${result.synced} 个中转站${result.failed ? `，${result.failed} 个失败` : ""}`) } catch (error) { toast.error(error instanceof Error ? error.message : "同步失败") } finally { setBusy(false) } }
-  async function saveAutoSync() { if (!syncSettings.data) return; setBusy(true); try { await apiFetch("/sync-settings", { method: "PUT", body: JSON.stringify({ channel_enabled: syncSettings.data.channel_enabled, channel_interval_minutes: syncSettings.data.channel_interval_minutes, relay_rate_enabled: autoRateSyncEnabled, relay_rate_interval_minutes: autoRateSyncInterval, relay_snapshot_enabled: autoSnapshotSyncEnabled, relay_snapshot_interval_minutes: Math.ceil(autoSnapshotSyncInterval / 60), relay_snapshot_interval_seconds: autoSnapshotSyncInterval }) }); await syncSettings.refetch(); toast.success("中转站同步计划已保存") } catch (error) { toast.error(error instanceof Error ? error.message : "保存失败") } finally { setBusy(false) } }
+  async function saveAutoSync() { if (!syncSettings.data) return; setBusy(true); try { await apiFetch("/sync-settings", { method: "PUT", body: JSON.stringify({ channel_enabled: syncSettings.data.channel_enabled, channel_interval_minutes: syncSettings.data.channel_interval_minutes, relay_rate_enabled: autoRateSyncEnabled, relay_rate_interval_minutes: Math.ceil(autoRateSyncInterval / 60), relay_rate_interval_seconds: autoRateSyncInterval, relay_snapshot_enabled: autoSnapshotSyncEnabled, relay_snapshot_interval_minutes: Math.ceil(autoSnapshotSyncInterval / 60), relay_snapshot_interval_seconds: autoSnapshotSyncInterval }) }); await syncSettings.refetch(); toast.success("中转站同步计划已保存") } catch (error) { toast.error(error instanceof Error ? error.message : "保存失败") } finally { setBusy(false) } }
   function resetFilters() { setAccountNameFilter(""); setModelTypeFilter("all"); setSchedulableFilter("all"); setRiskFilter("all"); setGroupFilter("all"); setAccountSort(null) }
   function toggleAccountSort(key: AccountSortKey, initialDirection: SortDirection) { setAccountSort((current) => current?.key === key ? { key, direction: current.direction === "asc" ? "desc" : "asc" } : { key, direction: initialDirection }) }
   async function savePolicy() { if (!selectedID) return; setBusy(true); try { await apiFetch(`/relay-stations/${selectedID}`, { method: "PUT", body: JSON.stringify({ auto_adjust_enabled: autoAdjustEnabled, auto_adjust_no_profit_enabled: autoAdjustNoProfitEnabled }) }); await reload(); toast.success("自动调组策略已保存") } catch (error) { toast.error(error instanceof Error ? error.message : "保存失败") } finally { setBusy(false) } }

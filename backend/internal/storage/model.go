@@ -615,6 +615,7 @@ type SyncSettings struct {
 	RelayRateConfigured          bool `json:"relay_rate_configured"`
 	RelayRateEnabled             bool `json:"relay_rate_enabled"`
 	RelayRateIntervalMinutes     int  `json:"relay_rate_interval_minutes"`
+	RelayRateIntervalSeconds     int  `json:"relay_rate_interval_seconds"`
 	RelaySnapshotConfigured      bool `json:"relay_snapshot_configured"`
 	RelaySnapshotEnabled         bool `json:"relay_snapshot_enabled"`
 	RelaySnapshotIntervalMinutes int  `json:"relay_snapshot_interval_minutes"`

@@ -174,7 +174,7 @@ func (s *Scheduler) configureSyncJobs() error {
 		}
 	}
 	if settings.RelayRateConfigured && settings.RelayRateEnabled {
-		s.relayRateSyncID, err = s.cron.AddFunc(fmt.Sprintf("@every %dm", settings.RelayRateIntervalMinutes), s.runRelayRateSync)
+		s.relayRateSyncID, err = s.cron.AddFunc(fmt.Sprintf("@every %ds", settings.RelayRateIntervalSeconds), s.runRelayRateSync)
 		if err != nil {
 			return err
 		}

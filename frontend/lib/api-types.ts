@@ -888,6 +888,7 @@ export interface SyncSettings {
   relay_rate_configured: boolean
   relay_rate_enabled: boolean
   relay_rate_interval_minutes: number
+  relay_rate_interval_seconds: number
   relay_snapshot_configured: boolean
   relay_snapshot_enabled: boolean
   relay_snapshot_interval_minutes: number
