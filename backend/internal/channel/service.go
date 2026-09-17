@@ -76,6 +76,8 @@ type NewAPITokenCredential struct {
 	Headers  []RequestKV `json:"headers,omitempty"`
 }
 
+const MaskedTokenPlaceholder = "••••••••"
+
 // Sub2APITokenCredential token 模式下 Sub2API 的凭据。
 type Sub2APITokenCredential struct {
 	AccessToken  string    `json:"access_token"`
@@ -351,6 +353,13 @@ func (s *Service) Update(id uint, in UpdateInput) (*storage.Channel, error) {
 			return nil, errors.New("切换到自动余额模式时必须填写凭据")
 		}
 		if rawCred != "" {
+			if c.Type == storage.ChannelTypeNewAPI && finalMode == storage.CredentialModeToken && !modeChanged {
+				merged, err := mergeNewAPIEditCredential(s.Cipher, c.PasswordCipher, rawCred)
+				if err != nil {
+					return nil, err
+				}
+				rawCred = merged
+			}
 			if err := validateCredential(c.Type, finalMode, rawCred); err != nil {
 				return nil, err
 			}
@@ -592,6 +601,42 @@ func validateCredential(channelType storage.ChannelType, mode storage.Credential
 	return nil
 }
 
+// mergeNewAPIEditCredential allows access-token header templates to be edited
+// without sending the existing token back to the browser. When the incoming
+// credential is access_token with an empty token, inherit the encrypted token
+// that is already stored for this channel.
+func mergeNewAPIEditCredential(cipher *crypto.Cipher, existingCipherText, incomingRaw string) (string, error) {
+	var incoming NewAPITokenCredential
+	if err := json.Unmarshal([]byte(incomingRaw), &incoming); err != nil {
+		return "", fmt.Errorf("解析 NewAPI 凭据 JSON 失败：%w", err)
+	}
+	if strings.TrimSpace(incoming.AuthType) != "access_token" || strings.TrimSpace(incoming.Token) != "" {
+		return incomingRaw, nil
+	}
+
+	existingRaw, err := cipher.Decrypt(existingCipherText)
+	if err != nil {
+		return "", fmt.Errorf("decrypt existing NewAPI credential: %w", err)
+	}
+	var existing NewAPITokenCredential
+	if err := json.Unmarshal([]byte(existingRaw), &existing); err != nil {
+		return "", fmt.Errorf("parse existing NewAPI credential: %w", err)
+	}
+	if strings.TrimSpace(existing.AuthType) != "access_token" || strings.TrimSpace(existing.Token) == "" {
+		return "", errors.New("修改 NewAPI 访问令牌 Headers 时缺少已有访问令牌")
+	}
+
+	incoming.Token = existing.Token
+	for i := range incoming.Headers {
+		incoming.Headers[i].Value = strings.ReplaceAll(incoming.Headers[i].Value, MaskedTokenPlaceholder, existing.Token)
+	}
+	merged, err := json.Marshal(incoming)
+	if err != nil {
+		return "", fmt.Errorf("encode NewAPI credential: %w", err)
+	}
+	return string(merged), nil
+}
+
 func (s *Service) Delete(id uint) error {
 	return s.Channels.Delete(id)
 }
@@ -774,7 +819,7 @@ func (s *Service) EnsureSession(
 			s.setCredentialError(c, err.Error())
 			return nil, err
 		}
-		session, err = s.refreshSub2APITokenIfNeeded(ctx, c, resolved, conn, sessionKey, session)
+		session, err = s.refreshSub2APIToken(ctx, c, resolved, conn, sessionKey, session, false)
 		if err != nil {
 			progress.Fail(ctx, progress.StageSession, err.Error())
 			s.setCredentialError(c, err.Error())
@@ -782,6 +827,21 @@ func (s *Service) EnsureSession(
 		}
 		// 走一次 CheckAuth 确认 token 仍有效。失败立即标 last_error，调用方往上抛错。
 		if err := conn.CheckAuth(ctx, resolved, session); err != nil {
+			if c.Type == storage.ChannelTypeSub2API && strings.TrimSpace(session.RefreshToken) != "" {
+				progress.Start(ctx, progress.StageSession, "Access Token 无效，尝试 Refresh Token 刷新…")
+				fresh, refreshErr := s.refreshSub2APIToken(ctx, c, resolved, conn, sessionKey, session, true)
+				if refreshErr == nil {
+					if retryErr := conn.CheckAuth(ctx, resolved, fresh); retryErr == nil {
+						s.setCredentialError(c, "")
+						progress.OK(ctx, progress.StageSession, "Refresh Token 刷新成功")
+						return fresh, nil
+					} else {
+						err = retryErr
+					}
+				} else {
+					err = fmt.Errorf("%v；Refresh Token 刷新失败: %w", err, refreshErr)
+				}
+			}
 			msg := "token 已失效，请重新粘贴凭据：" + err.Error()
 			progress.Fail(ctx, progress.StageSession, msg)
 			s.setCredentialError(c, msg)
@@ -832,18 +892,19 @@ func (s *Service) reloadTokenChannel(c *storage.Channel) (*storage.Channel, erro
 	return latest, nil
 }
 
-func (s *Service) refreshSub2APITokenIfNeeded(
+func (s *Service) refreshSub2APIToken(
 	ctx context.Context,
 	c *storage.Channel,
 	resolved *connector.Channel,
 	conn connector.Connector,
 	sessionKey uint,
 	session *connector.AuthSession,
+	force bool,
 ) (*connector.AuthSession, error) {
 	if c.Type != storage.ChannelTypeSub2API || session == nil || strings.TrimSpace(session.RefreshToken) == "" {
 		return session, nil
 	}
-	if session.ExpiresAt.IsZero() || time.Until(session.ExpiresAt) > SessionRefreshThreshold {
+	if !force && (session.ExpiresAt.IsZero() || time.Until(session.ExpiresAt) > SessionRefreshThreshold) {
 		return session, nil
 	}
 	refresher, ok := conn.(connector.TokenRefresher)
@@ -862,7 +923,11 @@ func (s *Service) refreshSub2APITokenIfNeeded(
 	if err != nil {
 		return nil, err
 	}
-	if latest.ExpiresAt.IsZero() || time.Until(latest.ExpiresAt) > SessionRefreshThreshold {
+	if force && latest.AccessToken != session.AccessToken {
+		c.PasswordCipher = latestChannel.PasswordCipher
+		return latest, nil
+	}
+	if !force && (latest.ExpiresAt.IsZero() || time.Until(latest.ExpiresAt) > SessionRefreshThreshold) {
 		c.PasswordCipher = latestChannel.PasswordCipher
 		return latest, nil
 	}

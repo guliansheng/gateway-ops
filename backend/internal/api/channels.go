@@ -106,9 +106,17 @@ func listChannels(c *gin.Context, d *Deps) {
 
 type channelView struct {
 	storage.Channel
-	LoginHeaders []channel.RequestKV      `json:"login_headers"`
-	LoginParams  []channel.RequestKV      `json:"login_params"`
-	Accounts     []storage.ChannelAccount `json:"accounts"`
+	LoginHeaders       []channel.RequestKV  `json:"login_headers"`
+	LoginParams        []channel.RequestKV  `json:"login_params"`
+	NewAPIAuthType     string               `json:"newapi_auth_type,omitempty"`
+	NewAPITokenHeaders []channel.RequestKV  `json:"newapi_token_headers,omitempty"`
+	Accounts           []channelAccountView `json:"accounts"`
+}
+
+type channelAccountView struct {
+	storage.ChannelAccount
+	NewAPIAuthType     string              `json:"newapi_auth_type,omitempty"`
+	NewAPITokenHeaders []channel.RequestKV `json:"newapi_token_headers,omitempty"`
 }
 
 func channelViews(d *Deps, channels []storage.Channel) ([]channelView, error) {
@@ -122,17 +130,58 @@ func channelViews(d *Deps, channels []storage.Channel) ([]channelView, error) {
 	}
 	views := make([]channelView, 0, len(channels))
 	for _, item := range channels {
-		accounts := accountsByChannel[item.ID]
-		if accounts == nil {
-			accounts = []storage.ChannelAccount{}
+		accounts := make([]channelAccountView, 0, len(accountsByChannel[item.ID]))
+		for _, account := range accountsByChannel[item.ID] {
+			authType, tokenHeaders, err := newAPIEditMetadata(d, item.Type, account.CredentialMode, account.PasswordCipher)
+			if err != nil {
+				return nil, err
+			}
+			accounts = append(accounts, channelAccountView{ChannelAccount: account, NewAPIAuthType: authType, NewAPITokenHeaders: tokenHeaders})
 		}
 		headers, params, err := channel.ParseLoginConfig(item.Type, item.LoginHeadersJSON, item.LoginParamsJSON)
 		if err != nil {
 			return nil, err
 		}
-		views = append(views, channelView{Channel: item, LoginHeaders: headers, LoginParams: params, Accounts: accounts})
+		authType, tokenHeaders, err := newAPIEditMetadata(d, item.Type, item.CredentialMode, item.PasswordCipher)
+		if err != nil {
+			return nil, err
+		}
+		views = append(views, channelView{Channel: item, LoginHeaders: headers, LoginParams: params, NewAPIAuthType: authType, NewAPITokenHeaders: tokenHeaders, Accounts: accounts})
 	}
 	return views, nil
+}
+
+func newAPIEditMetadata(d *Deps, channelType storage.ChannelType, mode storage.CredentialMode, cipherText string) (string, []channel.RequestKV, error) {
+	if channelType != storage.ChannelTypeNewAPI || mode != storage.CredentialModeToken || cipherText == "" {
+		return "", nil, nil
+	}
+	raw, err := d.Cipher.Decrypt(cipherText)
+	if err != nil {
+		return "", nil, fmt.Errorf("decrypt NewAPI credential metadata: %w", err)
+	}
+	var cred channel.NewAPITokenCredential
+	if err := json.Unmarshal([]byte(raw), &cred); err != nil {
+		return "", nil, fmt.Errorf("parse NewAPI credential metadata: %w", err)
+	}
+	authType := strings.TrimSpace(cred.AuthType)
+	if authType == "" {
+		authType = "cookie"
+	}
+	if authType != "access_token" {
+		return authType, nil, nil
+	}
+	headers := cred.Headers
+	if headers == nil {
+		headers = []channel.RequestKV{{Key: "Authorization", Value: "Bearer {{token}}"}}
+	}
+	result := make([]channel.RequestKV, len(headers))
+	copy(result, headers)
+	if cred.Token != "" {
+		for i := range result {
+			result[i].Value = strings.ReplaceAll(result[i].Value, cred.Token, channel.MaskedTokenPlaceholder)
+		}
+	}
+	return authType, result, nil
 }
 
 func additionalAccountInputs(items []channelAccountInput) []channel.AdditionalAccountInput {

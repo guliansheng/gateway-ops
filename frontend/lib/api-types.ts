@@ -46,6 +46,8 @@ export interface Channel {
   credential_mode: CredentialMode
   login_headers: RequestKV[]
   login_params: RequestKV[]
+  newapi_auth_type?: "cookie" | "access_token"
+  newapi_token_headers?: RequestKV[]
   balance_mode: BalanceMode
   manual_balance: number
   remark?: string
@@ -67,6 +69,8 @@ export interface ChannelAccount {
   is_primary: boolean
   username: string
   credential_mode: CredentialMode
+  newapi_auth_type?: "cookie" | "access_token"
+  newapi_token_headers?: RequestKV[]
   turnstile_enabled: boolean
   captcha_config_id?: number | null
   last_balance?: number | null

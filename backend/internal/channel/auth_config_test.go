@@ -1,6 +1,7 @@
 package channel
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 
@@ -81,5 +82,34 @@ func TestNewAPIAccessTokenExplicitEmptyHeadersStayEmpty(t *testing.T) {
 	}
 	if len(session.Headers) != 0 {
 		t.Fatalf("headers = %#v, want empty", session.Headers)
+	}
+}
+
+func TestMergeNewAPIEditCredentialKeepsStoredTokenAndUpdatesHeaders(t *testing.T) {
+	cipher, err := appcrypto.NewCipher("test-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	existingRaw := `{"auth_type":"access_token","token":"secret-token","headers":[{"key":"Authorization","value":"Bearer {{token}}"}]}`
+	existingCipher, err := cipher.Encrypt(existingRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	incomingRaw := `{"auth_type":"access_token","token":"","headers":[{"key":"X-API-Key","value":"••••••••"},{"key":"X-Mode","value":"custom"}]}`
+
+	mergedRaw, err := mergeNewAPIEditCredential(cipher, existingCipher, incomingRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var merged NewAPITokenCredential
+	if err := json.Unmarshal([]byte(mergedRaw), &merged); err != nil {
+		t.Fatal(err)
+	}
+	if merged.Token != "secret-token" {
+		t.Fatalf("token = %q, want stored token", merged.Token)
+	}
+	wantHeaders := []RequestKV{{Key: "X-API-Key", Value: "secret-token"}, {Key: "X-Mode", Value: "custom"}}
+	if !reflect.DeepEqual(merged.Headers, wantHeaders) {
+		t.Fatalf("headers = %#v, want %#v", merged.Headers, wantHeaders)
 	}
 }

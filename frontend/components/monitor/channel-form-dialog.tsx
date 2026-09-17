@@ -150,11 +150,11 @@ function initialState(c?: Channel | null): FormState {
     remark: c?.remark ?? "",
     login_headers: c?.login_headers?.map((item) => ({ ...item })) ?? defaults.headers,
     login_params: c?.login_params?.map((item) => ({ ...item })) ?? defaults.params,
-    newapi_auth_type: "cookie",
+    newapi_auth_type: c?.newapi_auth_type ?? "cookie",
     newapi_cookie: "",
     newapi_user_id: "",
     newapi_access_token: "",
-    newapi_token_headers: defaultNewAPITokenHeaders(),
+    newapi_token_headers: c?.newapi_token_headers?.map((item) => ({ ...item })) ?? defaultNewAPITokenHeaders(),
     sub2api_access_token: "",
     sub2api_refresh_token: "",
     balance_threshold: c?.balance_threshold != null ? String(c.balance_threshold) : "0",
@@ -169,11 +169,11 @@ function initialState(c?: Channel | null): FormState {
         password: "",
         credential_mode: account.credential_mode,
         initial_credential_mode: account.credential_mode,
-        newapi_auth_type: "cookie",
+        newapi_auth_type: account.newapi_auth_type ?? "cookie",
         newapi_cookie: "",
         newapi_user_id: "",
         newapi_access_token: "",
-        newapi_token_headers: defaultNewAPITokenHeaders(),
+        newapi_token_headers: account.newapi_token_headers?.map((item) => ({ ...item })) ?? defaultNewAPITokenHeaders(),
         sub2api_access_token: "",
         sub2api_refresh_token: "",
         turnstile_enabled: account.turnstile_enabled,
@@ -351,6 +351,7 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
           form.newapi_cookie ||
           form.newapi_user_id ||
           form.newapi_access_token ||
+          (form.type === "newapi" && form.newapi_auth_type === "access_token") ||
           form.sub2api_access_token ||
           form.sub2api_refresh_token
         ) {
@@ -712,7 +713,7 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
                         <div className="flex items-center justify-between gap-2">
                           <div>
                             <p className="text-xs font-medium">访问令牌 Headers</p>
-                            <p className="text-[11px] text-muted-foreground">默认 Authorization = Bearer {'{{token}}'}，可增删改。</p>
+                            <p className="text-[11px] text-muted-foreground">默认 Authorization = Bearer {'{{token}}'}，可增删改；直接写入真实 Token 时，重新编辑会仅对 Token 本身脱敏。</p>
                           </div>
                           <Button type="button" variant="outline" size="sm" className="h-8 text-xs" disabled={submitting} onClick={() => setForm({ ...form, newapi_token_headers: defaultNewAPITokenHeaders() })}>恢复默认</Button>
                         </div>
@@ -1064,7 +1065,10 @@ function AdditionalAccountsEditor({
                     </div>
                     <div className="space-y-2 rounded-md border border-border p-2.5">
                       <div className="flex items-center justify-between gap-2">
-                        <p className="text-xs font-medium">访问令牌 Headers</p>
+                        <div>
+                          <p className="text-xs font-medium">访问令牌 Headers</p>
+                          <p className="text-[11px] text-muted-foreground">直接写入真实 Token 时，重新编辑会仅对 Token 本身脱敏。</p>
+                        </div>
                         <Button type="button" variant="outline" size="sm" className="h-7 text-[11px]" disabled={disabled} onClick={() => patch(index, { newapi_token_headers: defaultNewAPITokenHeaders() })}>恢复默认</Button>
                       </div>
                       <RequestKVEditor title="Headers" items={account.newapi_token_headers} disabled={disabled} onChange={(items) => patch(index, { newapi_token_headers: items })} />
