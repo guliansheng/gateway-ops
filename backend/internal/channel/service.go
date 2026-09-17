@@ -584,6 +584,9 @@ func validateCredential(channelType storage.ChannelType, mode storage.Credential
 			if strings.TrimSpace(cred.Token) == "" {
 				return errors.New("NewAPI 访问令牌模式需要 token")
 			}
+			if strings.TrimSpace(cred.UserID) == "" {
+				return errors.New("NewAPI 访问令牌模式需要 User ID（用于 New-Api-User 请求头）")
+			}
 		} else {
 			return fmt.Errorf("unknown NewAPI auth_type: %s", authType)
 		}
@@ -710,11 +713,15 @@ func (s *Service) buildSessionFromToken(c *storage.Channel) (*connector.AuthSess
 		if authType == "access_token" {
 			headers := cred.Headers
 			if headers == nil {
-				headers = []RequestKV{{Key: "Authorization", Value: "Bearer {{token}}"}}
+				headers = []RequestKV{
+					{Key: "Authorization", Value: "Bearer {{token}}"},
+					{Key: "New-Api-User", Value: "{{user_id}}"},
+				}
 			}
 			return &connector.AuthSession{
+				UserID:      cred.UserID,
 				AccessToken: cred.Token,
-				Headers:     ExpandRequestKV(headers, map[string]string{"token": cred.Token}),
+				Headers:     ExpandRequestKV(headers, map[string]string{"token": cred.Token, "user_id": cred.UserID}),
 				ExpiresAt:   time.Now().Add(tokenSessionTTL),
 			}, nil
 		}

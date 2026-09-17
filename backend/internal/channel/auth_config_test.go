@@ -63,7 +63,7 @@ func TestNewAPIAccessTokenExplicitEmptyHeadersStayEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw := `{"auth_type":"access_token","token":"secret-token","headers":[]}`
+	raw := `{"auth_type":"access_token","user_id":"123","token":"secret-token","headers":[]}`
 	encrypted, err := cipher.Encrypt(raw)
 	if err != nil {
 		t.Fatal(err)
@@ -82,6 +82,9 @@ func TestNewAPIAccessTokenExplicitEmptyHeadersStayEmpty(t *testing.T) {
 	}
 	if len(session.Headers) != 0 {
 		t.Fatalf("headers = %#v, want empty", session.Headers)
+	}
+	if session.UserID != "123" {
+		t.Fatalf("user id = %q, want 123", session.UserID)
 	}
 }
 

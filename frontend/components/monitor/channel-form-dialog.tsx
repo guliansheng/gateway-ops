@@ -108,7 +108,10 @@ function defaultLoginConfig(type: ChannelType): { headers: RequestKV[]; params: 
 }
 
 function defaultNewAPITokenHeaders(): RequestKV[] {
-  return [{ key: "Authorization", value: "Bearer {{token}}" }]
+  return [
+    { key: "Authorization", value: "Bearer {{token}}" },
+    { key: "New-Api-User", value: "{{user_id}}" },
+  ]
 }
 
 function emptyAdditionalAccount(mode: CredentialMode = "password"): AdditionalAccountForm {
@@ -152,7 +155,7 @@ function initialState(c?: Channel | null): FormState {
     login_params: c?.login_params?.map((item) => ({ ...item })) ?? defaults.params,
     newapi_auth_type: c?.newapi_auth_type ?? "cookie",
     newapi_cookie: "",
-    newapi_user_id: "",
+    newapi_user_id: c?.newapi_user_id ?? "",
     newapi_access_token: "",
     newapi_token_headers: c?.newapi_token_headers?.map((item) => ({ ...item })) ?? defaultNewAPITokenHeaders(),
     sub2api_access_token: "",
@@ -171,7 +174,7 @@ function initialState(c?: Channel | null): FormState {
         initial_credential_mode: account.credential_mode,
         newapi_auth_type: account.newapi_auth_type ?? "cookie",
         newapi_cookie: "",
-        newapi_user_id: "",
+        newapi_user_id: account.newapi_user_id ?? "",
         newapi_access_token: "",
         newapi_token_headers: account.newapi_token_headers?.map((item) => ({ ...item })) ?? defaultNewAPITokenHeaders(),
         sub2api_access_token: "",
@@ -191,6 +194,7 @@ function buildTokenCredential(form: FormState): string {
     if (form.newapi_auth_type === "access_token") {
       return JSON.stringify({
         auth_type: "access_token",
+        user_id: form.newapi_user_id.trim(),
         token: form.newapi_access_token.trim(),
         headers: form.newapi_token_headers,
       })
@@ -210,7 +214,7 @@ function buildTokenCredential(form: FormState): string {
 function buildAdditionalTokenCredential(account: AdditionalAccountForm, type: ChannelType): string {
   if (type === "newapi") {
     if (account.newapi_auth_type === "access_token") {
-      return JSON.stringify({ auth_type: "access_token", token: account.newapi_access_token.trim(), headers: account.newapi_token_headers })
+      return JSON.stringify({ auth_type: "access_token", user_id: account.newapi_user_id.trim(), token: account.newapi_access_token.trim(), headers: account.newapi_token_headers })
     }
     return JSON.stringify({ auth_type: "cookie", cookie: account.newapi_cookie.trim(), user_id: account.newapi_user_id.trim() })
   }
@@ -235,15 +239,16 @@ function buildAdditionalAccountPayloads(accounts: AdditionalAccountForm[], type:
     if (isToken) {
       const hasCredential = type === "newapi"
         ? account.newapi_auth_type === "access_token"
-          ? Boolean(account.newapi_access_token.trim())
+          ? Boolean(account.newapi_access_token.trim() || account.newapi_user_id.trim())
           : Boolean(account.newapi_cookie.trim() || account.newapi_user_id.trim())
         : Boolean(account.sub2api_access_token.trim() || account.sub2api_refresh_token.trim())
       if (!isExisting || modeChanged || hasCredential) {
         if (type === "newapi" && account.newapi_auth_type === "cookie" && (!account.newapi_cookie.trim() || !account.newapi_user_id.trim())) {
           throw new Error(`${label}的 NewAPI Cookie 和 User ID 必须同时填写`)
         }
-        if (type === "newapi" && account.newapi_auth_type === "access_token" && !account.newapi_access_token.trim()) {
-          throw new Error(`${label}必须填写 NewAPI 访问令牌`)
+        if (type === "newapi" && account.newapi_auth_type === "access_token") {
+          if (!account.newapi_user_id.trim()) throw new Error(`${label}必须填写 NewAPI User ID`)
+          if ((!isExisting || modeChanged) && !account.newapi_access_token.trim()) throw new Error(`${label}必须填写 NewAPI 访问令牌`)
         }
         if (type === "sub2api" && (!account.sub2api_access_token.trim() || !account.sub2api_refresh_token.trim())) {
           throw new Error(`${label}必须同时填写 Sub2API Access Token 和 Refresh Token`)
@@ -332,6 +337,7 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
       if (isTokenMode) {
         if (form.type === "newapi") {
           if (form.newapi_auth_type === "access_token") {
+            if (!form.newapi_user_id.trim()) throw new Error("NewAPI 访问令牌模式必须填写 User ID")
             if (!isEdit || modeChanged || form.newapi_access_token) {
               if (!form.newapi_access_token.trim()) throw new Error("NewAPI 访问令牌模式必须填写 Token")
             }
@@ -698,6 +704,16 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
                   ) : (
                     <>
                       <div className="space-y-1.5">
+                        <Label htmlFor="newapi-access-token-user-id">User ID</Label>
+                        <Input
+                          id="newapi-access-token-user-id"
+                          placeholder="用于 New-Api-User 请求头"
+                          value={form.newapi_user_id}
+                          onChange={(e) => setForm({ ...form, newapi_user_id: e.target.value })}
+                          disabled={submitting}
+                        />
+                      </div>
+                      <div className="space-y-1.5">
                         <Label htmlFor="newapi-access-token">访问令牌</Label>
                         <Textarea
                           id="newapi-access-token"
@@ -713,7 +729,7 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
                         <div className="flex items-center justify-between gap-2">
                           <div>
                             <p className="text-xs font-medium">访问令牌 Headers</p>
-                            <p className="text-[11px] text-muted-foreground">默认 Authorization = Bearer {'{{token}}'}，可增删改；直接写入真实 Token 时，重新编辑会仅对 Token 本身脱敏。</p>
+                            <p className="text-[11px] text-muted-foreground">默认包含 Authorization = Bearer {'{{token}}'} 和 New-Api-User = {'{{user_id}}'}；可增删改，直接写入真实 Token 时重新编辑仅对 Token 本身脱敏。</p>
                           </div>
                           <Button type="button" variant="outline" size="sm" className="h-8 text-xs" disabled={submitting} onClick={() => setForm({ ...form, newapi_token_headers: defaultNewAPITokenHeaders() })}>恢复默认</Button>
                         </div>
@@ -1060,6 +1076,10 @@ function AdditionalAccountsEditor({
                 ) : (
                   <>
                     <div className="space-y-1.5">
+                      <Label htmlFor={`additional-access-token-user-id-${index}`}>User ID</Label>
+                      <Input id={`additional-access-token-user-id-${index}`} placeholder="用于 New-Api-User 请求头" value={account.newapi_user_id} onChange={(event) => patch(index, { newapi_user_id: event.target.value })} disabled={disabled} />
+                    </div>
+                    <div className="space-y-1.5">
                       <Label htmlFor={`additional-newapi-access-token-${index}`}>访问令牌</Label>
                       <Textarea id={`additional-newapi-access-token-${index}`} rows={3} className="field-sizing-fixed min-w-0 max-w-full resize-y text-xs font-mono" placeholder={account.id != null && !modeChanged ? "留空不变；填写则覆盖" : "粘贴访问令牌"} value={account.newapi_access_token} onChange={(event) => patch(index, { newapi_access_token: event.target.value })} disabled={disabled} />
                     </div>
@@ -1067,7 +1087,7 @@ function AdditionalAccountsEditor({
                       <div className="flex items-center justify-between gap-2">
                         <div>
                           <p className="text-xs font-medium">访问令牌 Headers</p>
-                          <p className="text-[11px] text-muted-foreground">直接写入真实 Token 时，重新编辑会仅对 Token 本身脱敏。</p>
+                          <p className="text-[11px] text-muted-foreground">默认包含 Authorization = Bearer {'{{token}}'} 和 New-Api-User = {'{{user_id}}'}；直接写入真实 Token 时重新编辑仅对 Token 本身脱敏。</p>
                         </div>
                         <Button type="button" variant="outline" size="sm" className="h-7 text-[11px]" disabled={disabled} onClick={() => patch(index, { newapi_token_headers: defaultNewAPITokenHeaders() })}>恢复默认</Button>
                       </div>
