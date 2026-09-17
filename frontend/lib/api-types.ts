@@ -8,6 +8,11 @@ export type ChannelType = "newapi" | "sub2api"
 export type CredentialMode = "password" | "token"
 export type BalanceMode = "auto" | "manual"
 
+export interface RequestKV {
+  key: string
+  value: string
+}
+
 export type NotificationChannelType =
   | "telegram"
   | "webhook"
@@ -39,6 +44,8 @@ export interface Channel {
   site_url: string
   username: string
   credential_mode: CredentialMode
+  login_headers: RequestKV[]
+  login_params: RequestKV[]
   balance_mode: BalanceMode
   manual_balance: number
   remark?: string

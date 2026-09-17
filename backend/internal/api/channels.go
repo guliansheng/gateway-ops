@@ -52,6 +52,8 @@ type channelInput struct {
 	ManualBalance    float64                `json:"manual_balance"`
 	Remark           string                 `json:"remark"`
 	TokenCredential  string                 `json:"token_credential"` // JSON：token 模式时填写
+	LoginHeaders     *[]channel.RequestKV   `json:"login_headers"`
+	LoginParams      *[]channel.RequestKV   `json:"login_params"`
 	TurnstileEnabled bool                   `json:"turnstile_enabled"`
 	CaptchaConfigID  *uint                  `json:"captcha_config_id"`
 	BalanceThreshold float64                `json:"balance_threshold"`
@@ -79,6 +81,8 @@ type channelUpdateInput struct {
 	ManualBalance    *float64                `json:"manual_balance"`
 	Remark           *string                 `json:"remark"`
 	TokenCredential  *string                 `json:"token_credential"`
+	LoginHeaders     *[]channel.RequestKV    `json:"login_headers"`
+	LoginParams      *[]channel.RequestKV    `json:"login_params"`
 	TurnstileEnabled *bool                   `json:"turnstile_enabled"`
 	CaptchaConfigID  *uint                   `json:"captcha_config_id"`
 	BalanceThreshold *float64                `json:"balance_threshold"`
@@ -102,7 +106,9 @@ func listChannels(c *gin.Context, d *Deps) {
 
 type channelView struct {
 	storage.Channel
-	Accounts []storage.ChannelAccount `json:"accounts"`
+	LoginHeaders []channel.RequestKV      `json:"login_headers"`
+	LoginParams  []channel.RequestKV      `json:"login_params"`
+	Accounts     []storage.ChannelAccount `json:"accounts"`
 }
 
 func channelViews(d *Deps, channels []storage.Channel) ([]channelView, error) {
@@ -120,7 +126,11 @@ func channelViews(d *Deps, channels []storage.Channel) ([]channelView, error) {
 		if accounts == nil {
 			accounts = []storage.ChannelAccount{}
 		}
-		views = append(views, channelView{Channel: item, Accounts: accounts})
+		headers, params, err := channel.ParseLoginConfig(item.Type, item.LoginHeadersJSON, item.LoginParamsJSON)
+		if err != nil {
+			return nil, err
+		}
+		views = append(views, channelView{Channel: item, LoginHeaders: headers, LoginParams: params, Accounts: accounts})
 	}
 	return views, nil
 }
@@ -238,6 +248,8 @@ func createChannel(c *gin.Context, d *Deps) {
 		Password:           in.Password,
 		CredentialMode:     in.CredentialMode,
 		TokenCredential:    in.TokenCredential,
+		LoginHeaders:       in.LoginHeaders,
+		LoginParams:        in.LoginParams,
 		BalanceMode:        in.BalanceMode,
 		ManualBalance:      in.ManualBalance,
 		Remark:             in.Remark,
@@ -302,6 +314,8 @@ func updateChannel(c *gin.Context, d *Deps) {
 		Password:           in.Password,
 		CredentialMode:     in.CredentialMode,
 		TokenCredential:    in.TokenCredential,
+		LoginHeaders:       in.LoginHeaders,
+		LoginParams:        in.LoginParams,
 		BalanceMode:        in.BalanceMode,
 		ManualBalance:      in.ManualBalance,
 		Remark:             in.Remark,

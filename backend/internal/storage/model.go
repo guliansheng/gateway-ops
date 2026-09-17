@@ -47,15 +47,17 @@ const (
 //
 // 复用 PasswordCipher 而不新增 TokenCipher 是为了让现有的 GORM 行 / 加密路径 / 迁移流程零变动。
 type Channel struct {
-	ID             uint           `gorm:"primaryKey" json:"id"`
-	Name           string         `gorm:"size:128;not null;uniqueIndex" json:"name"`
-	Type           ChannelType    `gorm:"size:32;not null;index" json:"type"`
-	SiteURL        string         `gorm:"size:512;not null" json:"site_url"`
-	Username       string         `gorm:"size:256;not null" json:"username"`
-	PasswordCipher string         `gorm:"size:4096;not null" json:"-"`
-	CredentialMode CredentialMode `gorm:"size:16;not null;default:'password'" json:"credential_mode"`
-	BalanceMode    BalanceMode    `gorm:"size:16;not null;default:'auto'" json:"balance_mode"`
-	ManualBalance  float64        `gorm:"not null;default:0" json:"manual_balance"`
+	ID               uint           `gorm:"primaryKey" json:"id"`
+	Name             string         `gorm:"size:128;not null;uniqueIndex" json:"name"`
+	Type             ChannelType    `gorm:"size:32;not null;index" json:"type"`
+	SiteURL          string         `gorm:"size:512;not null" json:"site_url"`
+	Username         string         `gorm:"size:256;not null" json:"username"`
+	PasswordCipher   string         `gorm:"size:4096;not null" json:"-"`
+	CredentialMode   CredentialMode `gorm:"size:16;not null;default:'password'" json:"credential_mode"`
+	LoginHeadersJSON string         `gorm:"type:text" json:"-"`
+	LoginParamsJSON  string         `gorm:"type:text" json:"-"`
+	BalanceMode      BalanceMode    `gorm:"size:16;not null;default:'auto'" json:"balance_mode"`
+	ManualBalance    float64        `gorm:"not null;default:0" json:"manual_balance"`
 	// ManualUsageBaseline is the cumulative relay cost last settled against a
 	// manually managed balance. It is intentionally internal bookkeeping and
 	// not part of the public channel API.

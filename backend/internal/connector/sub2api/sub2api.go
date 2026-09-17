@@ -24,7 +24,7 @@ type Client struct {
 
 func New() *Client {
 	c := resty.New().
-		SetTimeout(30 * time.Second).
+		SetTimeout(30*time.Second).
 		SetHeader("User-Agent", "GatewayOps/0.1").
 		SetHeader("Accept", "application/json")
 	return &Client{http: c}
@@ -57,17 +57,12 @@ func (c *Client) GetTurnstileSiteKey(ctx context.Context, ch *connector.Channel)
 
 func (c *Client) Login(ctx context.Context, ch *connector.Channel) (*connector.AuthSession, error) {
 	site := strings.TrimRight(ch.SiteURL, "/")
-	body := map[string]string{
-		"email":    ch.Username,
-		"password": ch.Password,
-	}
-	if ch.TurnstileToken != "" {
-		body["turnstile_token"] = ch.TurnstileToken
-	}
+	vars := map[string]string{"username": ch.Username, "password": ch.Password, "turnstile_token": ch.TurnstileToken}
+	body := connector.ExpandRequestKV(ch.LoginParams, vars)
 
 	resp, err := c.http.R().
 		SetContext(ctx).
-		SetHeader("Content-Type", "application/json").
+		SetHeaders(connector.ExpandRequestKV(ch.LoginHeaders, vars)).
 		SetBody(body).
 		Post(site + "/api/v1/auth/login")
 	if err != nil {
@@ -85,9 +80,10 @@ func (c *Client) Login(ctx context.Context, ch *connector.Channel) (*connector.A
 	}
 
 	var data struct {
-		Requires2FA bool   `json:"requires_2fa"`
-		AccessToken string `json:"access_token"`
-		ExpiresIn   int64  `json:"expires_in"`
+		Requires2FA  bool   `json:"requires_2fa"`
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		ExpiresIn    int64  `json:"expires_in"`
 	}
 	if err := json.Unmarshal(wrapped.Data, &data); err != nil {
 		return nil, fmt.Errorf("sub2api login data: %w", err)
@@ -104,9 +100,51 @@ func (c *Client) Login(ctx context.Context, ch *connector.Channel) (*connector.A
 		expires = time.Now().Add(time.Hour)
 	}
 	return &connector.AuthSession{
-		AccessToken: data.AccessToken,
-		ExpiresAt:   expires,
+		AccessToken:  data.AccessToken,
+		RefreshToken: data.RefreshToken,
+		ExpiresAt:    expires,
 	}, nil
+}
+
+func (c *Client) RefreshToken(ctx context.Context, ch *connector.Channel, refreshToken string) (*connector.AuthSession, error) {
+	site := strings.TrimRight(ch.SiteURL, "/")
+	resp, err := c.http.R().
+		SetContext(ctx).
+		SetHeader("Content-Type", "application/json").
+		SetBody(map[string]string{"refresh_token": refreshToken}).
+		Post(site + "/api/v1/auth/refresh")
+	if err != nil {
+		return nil, fmt.Errorf("sub2api refresh http: %w", err)
+	}
+	if resp.IsError() {
+		return nil, fmt.Errorf("sub2api refresh: %w", connector.HTTPStatusError(resp.StatusCode(), resp.Body()))
+	}
+	var wrapped sub2Resp
+	if err := json.Unmarshal(resp.Body(), &wrapped); err != nil {
+		return nil, fmt.Errorf("sub2api refresh decode: %w", err)
+	}
+	if wrapped.Code != 0 {
+		return nil, fmt.Errorf("sub2api refresh: %s", wrapped.Message)
+	}
+	var data struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		ExpiresIn    int64  `json:"expires_in"`
+	}
+	if err := json.Unmarshal(wrapped.Data, &data); err != nil {
+		return nil, fmt.Errorf("sub2api refresh data: %w", err)
+	}
+	if data.AccessToken == "" {
+		return nil, errors.New("sub2api refresh: empty access_token returned")
+	}
+	if data.RefreshToken == "" {
+		data.RefreshToken = refreshToken
+	}
+	expires := time.Now().Add(time.Duration(data.ExpiresIn) * time.Second)
+	if data.ExpiresIn <= 0 {
+		expires = time.Now().Add(time.Hour)
+	}
+	return &connector.AuthSession{AccessToken: data.AccessToken, RefreshToken: data.RefreshToken, ExpiresAt: expires}, nil
 }
 
 func (c *Client) CheckAuth(ctx context.Context, ch *connector.Channel, session *connector.AuthSession) error {

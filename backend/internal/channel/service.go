@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/guliansheng/gateway-ops/internal/captcha"
@@ -25,6 +26,13 @@ const SessionRefreshThreshold = 5 * time.Minute
 // token 由用户提供，我们没法续期，这里设一年只是为了避免 SessionRefreshThreshold 把它判过期。
 // 真正失效检测靠 connector.CheckAuth + 上游 401/403。
 const tokenSessionTTL = 365 * 24 * time.Hour
+
+var tokenRefreshLocks sync.Map
+
+func tokenRefreshLock(key uint) *sync.Mutex {
+	value, _ := tokenRefreshLocks.LoadOrStore(key, &sync.Mutex{})
+	return value.(*sync.Mutex)
+}
 
 // Service 渠道领域服务。
 type Service struct {
@@ -61,13 +69,18 @@ func NewService(
 // Cookie：浏览器 DevTools 里拷出来的整条 Cookie 头
 // UserID：上游账号 ID（NewAPI 个人设置页可见，作为 New-Api-User 请求头必填）
 type NewAPITokenCredential struct {
-	Cookie string `json:"cookie"`
-	UserID string `json:"user_id"`
+	AuthType string      `json:"auth_type,omitempty"`
+	Cookie   string      `json:"cookie,omitempty"`
+	UserID   string      `json:"user_id,omitempty"`
+	Token    string      `json:"token,omitempty"`
+	Headers  []RequestKV `json:"headers,omitempty"`
 }
 
 // Sub2APITokenCredential token 模式下 Sub2API 的凭据。
 type Sub2APITokenCredential struct {
-	AccessToken string `json:"access_token"`
+	AccessToken  string    `json:"access_token"`
+	RefreshToken string    `json:"refresh_token,omitempty"`
+	ExpiresAt    time.Time `json:"expires_at,omitempty"`
 }
 
 // CreateInput 新建渠道使用的明文输入。
@@ -86,6 +99,8 @@ type CreateInput struct {
 	ManualBalance      float64
 	Remark             string
 	TokenCredential    string // JSON：password 模式时为空
+	LoginHeaders       *[]RequestKV
+	LoginParams        *[]RequestKV
 	TurnstileEnabled   bool
 	CaptchaConfigID    *uint
 	BalanceThreshold   float64
@@ -148,6 +163,14 @@ func (s *Service) Create(in CreateInput) (*storage.Channel, error) {
 	} else {
 		mode = storage.CredentialModePassword
 	}
+	loginHeadersJSON, err := encodeOptionalRequestKV(in.LoginHeaders)
+	if err != nil {
+		return nil, fmt.Errorf("encode login headers: %w", err)
+	}
+	loginParamsJSON, err := encodeOptionalRequestKV(in.LoginParams)
+	if err != nil {
+		return nil, fmt.Errorf("encode login params: %w", err)
+	}
 	c := &storage.Channel{
 		Name:             name,
 		Type:             in.Type,
@@ -155,6 +178,8 @@ func (s *Service) Create(in CreateInput) (*storage.Channel, error) {
 		Username:         in.Username,
 		PasswordCipher:   enc,
 		CredentialMode:   mode,
+		LoginHeadersJSON: loginHeadersJSON,
+		LoginParamsJSON:  loginParamsJSON,
 		BalanceMode:      balanceMode,
 		ManualBalance:    in.ManualBalance,
 		Remark:           remark,
@@ -200,6 +225,8 @@ type UpdateInput struct {
 	ManualBalance      *float64
 	Remark             *string
 	TokenCredential    *string // JSON
+	LoginHeaders       *[]RequestKV
+	LoginParams        *[]RequestKV
 	TurnstileEnabled   *bool
 	CaptchaConfigID    *uint
 	BalanceThreshold   *float64
@@ -227,6 +254,20 @@ func (s *Service) Update(id uint, in UpdateInput) (*storage.Channel, error) {
 	}
 	if in.Username != nil {
 		c.Username = *in.Username
+	}
+	if in.LoginHeaders != nil {
+		encoded, err := EncodeRequestKV(*in.LoginHeaders)
+		if err != nil {
+			return nil, fmt.Errorf("encode login headers: %w", err)
+		}
+		c.LoginHeadersJSON = encoded
+	}
+	if in.LoginParams != nil {
+		encoded, err := EncodeRequestKV(*in.LoginParams)
+		if err != nil {
+			return nil, fmt.Errorf("encode login params: %w", err)
+		}
+		c.LoginParamsJSON = encoded
 	}
 	if in.Remark != nil {
 		remark := strings.TrimSpace(*in.Remark)
@@ -522,11 +563,20 @@ func validateCredential(channelType storage.ChannelType, mode storage.Credential
 		if err := json.Unmarshal([]byte(raw), &cred); err != nil {
 			return fmt.Errorf("解析 NewAPI 凭据 JSON 失败：%w", err)
 		}
-		if strings.TrimSpace(cred.Cookie) == "" {
-			return errors.New("NewAPI token 模式需要 Cookie")
-		}
-		if strings.TrimSpace(cred.UserID) == "" {
-			return errors.New("NewAPI token 模式需要 User ID（在 NewAPI 个人设置页查看）")
+		authType := strings.TrimSpace(cred.AuthType)
+		if authType == "" || authType == "cookie" {
+			if strings.TrimSpace(cred.Cookie) == "" {
+				return errors.New("NewAPI Cookie 模式需要 Cookie")
+			}
+			if strings.TrimSpace(cred.UserID) == "" {
+				return errors.New("NewAPI Cookie 模式需要 User ID（在 NewAPI 个人设置页查看）")
+			}
+		} else if authType == "access_token" {
+			if strings.TrimSpace(cred.Token) == "" {
+				return errors.New("NewAPI 访问令牌模式需要 token")
+			}
+		} else {
+			return fmt.Errorf("unknown NewAPI auth_type: %s", authType)
 		}
 	case storage.ChannelTypeSub2API:
 		var cred Sub2APITokenCredential
@@ -558,12 +608,18 @@ func (s *Service) Resolve(ctx context.Context, c *storage.Channel) (*connector.C
 	if err != nil {
 		return nil, fmt.Errorf("decrypt credential: %w", err)
 	}
+	headers, params, err := ParseLoginConfig(c.Type, c.LoginHeadersJSON, c.LoginParamsJSON)
+	if err != nil {
+		return nil, err
+	}
 	resolved := &connector.Channel{
 		ID:               c.ID,
 		Name:             c.Name,
 		Type:             connector.ChannelType(c.Type),
 		SiteURL:          c.SiteURL,
 		Username:         c.Username,
+		LoginHeaders:     toConnectorRequestKV(headers),
+		LoginParams:      toConnectorRequestKV(params),
 		TurnstileEnabled: c.TurnstileEnabled,
 	}
 	if c.CredentialMode == storage.CredentialModeToken {
@@ -605,6 +661,18 @@ func (s *Service) buildSessionFromToken(c *storage.Channel) (*connector.AuthSess
 		if err := json.Unmarshal([]byte(raw), &cred); err != nil {
 			return nil, fmt.Errorf("parse newapi token credential: %w", err)
 		}
+		authType := strings.TrimSpace(cred.AuthType)
+		if authType == "access_token" {
+			headers := cred.Headers
+			if headers == nil {
+				headers = []RequestKV{{Key: "Authorization", Value: "Bearer {{token}}"}}
+			}
+			return &connector.AuthSession{
+				AccessToken: cred.Token,
+				Headers:     ExpandRequestKV(headers, map[string]string{"token": cred.Token}),
+				ExpiresAt:   time.Now().Add(tokenSessionTTL),
+			}, nil
+		}
 		return &connector.AuthSession{
 			UserID:    cred.UserID,
 			Cookie:    cred.Cookie,
@@ -615,9 +683,17 @@ func (s *Service) buildSessionFromToken(c *storage.Channel) (*connector.AuthSess
 		if err := json.Unmarshal([]byte(raw), &cred); err != nil {
 			return nil, fmt.Errorf("parse sub2api token credential: %w", err)
 		}
+		expiresAt := cred.ExpiresAt
+		if expiresAt.IsZero() {
+			expiresAt = jwtExpiry(cred.AccessToken)
+		}
+		if expiresAt.IsZero() {
+			expiresAt = time.Now().Add(time.Hour)
+		}
 		return &connector.AuthSession{
-			AccessToken: cred.AccessToken,
-			ExpiresAt:   time.Now().Add(tokenSessionTTL),
+			AccessToken:  cred.AccessToken,
+			RefreshToken: cred.RefreshToken,
+			ExpiresAt:    expiresAt,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unknown channel type: %s", c.Type)
@@ -698,6 +774,12 @@ func (s *Service) EnsureSession(
 			s.setCredentialError(c, err.Error())
 			return nil, err
 		}
+		session, err = s.refreshSub2APITokenIfNeeded(ctx, c, resolved, conn, sessionKey, session)
+		if err != nil {
+			progress.Fail(ctx, progress.StageSession, err.Error())
+			s.setCredentialError(c, err.Error())
+			return nil, err
+		}
 		// 走一次 CheckAuth 确认 token 仍有效。失败立即标 last_error，调用方往上抛错。
 		if err := conn.CheckAuth(ctx, resolved, session); err != nil {
 			msg := "token 已失效，请重新粘贴凭据：" + err.Error()
@@ -728,6 +810,95 @@ func (s *Service) EnsureSession(
 		progress.OK(ctx, progress.StageSession, "会话已失效，重新登录")
 	}
 	return s.login(ctx, c, resolved, conn)
+}
+
+func (s *Service) reloadTokenChannel(c *storage.Channel) (*storage.Channel, error) {
+	if c.AuthSessionKey >= storage.AdditionalAccountSessionOffset {
+		accountID := c.AuthSessionKey - storage.AdditionalAccountSessionOffset
+		account, err := s.Channels.FindAccountByID(accountID)
+		if err != nil {
+			return nil, err
+		}
+		latest := *c
+		latest.PasswordCipher = account.PasswordCipher
+		latest.CredentialMode = account.CredentialMode
+		return &latest, nil
+	}
+	latest, err := s.Channels.FindByID(c.ID)
+	if err != nil {
+		return nil, err
+	}
+	latest.AuthSessionKey = c.AuthSessionKey
+	return latest, nil
+}
+
+func (s *Service) refreshSub2APITokenIfNeeded(
+	ctx context.Context,
+	c *storage.Channel,
+	resolved *connector.Channel,
+	conn connector.Connector,
+	sessionKey uint,
+	session *connector.AuthSession,
+) (*connector.AuthSession, error) {
+	if c.Type != storage.ChannelTypeSub2API || session == nil || strings.TrimSpace(session.RefreshToken) == "" {
+		return session, nil
+	}
+	if session.ExpiresAt.IsZero() || time.Until(session.ExpiresAt) > SessionRefreshThreshold {
+		return session, nil
+	}
+	refresher, ok := conn.(connector.TokenRefresher)
+	if !ok {
+		return nil, errors.New("Sub2API connector 不支持 refresh_token 刷新")
+	}
+	lock := tokenRefreshLock(sessionKey)
+	lock.Lock()
+	defer lock.Unlock()
+
+	latestChannel, err := s.reloadTokenChannel(c)
+	if err != nil {
+		return nil, err
+	}
+	latest, err := s.buildSessionFromToken(latestChannel)
+	if err != nil {
+		return nil, err
+	}
+	if latest.ExpiresAt.IsZero() || time.Until(latest.ExpiresAt) > SessionRefreshThreshold {
+		c.PasswordCipher = latestChannel.PasswordCipher
+		return latest, nil
+	}
+	fresh, err := refresher.RefreshToken(ctx, resolved, latest.RefreshToken)
+	if err != nil {
+		return nil, fmt.Errorf("刷新 Sub2API token 失败: %w", err)
+	}
+	cred := Sub2APITokenCredential{
+		AccessToken:  fresh.AccessToken,
+		RefreshToken: fresh.RefreshToken,
+		ExpiresAt:    fresh.ExpiresAt,
+	}
+	raw, err := json.Marshal(cred)
+	if err != nil {
+		return nil, fmt.Errorf("encode refreshed credential: %w", err)
+	}
+	ciphertext, err := s.Cipher.Encrypt(string(raw))
+	if err != nil {
+		return nil, fmt.Errorf("encrypt refreshed credential: %w", err)
+	}
+	c.PasswordCipher = ciphertext
+	latestChannel.PasswordCipher = ciphertext
+	if c.AuthSessionKey >= storage.AdditionalAccountSessionOffset {
+		accountID := c.AuthSessionKey - storage.AdditionalAccountSessionOffset
+		if err := s.Channels.UpdateAccountCredential(accountID, ciphertext); err != nil {
+			return nil, fmt.Errorf("persist refreshed account token: %w", err)
+		}
+	} else {
+		if err := s.Channels.Update(latestChannel); err != nil {
+			return nil, fmt.Errorf("persist refreshed channel token: %w", err)
+		}
+		if err := s.Channels.EnsurePrimaryAccount(latestChannel); err != nil {
+			return nil, fmt.Errorf("sync refreshed primary account token: %w", err)
+		}
+	}
+	return fresh, nil
 }
 
 func (s *Service) login(
