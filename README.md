@@ -102,7 +102,6 @@ GatewayOps 是一个面向 **NewAPI / Sub2API 生态**的自托管运营管理�
 
 
 
-
 验证码服务用于维护和测试 Turnstile 打码 Provider，测试通过后可绑定到渠道。
 
 ## 页面与路由
@@ -125,6 +124,7 @@ GatewayOps 是一个面向 **NewAPI / Sub2API 生态**的自托管运营管理�
 
 ```bash
 cp .env.example .env
+touch .outbound-proxy.env
 ```
 
 至少修改：
