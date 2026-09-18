@@ -52,6 +52,8 @@ type channelInput struct {
 	ManualBalance    float64                `json:"manual_balance"`
 	Remark           string                 `json:"remark"`
 	TokenCredential  string                 `json:"token_credential"` // JSON：token 模式时填写
+	LoginHeaders     *[]channel.RequestKV   `json:"login_headers"`
+	LoginParams      *[]channel.RequestKV   `json:"login_params"`
 	TurnstileEnabled bool                   `json:"turnstile_enabled"`
 	CaptchaConfigID  *uint                  `json:"captcha_config_id"`
 	BalanceThreshold float64                `json:"balance_threshold"`
@@ -79,6 +81,8 @@ type channelUpdateInput struct {
 	ManualBalance    *float64                `json:"manual_balance"`
 	Remark           *string                 `json:"remark"`
 	TokenCredential  *string                 `json:"token_credential"`
+	LoginHeaders     *[]channel.RequestKV    `json:"login_headers"`
+	LoginParams      *[]channel.RequestKV    `json:"login_params"`
 	TurnstileEnabled *bool                   `json:"turnstile_enabled"`
 	CaptchaConfigID  *uint                   `json:"captcha_config_id"`
 	BalanceThreshold *float64                `json:"balance_threshold"`
@@ -102,7 +106,19 @@ func listChannels(c *gin.Context, d *Deps) {
 
 type channelView struct {
 	storage.Channel
-	Accounts []storage.ChannelAccount `json:"accounts"`
+	LoginHeaders       []channel.RequestKV  `json:"login_headers"`
+	LoginParams        []channel.RequestKV  `json:"login_params"`
+	NewAPIAuthType     string               `json:"newapi_auth_type,omitempty"`
+	NewAPIUserID       string               `json:"newapi_user_id,omitempty"`
+	NewAPITokenHeaders []channel.RequestKV  `json:"newapi_token_headers,omitempty"`
+	Accounts           []channelAccountView `json:"accounts"`
+}
+
+type channelAccountView struct {
+	storage.ChannelAccount
+	NewAPIAuthType     string              `json:"newapi_auth_type,omitempty"`
+	NewAPIUserID       string              `json:"newapi_user_id,omitempty"`
+	NewAPITokenHeaders []channel.RequestKV `json:"newapi_token_headers,omitempty"`
 }
 
 func channelViews(d *Deps, channels []storage.Channel) ([]channelView, error) {
@@ -116,13 +132,73 @@ func channelViews(d *Deps, channels []storage.Channel) ([]channelView, error) {
 	}
 	views := make([]channelView, 0, len(channels))
 	for _, item := range channels {
-		accounts := accountsByChannel[item.ID]
-		if accounts == nil {
-			accounts = []storage.ChannelAccount{}
+		accounts := make([]channelAccountView, 0, len(accountsByChannel[item.ID]))
+		for _, account := range accountsByChannel[item.ID] {
+			authType, userID, tokenHeaders, err := newAPIEditMetadata(d, item.Type, account.CredentialMode, account.PasswordCipher)
+			if err != nil {
+				return nil, err
+			}
+			accounts = append(accounts, channelAccountView{ChannelAccount: account, NewAPIAuthType: authType, NewAPIUserID: userID, NewAPITokenHeaders: tokenHeaders})
 		}
-		views = append(views, channelView{Channel: item, Accounts: accounts})
+		headers, params, err := channel.ParseLoginConfig(item.Type, item.LoginHeadersJSON, item.LoginParamsJSON)
+		if err != nil {
+			return nil, err
+		}
+		authType, userID, tokenHeaders, err := newAPIEditMetadata(d, item.Type, item.CredentialMode, item.PasswordCipher)
+		if err != nil {
+			return nil, err
+		}
+		views = append(views, channelView{Channel: item, LoginHeaders: headers, LoginParams: params, NewAPIAuthType: authType, NewAPIUserID: userID, NewAPITokenHeaders: tokenHeaders, Accounts: accounts})
 	}
 	return views, nil
+}
+
+func newAPIEditMetadata(d *Deps, channelType storage.ChannelType, mode storage.CredentialMode, cipherText string) (string, string, []channel.RequestKV, error) {
+	if channelType != storage.ChannelTypeNewAPI || mode != storage.CredentialModeToken || cipherText == "" {
+		return "", "", nil, nil
+	}
+	raw, err := d.Cipher.Decrypt(cipherText)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("decrypt NewAPI credential metadata: %w", err)
+	}
+	var cred channel.NewAPITokenCredential
+	if err := json.Unmarshal([]byte(raw), &cred); err != nil {
+		return "", "", nil, fmt.Errorf("parse NewAPI credential metadata: %w", err)
+	}
+	authType := strings.TrimSpace(cred.AuthType)
+	if authType == "" {
+		authType = "cookie"
+	}
+	if authType != "access_token" {
+		return authType, cred.UserID, nil, nil
+	}
+	headers := cred.Headers
+	if headers == nil {
+		headers = []channel.RequestKV{
+			{Key: "Authorization", Value: "Bearer {{token}}"},
+			{Key: "New-Api-User", Value: "{{user_id}}"},
+		}
+	}
+	result := make([]channel.RequestKV, len(headers))
+	copy(result, headers)
+	if !hasRequestKVKey(result, "New-Api-User") {
+		result = append(result, channel.RequestKV{Key: "New-Api-User", Value: "{{user_id}}"})
+	}
+	if cred.Token != "" {
+		for i := range result {
+			result[i].Value = strings.ReplaceAll(result[i].Value, cred.Token, channel.MaskedTokenPlaceholder)
+		}
+	}
+	return authType, cred.UserID, result, nil
+}
+
+func hasRequestKVKey(items []channel.RequestKV, key string) bool {
+	for _, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item.Key), key) {
+			return true
+		}
+	}
+	return false
 }
 
 func additionalAccountInputs(items []channelAccountInput) []channel.AdditionalAccountInput {
@@ -238,6 +314,8 @@ func createChannel(c *gin.Context, d *Deps) {
 		Password:           in.Password,
 		CredentialMode:     in.CredentialMode,
 		TokenCredential:    in.TokenCredential,
+		LoginHeaders:       in.LoginHeaders,
+		LoginParams:        in.LoginParams,
 		BalanceMode:        in.BalanceMode,
 		ManualBalance:      in.ManualBalance,
 		Remark:             in.Remark,
@@ -302,6 +380,8 @@ func updateChannel(c *gin.Context, d *Deps) {
 		Password:           in.Password,
 		CredentialMode:     in.CredentialMode,
 		TokenCredential:    in.TokenCredential,
+		LoginHeaders:       in.LoginHeaders,
+		LoginParams:        in.LoginParams,
 		BalanceMode:        in.BalanceMode,
 		ManualBalance:      in.ManualBalance,
 		Remark:             in.Remark,

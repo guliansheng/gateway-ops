@@ -15,6 +15,14 @@ func NewChannels(db *gorm.DB) *Channels { return &Channels{db: db} }
 func (r *Channels) Create(c *Channel) error { return r.db.Create(c).Error }
 func (r *Channels) Update(c *Channel) error { return r.db.Save(c).Error }
 
+func (r *Channels) FindAccountByID(id uint) (*ChannelAccount, error) {
+	var account ChannelAccount
+	if err := r.db.First(&account, id).Error; err != nil {
+		return nil, err
+	}
+	return &account, nil
+}
+
 func (r *Channels) ListAccounts(channelID uint) ([]ChannelAccount, error) {
 	var list []ChannelAccount
 	err := r.db.Where("channel_id = ?", channelID).
@@ -147,6 +155,10 @@ func (r *Channels) UpdateAccountBalance(id uint, balance float64, at any, lastEr
 
 func (r *Channels) SetAccountError(id uint, message string) error {
 	return r.db.Model(&ChannelAccount{}).Where("id = ?", id).Update("last_error", message).Error
+}
+
+func (r *Channels) UpdateAccountCredential(id uint, passwordCipher string) error {
+	return r.db.Model(&ChannelAccount{}).Where("id = ?", id).Update("password_cipher", passwordCipher).Error
 }
 
 func accountSessionKeys(ids []uint) []uint {

@@ -26,7 +26,7 @@ type Client struct {
 
 func New() *Client {
 	c := resty.New().
-		SetTimeout(30 * time.Second).
+		SetTimeout(30*time.Second).
 		SetHeader("User-Agent", "GatewayOps/0.1").
 		SetHeader("Accept", "application/json")
 	return &Client{http: c}
@@ -59,13 +59,11 @@ func (c *Client) GetTurnstileSiteKey(ctx context.Context, ch *connector.Channel)
 
 func (c *Client) Login(ctx context.Context, ch *connector.Channel) (*connector.AuthSession, error) {
 	site := strings.TrimRight(ch.SiteURL, "/")
+	vars := map[string]string{"username": ch.Username, "password": ch.Password, "turnstile_token": ch.TurnstileToken}
 	req := c.http.R().
 		SetContext(ctx).
-		SetHeader("Content-Type", "application/json").
-		SetBody(map[string]string{
-			"username": ch.Username,
-			"password": ch.Password,
-		})
+		SetHeaders(connector.ExpandRequestKV(ch.LoginHeaders, vars)).
+		SetBody(connector.ExpandRequestKV(ch.LoginParams, vars))
 	if ch.TurnstileToken != "" {
 		req.SetQueryParam("turnstile", ch.TurnstileToken)
 	}
@@ -111,8 +109,8 @@ func (c *Client) Login(ctx context.Context, ch *connector.Channel) (*connector.A
 }
 
 func (c *Client) CheckAuth(ctx context.Context, ch *connector.Channel, session *connector.AuthSession) error {
-	if session == nil || session.Cookie == "" {
-		return errors.New("missing newapi cookie")
+	if session == nil || (session.Cookie == "" && len(session.Headers) == 0) {
+		return errors.New("missing newapi auth credential")
 	}
 	_, err := c.getJSON(ctx, strings.TrimRight(ch.SiteURL, "/")+"/api/user/self", session)
 	return err
@@ -182,10 +180,12 @@ func (c *Client) GetRates(ctx context.Context, ch *connector.Channel, session *c
 func (c *Client) getJSON(ctx context.Context, url string, session *connector.AuthSession) ([]byte, error) {
 	req := c.http.R().SetContext(ctx)
 	if session != nil {
+		if len(session.Headers) > 0 {
+			req.SetHeaders(session.Headers)
+		}
 		if session.Cookie != "" {
 			req.SetHeader("Cookie", session.Cookie)
 		}
-		// NewAPI 即便用 session 鉴权也要求带 New-Api-User 头（"unauthorized, New-Api-User header not provided"）。
 		if session.UserID != "" {
 			req.SetHeader("New-Api-User", session.UserID)
 		}

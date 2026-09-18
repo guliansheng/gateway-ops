@@ -18,7 +18,7 @@ GatewayOps 是一个面向 **NewAPI / Sub2API 生态**的自托管运营管理�
 ### 渠道管理
 
 - 管理 NewAPI 和 Sub2API 渠道。
-- 支持账号密码与 Token 两种凭据模式。
+- 支持账号密码与 Token 凭据：登录 Headers / 参数可自定义并恢复默认；NewAPI 支持 Cookie + User ID 与长期访问令牌；Sub2API 支持 Access Token + Refresh Token 并在过期前自动刷新。
 - 登录测试、启用/停用、余额刷新、倍率刷新和完整同步。
 - 自动读取余额和分组倍率，也可手工维护余额、分组与倍率。
 - 设置余额阈值和监控开关，查看余额历史、倍率变化与监控日志。

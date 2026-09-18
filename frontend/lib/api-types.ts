@@ -8,6 +8,11 @@ export type ChannelType = "newapi" | "sub2api"
 export type CredentialMode = "password" | "token"
 export type BalanceMode = "auto" | "manual"
 
+export interface RequestKV {
+  key: string
+  value: string
+}
+
 export type NotificationChannelType =
   | "telegram"
   | "webhook"
@@ -39,6 +44,11 @@ export interface Channel {
   site_url: string
   username: string
   credential_mode: CredentialMode
+  login_headers: RequestKV[]
+  login_params: RequestKV[]
+  newapi_auth_type?: "cookie" | "access_token"
+  newapi_user_id?: string
+  newapi_token_headers?: RequestKV[]
   balance_mode: BalanceMode
   manual_balance: number
   remark?: string
@@ -60,6 +70,9 @@ export interface ChannelAccount {
   is_primary: boolean
   username: string
   credential_mode: CredentialMode
+  newapi_auth_type?: "cookie" | "access_token"
+  newapi_user_id?: string
+  newapi_token_headers?: RequestKV[]
   turnstile_enabled: boolean
   captcha_config_id?: number | null
   last_balance?: number | null

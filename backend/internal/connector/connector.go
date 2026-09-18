@@ -12,6 +12,7 @@ package connector
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -25,6 +26,30 @@ const (
 )
 
 // Channel 已解密的渠道连接信息，由 channel 层负责构造。
+type RequestKV struct {
+	Key   string
+	Value string
+}
+
+func ExpandRequestKV(items []RequestKV, vars map[string]string) map[string]string {
+	out := make(map[string]string, len(items))
+	for _, item := range items {
+		key := strings.TrimSpace(item.Key)
+		if key == "" {
+			continue
+		}
+		value := item.Value
+		for name, replacement := range vars {
+			value = strings.ReplaceAll(value, "{{"+name+"}}", replacement)
+		}
+		if strings.Contains(item.Value, "{{turnstile_token}}") && strings.TrimSpace(vars["turnstile_token"]) == "" {
+			continue
+		}
+		out[key] = value
+	}
+	return out
+}
+
 type Channel struct {
 	ID               uint
 	Name             string
@@ -32,6 +57,8 @@ type Channel struct {
 	SiteURL          string
 	Username         string
 	Password         string
+	LoginHeaders     []RequestKV
+	LoginParams      []RequestKV
 	TurnstileEnabled bool
 	// TurnstileToken 由调用方在 Login 前预先求解打码后填入；为空则直接发起登录。
 	TurnstileToken string
@@ -39,13 +66,14 @@ type Channel struct {
 
 // AuthSession 登录后产生的会话凭据。明文，由 channel 层负责加密落库。
 type AuthSession struct {
-	// UserID 上游账号 ID 字符串。NewAPI 必须在后续请求头里附带 `New-Api-User: <id>`。
-	// 不是机密信息，channel 层按明文存。
-	UserID      string
-	AccessToken string
-	Cookie      string
-	CSRFToken   string
-	ExpiresAt   time.Time
+	// UserID 上游账号 ID 字符串。NewAPI Cookie 会话需要在后续请求头里附带 `New-Api-User: <id>`。
+	UserID       string
+	AccessToken  string
+	RefreshToken string
+	Cookie       string
+	CSRFToken    string
+	Headers      map[string]string
+	ExpiresAt    time.Time
 }
 
 // BalanceResult 一次余额采集结果。Balance 已经换算成显示单位（一般是 USD 等值）。
@@ -69,6 +97,10 @@ type RateResult struct {
 //   - CheckAuth            使用现有 session 做一次轻量校验，确认未过期
 //   - GetBalance           拉取当前余额
 //   - GetRates             拉取当前所有可见的倍率
+type TokenRefresher interface {
+	RefreshToken(ctx context.Context, channel *Channel, refreshToken string) (*AuthSession, error)
+}
+
 type Connector interface {
 	// GetTurnstileSiteKey 返回上游当前的 Turnstile site key。
 	// 站点没有开启 Turnstile 时返回 ""（不视作错误）。
