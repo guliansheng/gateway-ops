@@ -908,3 +908,33 @@ export interface SyncSettings {
   relay_snapshot_interval_minutes: number
   relay_snapshot_interval_seconds: number
 }
+
+// 帮助文档：每个中转站一篇，正文 content 为富文本 HTML。
+export interface HelpDocument {
+  id: number
+  relay_station_id: number
+  title: string
+  content: string
+  content_format: string
+  enabled: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface HelpComment {
+  id: number
+  author_name: string
+  body: string
+  created_at: string
+}
+
+// 公开页返回的已发布帮助文档。
+export interface PublicHelpDocument {
+  document_id: number
+  station_id: number
+  station_name: string
+  title: string
+  content: string
+  updated_at: string
+  comments: HelpComment[]
+}
