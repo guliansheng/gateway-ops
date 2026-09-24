@@ -2,13 +2,34 @@ package api
 
 import (
 	"encoding/json"
+	"math"
 	"reflect"
 	"testing"
 
 	"github.com/guliansheng/gateway-ops/internal/channel"
 	appcrypto "github.com/guliansheng/gateway-ops/internal/crypto"
+	"github.com/guliansheng/gateway-ops/internal/relay"
 	"github.com/guliansheng/gateway-ops/internal/storage"
 )
+
+func TestChannelAmountsConvertCostButPreserveCashAndUserCharge(t *testing.T) {
+	balance := 100.0
+	usage := relay.ChannelUsageTotal{Cost: 20, UserCharge: 7, MatchedAccountCount: 2, Complete: true}
+	for _, mode := range []storage.BalanceMode{storage.BalanceModeAuto, storage.BalanceModeManual} {
+		ch := storage.Channel{ID: 1, BalanceMode: mode, LastBalance: &balance, RechargeMultiplier: 0.1}
+		got := channelAmounts(ch, usage, 30, 10)
+		wantBalance, wantConsumption := 10.0, 3.0
+		if mode == storage.BalanceModeManual {
+			wantBalance, wantConsumption = 100, 2
+		}
+		if math.Abs(got.CurrentBalance-wantBalance) > 1e-9 || math.Abs(got.ConsumptionAmount-wantConsumption) > 1e-9 {
+			t.Fatalf("%s amounts = %#v", mode, got)
+		}
+		if got.CumulativeRechargeAmount != 10 || got.UserChargeAmount != 7 || got.MatchedAccountCount != 2 || !got.UserChargeComplete {
+			t.Fatalf("%s cash or user charge was converted: %#v", mode, got)
+		}
+	}
+}
 
 func TestNewAPIEditMetadataPreservesTemplateAndMasksLiteralToken(t *testing.T) {
 	cipher, err := appcrypto.NewCipher("test-secret")

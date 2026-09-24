@@ -576,10 +576,11 @@ func (r *Rates) AggregateBalanceTrendSince(since time.Time) ([]DailyAggregate, e
 			WHERE sampled_at >= ?
 			GROUP BY channel_id, date_trunc('day', sampled_at)
 		)
-		SELECT pd.day AS day, SUM(bs.balance) AS balance
+		SELECT pd.day AS day, SUM(bs.balance * CASE WHEN c.balance_mode = 'manual' THEN 1 ELSE COALESCE(NULLIF(c.recharge_multiplier, 0), 1) END) AS balance
 		FROM per_day pd
 		JOIN balance_snapshots bs
 		  ON bs.channel_id = pd.channel_id AND bs.sampled_at = pd.last_at
+		JOIN channels c ON c.id = bs.channel_id AND c.deleted_at IS NULL
 		GROUP BY pd.day
 		ORDER BY pd.day ASC
 	`, since).Scan(&rows).Error
@@ -621,10 +622,11 @@ func (r *Rates) AggregateBalanceTrendHourlySince(since time.Time) ([]DailyAggreg
 			WHERE sampled_at >= ?
 			GROUP BY channel_id, date_trunc('hour', sampled_at)
 		)
-		SELECT ph.hour AS day, SUM(bs.balance) AS balance
+		SELECT ph.hour AS day, SUM(bs.balance * CASE WHEN c.balance_mode = 'manual' THEN 1 ELSE COALESCE(NULLIF(c.recharge_multiplier, 0), 1) END) AS balance
 		FROM per_hour ph
 		JOIN balance_snapshots bs
 		  ON bs.channel_id = ph.channel_id AND bs.sampled_at = ph.last_at
+		JOIN channels c ON c.id = bs.channel_id AND c.deleted_at IS NULL
 		GROUP BY ph.hour
 		ORDER BY ph.hour ASC
 	`, since).Scan(&rows).Error

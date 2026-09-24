@@ -51,6 +51,7 @@ export interface Channel {
   newapi_token_headers?: RequestKV[]
   balance_mode: BalanceMode
   manual_balance: number
+  recharge_multiplier: number
   remark?: string
   turnstile_enabled: boolean
   captcha_config_id?: number | null

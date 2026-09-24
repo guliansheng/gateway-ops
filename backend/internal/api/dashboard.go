@@ -87,11 +87,7 @@ func dashboardSummary(c *gin.Context, d *Deps) {
 	var activeCount, failedCount int
 
 	for _, ch := range channels {
-		lastBalance := ch.LastBalance
-		if ch.BalanceMode == storage.BalanceModeManual && lastBalance == nil {
-			balance := ch.ManualBalance
-			lastBalance = &balance
-		}
+		lastBalance := ch.CurrentBalanceAmount()
 		stat := dashboardChannelStat{
 			ID:             ch.ID,
 			Name:           ch.Name,
@@ -133,11 +129,7 @@ func dashboardSummary(c *gin.Context, d *Deps) {
 	}
 	for _, ch := range channels {
 		interval := usage[ch.ID]
-		if ch.BalanceMode == storage.BalanceModeManual {
-			consumptionAmount += interval.Cost
-		} else {
-			consumptionAmount += consumption[ch.ID]
-		}
+		consumptionAmount += channelAmounts(ch, interval, consumption[ch.ID], recharges[ch.ID]).ConsumptionAmount
 		userChargeAmount += interval.UserCharge
 		matchedAccountCount += interval.MatchedAccountCount
 		if !interval.Complete {

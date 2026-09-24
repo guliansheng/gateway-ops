@@ -57,6 +57,7 @@ interface FormState {
   credential_mode: CredentialMode
   balance_mode: BalanceMode
   manual_balance: string
+  recharge_multiplier: string
   remark: string
   login_headers: RequestKV[]
   login_params: RequestKV[]
@@ -149,6 +150,7 @@ function initialState(c?: Channel | null): FormState {
     password: "",
     credential_mode: c?.credential_mode ?? "password",
     balance_mode: c?.balance_mode ?? "auto",
+    recharge_multiplier: String(c?.recharge_multiplier ?? 1),
     manual_balance: c?.balance_mode === "manual" ? editableManualBalance(c.last_balance ?? c.manual_balance) : (c?.manual_balance != null ? String(c.manual_balance) : "0"),
     remark: c?.remark ?? "",
     login_headers: c?.login_headers?.map((item) => ({ ...item })) ?? defaults.headers,
@@ -299,6 +301,10 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
     setError(null)
     setSubmitting(true)
     try {
+      const rechargeMultiplier = Number(form.recharge_multiplier)
+      if (!Number.isFinite(rechargeMultiplier) || rechargeMultiplier <= 0) {
+        throw new Error("充值倍率必须是大于 0 的有效数字")
+      }
       const threshold = Number(form.balance_threshold)
       if (!Number.isFinite(threshold) || threshold < 0) {
         throw new Error("余额阈值必须是非负数")
@@ -314,10 +320,13 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
           name: form.name,
           site_url: form.site_url,
           balance_mode: "manual",
-          manual_balance: manualBalance,
+          recharge_multiplier: rechargeMultiplier,
           remark: form.remark.trim(),
           balance_threshold: threshold,
           monitor_enabled: form.monitor_enabled,
+        }
+        if (!channel || channel.balance_mode !== "manual" || form.manual_balance !== initialState(channel).manual_balance) {
+          body.manual_balance = manualBalance
         }
         if (isEdit) {
           await apiFetch(`/channels/${channel!.id}`, { method: "PUT", body: JSON.stringify(body) })
@@ -390,6 +399,7 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
           login_headers: form.login_headers,
           login_params: form.login_params,
           balance_mode: "auto",
+          recharge_multiplier: rechargeMultiplier,
           remark: form.remark.trim(),
           balance_threshold: threshold,
           monitor_enabled: form.monitor_enabled,
@@ -415,6 +425,7 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
             login_headers: form.login_headers,
             login_params: form.login_params,
             balance_mode: "auto",
+            recharge_multiplier: rechargeMultiplier,
             manual_balance: 0,
             remark: form.remark.trim(),
             password: isTokenMode ? "" : form.password,
@@ -513,10 +524,10 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
               <button type="button" disabled={submitting} onClick={() => setForm({ ...form, balance_mode: "auto" })} className={cn("rounded-md px-3 py-2 text-xs font-medium transition-colors", !isManualBalance ? "bg-foreground text-background" : "text-muted-foreground hover:bg-muted")}>自动读取</button>
               <button type="button" disabled={submitting} onClick={() => setForm({ ...form, balance_mode: "manual" })} className={cn("rounded-md px-3 py-2 text-xs font-medium transition-colors", isManualBalance ? "bg-foreground text-background" : "text-muted-foreground hover:bg-muted")}>手动管理</button>
             </div>
-            <p className="text-[11px] text-muted-foreground">{isManualBalance ? "直接使用手动当前余额；赠送或初始额度不会计入成本。" : "从上游读取余额和可见分组。"}</p>
+            <p className="text-[11px] text-muted-foreground">{isManualBalance ? "余额按实际金额维护，绑定账号的新增消耗按充值倍率换算后扣减。" : "从上游读取余额和可见分组，余额按充值倍率换算展示。"}</p>
             {isManualBalance ? (
               <div className="mt-2 space-y-1.5">
-                <Label htmlFor="manual-balance">当前余额（修改后作为新的扣减起点）</Label>
+                <Label htmlFor="manual-balance">当前余额（元，修改后作为新的扣减起点）</Label>
                 <Input
                   id="manual-balance"
                   type="number"
@@ -528,6 +539,21 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
                 />
               </div>
             ) : null}
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="recharge-multiplier">充值倍率</Label>
+            <Input
+              id="recharge-multiplier"
+              type="number"
+              min="0"
+              step="any"
+              required
+              value={form.recharge_multiplier}
+              onChange={(e) => setForm({ ...form, recharge_multiplier: e.target.value })}
+              disabled={submitting}
+            />
+            <p className="text-[11px] text-muted-foreground">实际金额（元）= 上游额度 × 充值倍率。例如实付 10 元到账 100 额度，填写 0.1；默认 1。</p>
           </div>
 
           {/* 凭据类型 toggle */}
@@ -786,7 +812,7 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
           ) : null}
 
           <div className="space-y-1.5">
-            <Label htmlFor="threshold">余额阈值（低于此值发告警，0 = 不告警）</Label>
+            <Label htmlFor="threshold">余额阈值（元，低于此值发告警，0 = 不告警）</Label>
             <Input
               id="threshold"
               type="number"

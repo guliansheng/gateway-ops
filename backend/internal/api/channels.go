@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/guliansheng/gateway-ops/internal/channel"
 	"github.com/guliansheng/gateway-ops/internal/progress"
+	"github.com/guliansheng/gateway-ops/internal/relay"
 	"github.com/guliansheng/gateway-ops/internal/storage"
 	"gorm.io/gorm"
 )
@@ -42,23 +43,24 @@ func registerChannels(g *gin.RouterGroup, d *Deps) {
 }
 
 type channelInput struct {
-	Name             string                 `json:"name" binding:"required"`
-	Type             storage.ChannelType    `json:"type" binding:"required"`
-	SiteURL          string                 `json:"site_url" binding:"required"`
-	Username         string                 `json:"username"`
-	Password         string                 `json:"password"`
-	CredentialMode   storage.CredentialMode `json:"credential_mode"`
-	BalanceMode      storage.BalanceMode    `json:"balance_mode"`
-	ManualBalance    float64                `json:"manual_balance"`
-	Remark           string                 `json:"remark"`
-	TokenCredential  string                 `json:"token_credential"` // JSON：token 模式时填写
-	LoginHeaders     *[]channel.RequestKV   `json:"login_headers"`
-	LoginParams      *[]channel.RequestKV   `json:"login_params"`
-	TurnstileEnabled bool                   `json:"turnstile_enabled"`
-	CaptchaConfigID  *uint                  `json:"captcha_config_id"`
-	BalanceThreshold float64                `json:"balance_threshold"`
-	MonitorEnabled   bool                   `json:"monitor_enabled"`
-	Accounts         []channelAccountInput  `json:"accounts"`
+	Name               string                 `json:"name" binding:"required"`
+	Type               storage.ChannelType    `json:"type" binding:"required"`
+	SiteURL            string                 `json:"site_url" binding:"required"`
+	Username           string                 `json:"username"`
+	Password           string                 `json:"password"`
+	CredentialMode     storage.CredentialMode `json:"credential_mode"`
+	BalanceMode        storage.BalanceMode    `json:"balance_mode"`
+	ManualBalance      float64                `json:"manual_balance"`
+	RechargeMultiplier *float64               `json:"recharge_multiplier"`
+	Remark             string                 `json:"remark"`
+	TokenCredential    string                 `json:"token_credential"` // JSON：token 模式时填写
+	LoginHeaders       *[]channel.RequestKV   `json:"login_headers"`
+	LoginParams        *[]channel.RequestKV   `json:"login_params"`
+	TurnstileEnabled   bool                   `json:"turnstile_enabled"`
+	CaptchaConfigID    *uint                  `json:"captcha_config_id"`
+	BalanceThreshold   float64                `json:"balance_threshold"`
+	MonitorEnabled     bool                   `json:"monitor_enabled"`
+	Accounts           []channelAccountInput  `json:"accounts"`
 }
 
 type channelAccountInput struct {
@@ -72,22 +74,23 @@ type channelAccountInput struct {
 }
 
 type channelUpdateInput struct {
-	Name             *string                 `json:"name"`
-	SiteURL          *string                 `json:"site_url"`
-	Username         *string                 `json:"username"`
-	Password         *string                 `json:"password"`
-	CredentialMode   *storage.CredentialMode `json:"credential_mode"`
-	BalanceMode      *storage.BalanceMode    `json:"balance_mode"`
-	ManualBalance    *float64                `json:"manual_balance"`
-	Remark           *string                 `json:"remark"`
-	TokenCredential  *string                 `json:"token_credential"`
-	LoginHeaders     *[]channel.RequestKV    `json:"login_headers"`
-	LoginParams      *[]channel.RequestKV    `json:"login_params"`
-	TurnstileEnabled *bool                   `json:"turnstile_enabled"`
-	CaptchaConfigID  *uint                   `json:"captcha_config_id"`
-	BalanceThreshold *float64                `json:"balance_threshold"`
-	MonitorEnabled   *bool                   `json:"monitor_enabled"`
-	Accounts         *[]channelAccountInput  `json:"accounts"`
+	Name               *string                 `json:"name"`
+	SiteURL            *string                 `json:"site_url"`
+	Username           *string                 `json:"username"`
+	Password           *string                 `json:"password"`
+	CredentialMode     *storage.CredentialMode `json:"credential_mode"`
+	BalanceMode        *storage.BalanceMode    `json:"balance_mode"`
+	ManualBalance      *float64                `json:"manual_balance"`
+	RechargeMultiplier *float64                `json:"recharge_multiplier"`
+	Remark             *string                 `json:"remark"`
+	TokenCredential    *string                 `json:"token_credential"`
+	LoginHeaders       *[]channel.RequestKV    `json:"login_headers"`
+	LoginParams        *[]channel.RequestKV    `json:"login_params"`
+	TurnstileEnabled   *bool                   `json:"turnstile_enabled"`
+	CaptchaConfigID    *uint                   `json:"captcha_config_id"`
+	BalanceThreshold   *float64                `json:"balance_threshold"`
+	MonitorEnabled     *bool                   `json:"monitor_enabled"`
+	Accounts           *[]channelAccountInput  `json:"accounts"`
 }
 
 func listChannels(c *gin.Context, d *Deps) {
@@ -223,6 +226,21 @@ type channelMetricView struct {
 	CurrentBalance           float64 `json:"current_balance"`
 }
 
+func channelAmounts(item storage.Channel, interval relay.ChannelUsageTotal, balanceConsumption, recharge float64) channelMetricView {
+	currentBalance := float64(0)
+	if balance := item.CurrentBalanceAmount(); balance != nil {
+		currentBalance = *balance
+	}
+	if item.BalanceMode == storage.BalanceModeManual {
+		balanceConsumption = interval.Cost
+	}
+	return channelMetricView{
+		ChannelID: item.ID, ConsumptionAmount: item.ActualAmount(balanceConsumption), CumulativeRechargeAmount: recharge,
+		UserChargeAmount: interval.UserCharge, MatchedAccountCount: interval.MatchedAccountCount,
+		UserChargeComplete: interval.Complete, CurrentBalance: currentBalance,
+	}
+}
+
 type channelLatencyTrendView struct {
 	ChannelID uint                         `json:"channel_id"`
 	Samples   []storage.RelayLatencySample `json:"samples"`
@@ -252,22 +270,7 @@ func channelMetrics(c *gin.Context, d *Deps) {
 	}
 	result := make([]channelMetricView, 0, len(channels))
 	for _, item := range channels {
-		interval := usage[item.ID]
-		currentBalance := float64(0)
-		if item.LastBalance != nil {
-			currentBalance = *item.LastBalance
-		}
-		if item.BalanceMode == storage.BalanceModeManual && item.LastBalance == nil {
-			currentBalance = item.ManualBalance
-		}
-		if item.BalanceMode == storage.BalanceModeManual {
-			consumption[item.ID] = interval.Cost
-		}
-		result = append(result, channelMetricView{
-			ChannelID: item.ID, ConsumptionAmount: consumption[item.ID], CumulativeRechargeAmount: recharges[item.ID],
-			UserChargeAmount: interval.UserCharge, MatchedAccountCount: interval.MatchedAccountCount,
-			UserChargeComplete: interval.Complete, CurrentBalance: currentBalance,
-		})
+		result = append(result, channelAmounts(item, usage[item.ID], consumption[item.ID], recharges[item.ID]))
 	}
 	c.JSON(http.StatusOK, gin.H{"data": result})
 }
@@ -318,6 +321,7 @@ func createChannel(c *gin.Context, d *Deps) {
 		LoginParams:        in.LoginParams,
 		BalanceMode:        in.BalanceMode,
 		ManualBalance:      in.ManualBalance,
+		RechargeMultiplier: in.RechargeMultiplier,
 		Remark:             in.Remark,
 		TurnstileEnabled:   in.TurnstileEnabled,
 		CaptchaConfigID:    in.CaptchaConfigID,
@@ -384,6 +388,7 @@ func updateChannel(c *gin.Context, d *Deps) {
 		LoginParams:        in.LoginParams,
 		BalanceMode:        in.BalanceMode,
 		ManualBalance:      in.ManualBalance,
+		RechargeMultiplier: in.RechargeMultiplier,
 		Remark:             in.Remark,
 		TurnstileEnabled:   in.TurnstileEnabled,
 		CaptchaConfigID:    in.CaptchaConfigID,
@@ -700,11 +705,19 @@ func balanceHistory(c *gin.Context, d *Deps) {
 		fail(c, http.StatusBadRequest, err)
 		return
 	}
+	channel, err := d.Channels.FindByID(id)
+	if err != nil {
+		fail(c, http.StatusNotFound, err)
+		return
+	}
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
 	list, err := d.Rates.BalanceHistory(id, limit)
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err)
 		return
+	}
+	for i := range list {
+		list[i].Balance = channel.BalanceAmount(list[i].Balance)
 	}
 	c.JSON(http.StatusOK, gin.H{"data": list})
 }

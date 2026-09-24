@@ -99,6 +99,7 @@ type CreateInput struct {
 	CredentialMode     storage.CredentialMode
 	BalanceMode        storage.BalanceMode
 	ManualBalance      float64
+	RechargeMultiplier *float64
 	Remark             string
 	TokenCredential    string // JSON：password 模式时为空
 	LoginHeaders       *[]RequestKV
@@ -124,6 +125,10 @@ type AdditionalAccountInput struct {
 }
 
 func (s *Service) Create(in CreateInput) (*storage.Channel, error) {
+	rechargeMultiplier, err := validateRechargeMultiplier(in.RechargeMultiplier, 1)
+	if err != nil {
+		return nil, err
+	}
 	name := strings.TrimSpace(in.Name)
 	if name == "" {
 		return nil, errors.New("渠道名称不能为空")
@@ -174,21 +179,22 @@ func (s *Service) Create(in CreateInput) (*storage.Channel, error) {
 		return nil, fmt.Errorf("encode login params: %w", err)
 	}
 	c := &storage.Channel{
-		Name:             name,
-		Type:             in.Type,
-		SiteURL:          in.SiteURL,
-		Username:         in.Username,
-		PasswordCipher:   enc,
-		CredentialMode:   mode,
-		LoginHeadersJSON: loginHeadersJSON,
-		LoginParamsJSON:  loginParamsJSON,
-		BalanceMode:      balanceMode,
-		ManualBalance:    in.ManualBalance,
-		Remark:           remark,
-		TurnstileEnabled: in.TurnstileEnabled && mode == storage.CredentialModePassword, // token 模式不需要打码
-		CaptchaConfigID:  in.CaptchaConfigID,
-		BalanceThreshold: in.BalanceThreshold,
-		MonitorEnabled:   in.MonitorEnabled,
+		Name:               name,
+		Type:               in.Type,
+		SiteURL:            in.SiteURL,
+		Username:           in.Username,
+		PasswordCipher:     enc,
+		CredentialMode:     mode,
+		LoginHeadersJSON:   loginHeadersJSON,
+		LoginParamsJSON:    loginParamsJSON,
+		BalanceMode:        balanceMode,
+		ManualBalance:      in.ManualBalance,
+		RechargeMultiplier: rechargeMultiplier,
+		Remark:             remark,
+		TurnstileEnabled:   in.TurnstileEnabled && mode == storage.CredentialModePassword, // token 模式不需要打码
+		CaptchaConfigID:    in.CaptchaConfigID,
+		BalanceThreshold:   in.BalanceThreshold,
+		MonitorEnabled:     in.MonitorEnabled,
 	}
 	if balanceMode == storage.BalanceModeManual {
 		c.Username = ""
@@ -225,6 +231,7 @@ type UpdateInput struct {
 	CredentialMode     *storage.CredentialMode
 	BalanceMode        *storage.BalanceMode
 	ManualBalance      *float64
+	RechargeMultiplier *float64
 	Remark             *string
 	TokenCredential    *string // JSON
 	LoginHeaders       *[]RequestKV
@@ -237,9 +244,15 @@ type UpdateInput struct {
 }
 
 func (s *Service) Update(id uint, in UpdateInput) (*storage.Channel, error) {
+	if _, err := validateRechargeMultiplier(in.RechargeMultiplier, 1); err != nil {
+		return nil, err
+	}
 	c, err := s.Channels.FindByID(id)
 	if err != nil {
 		return nil, err
+	}
+	if in.RechargeMultiplier != nil {
+		c.RechargeMultiplier = *in.RechargeMultiplier
 	}
 	if in.Name != nil {
 		name := strings.TrimSpace(*in.Name)

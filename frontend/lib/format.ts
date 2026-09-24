@@ -44,6 +44,12 @@ export function money(value: number | null | undefined, opts?: { precise?: boole
   )
 }
 
+/** 实付金额：¥1,234.56。 */
+export function cny(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) return "—"
+  return `¥${value.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
 /** 把倍率渲染成"1.200 → 1.500"。 */
 export function ratioArrow(from: number | null | undefined, to: number) {
   const f = from == null ? "—" : from.toFixed(3)

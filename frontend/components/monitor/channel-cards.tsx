@@ -32,8 +32,9 @@ import { useConfirm } from "@/components/ui/confirm-dialog"
 import { useChannels, useChannelLatencyTrends, useChannelMetrics, useChannelRates } from "@/lib/queries"
 import { apiFetch } from "@/lib/api"
 import { useTriggerRefresh } from "@/lib/refresh-context"
-import { channelTypeLabel, money, relativeTime } from "@/lib/format"
+import { channelTypeLabel, cny, relativeTime } from "@/lib/format"
 import { cn } from "@/lib/utils"
+import { actualChannelBalance, rechargeMultiplier } from "@/lib/channel-amounts"
 import { syncChannelStream, testLoginStream, type ProgressEvent } from "@/lib/sync-stream"
 import type { Channel, ChannelAccount, RateBoundAccount, RateSnapshot, RelayLatencySample, RelayUsageRange } from "@/lib/api-types"
 import { ChannelFormDialog } from "@/components/monitor/channel-form-dialog"
@@ -48,7 +49,7 @@ type AccountCountFilter = "multi" | "single" | "all"
 
 function statusOf(c: Channel, balance?: number | null): Status {
   if (c.last_error) return "failed"
-  const current = balance ?? c.last_balance
+  const current = balance ?? actualChannelBalance(c)
   if (current == null) return "idle"
   if (c.balance_threshold > 0 && current <= c.balance_threshold) return "low"
   return "healthy"
@@ -76,11 +77,6 @@ function siteHost(value: string) {
   } catch {
     return value
   }
-}
-
-function cny(value: number | null | undefined) {
-  if (value == null || !Number.isFinite(value)) return "—"
-  return `¥${value.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
 function charge(value: number | null | undefined) {
@@ -136,7 +132,7 @@ function AccountPreview({ accounts }: { accounts: ChannelAccount[] }) {
               {extra.map((account, index) => (
                 <li key={account.id} className="flex min-w-0 items-center justify-between gap-4">
                   <span className="truncate">{accountName(account, index + 1)}</span>
-                  <span className={cn("shrink-0 font-mono tabular-nums", account.last_error && "text-warning")}>{money(account.last_balance)}</span>
+                  <span className={cn("shrink-0 font-mono tabular-nums", account.last_error && "text-warning")}>{cny(account.last_balance)}</span>
                 </li>
               ))}
             </ul>
@@ -148,11 +144,11 @@ function AccountPreview({ accounts }: { accounts: ChannelAccount[] }) {
 }
 
 function AccountBalance({ accounts, total }: { accounts: ChannelAccount[]; total: number | null | undefined }) {
-  if (accounts.length <= 1) return <>{money(total)}</>
+  if (accounts.length <= 1) return <>{cny(total)}</>
   return (
     <Tooltip delayDuration={150}>
       <TooltipTrigger asChild>
-        <span className="block truncate" tabIndex={0} aria-label="查看各账号余额">{money(total)}</span>
+        <span className="block truncate" tabIndex={0} aria-label="查看各账号余额">{cny(total)}</span>
       </TooltipTrigger>
       <TooltipContent side="top" className="max-w-xs p-2 text-xs">
         <p className="mb-1.5 font-medium">账号余额明细</p>
@@ -160,12 +156,12 @@ function AccountBalance({ accounts, total }: { accounts: ChannelAccount[]; total
           {accounts.map((account, index) => (
             <li key={account.id} className="flex min-w-0 items-center justify-between gap-4">
               <span className="truncate">{accountName(account, index)}</span>
-              <span className={cn("shrink-0 font-mono tabular-nums", account.last_error && "text-warning")}>{money(account.last_balance)}</span>
+              <span className={cn("shrink-0 font-mono tabular-nums", account.last_error && "text-warning")}>{cny(account.last_balance)}</span>
             </li>
           ))}
         </ul>
         <div className="mt-2 flex items-center justify-between border-t border-background/20 pt-1.5 font-medium">
-          <span>合计</span><span className="font-mono tabular-nums">{money(total)}</span>
+          <span>合计</span><span className="font-mono tabular-nums">{cny(total)}</span>
         </div>
       </TooltipContent>
     </Tooltip>
@@ -941,8 +937,8 @@ export function ChannelCards({ usageRange = "today" }: { usageRange?: RelayUsage
         <div className="grid grid-cols-1 items-stretch gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3">
           {filteredChannels.map((c) => {
             const metric = metricByChannel.get(c.id)
-            const currentBalance = c.balance_mode === "manual" ? (metric?.current_balance ?? c.manual_balance) : c.last_balance
-			const accounts = channelAccounts(c)
+            const currentBalance = actualChannelBalance(c)
+			const accounts = channelAccounts(c).map((account) => ({ ...account, last_balance: account.last_balance == null ? null : account.last_balance * rechargeMultiplier(c) }))
             const status = statusOf(c, currentBalance)
             const meta = statusMap[status]
             return (
@@ -998,12 +994,13 @@ export function ChannelCards({ usageRange = "today" }: { usageRange?: RelayUsage
                   </Row>
 				  {c.balance_mode !== "manual" ? <Row label="账号"><AccountPreview accounts={accounts} /></Row> : null}
                   <Row label="管理">{c.balance_mode === "manual" ? "手动余额" : "自动读取"}</Row>
+                  <Row label="充值倍率"><span className="font-mono tabular-nums" title="实际金额（元）= 上游额度 × 充值倍率">{rechargeMultiplier(c)}×</span></Row>
                   {c.balance_mode !== "manual" ? <Row label="凭据">{c.credential_mode === "token" ? "Token" : "账号密码"}</Row> : null}
-				  <Row label="余额"><span className={cn("font-mono text-base font-bold tabular-nums", balanceTone({ ...c, last_balance: currentBalance }))}>{metrics.loading && c.balance_mode === "manual" ? "读取中…" : c.balance_mode === "auto" ? <AccountBalance accounts={accounts} total={currentBalance} /> : money(currentBalance)}</span></Row>
-                  <Row label="区间消耗"><span className="font-mono font-bold tabular-nums text-warning" title={c.balance_mode === "manual" ? `${usageRanges.find((item) => item.value === usageRange)?.label ?? usageRange}归属账号的上游成本消耗` : `${usageRanges.find((item) => item.value === usageRange)?.label ?? usageRange}余额下降累计，充值不计入`}>{metrics.loading && !metric ? "读取中…" : money(metric?.consumption_amount)}</span></Row>
+				  <Row label="余额"><span className={cn("font-mono text-base font-bold tabular-nums", balanceTone({ ...c, last_balance: currentBalance }))}>{metrics.loading && c.balance_mode === "manual" ? "读取中…" : c.balance_mode === "auto" ? <AccountBalance accounts={accounts} total={currentBalance} /> : cny(currentBalance)}</span></Row>
+                  <Row label="区间消耗"><span className="font-mono font-bold tabular-nums text-warning" title={c.balance_mode === "manual" ? `${usageRanges.find((item) => item.value === usageRange)?.label ?? usageRange}归属账号的上游成本消耗，已按充值倍率换算为实际金额` : `${usageRanges.find((item) => item.value === usageRange)?.label ?? usageRange}余额下降累计，充值不计入，已按充值倍率换算为实际金额`}>{metrics.loading && !metric ? "读取中…" : cny(metric?.consumption_amount)}</span></Row>
                   <Row label="累计充值"><span className="font-mono tabular-nums">{metrics.loading && !metric ? "读取中…" : cny(metric?.cumulative_recharge_amount)}</span></Row>
                   <Row label="区间用户扣费"><span className={cn("font-mono tabular-nums", metric && !metric.user_charge_complete && "text-warning")} title={metric ? `${usageRanges.find((item) => item.value === usageRange)?.label ?? usageRange} · 匹配 ${metric.matched_account_count} 个归属账号${metric.user_charge_complete ? "" : "，部分账号统计失败"}` : metrics.error ?? ""}>{metrics.loading && !metric ? "读取中…" : charge(metric?.user_charge_amount)}</span></Row>
-                  <Row label="阈值">{c.balance_threshold > 0 ? money(c.balance_threshold) : "未设置"}</Row>
+                  <Row label="阈值">{c.balance_threshold > 0 ? cny(c.balance_threshold) : "未设置"}</Row>
                   <Row label="状态">
                     <span className={cn("inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium", meta.cls)}>
                       {meta.label}

@@ -7,8 +7,26 @@ import (
 
 func closeEnough(left, right float64) bool { return math.Abs(left-right) < 1e-9 }
 
+func TestApplyManualUsagePricesOnlyNewUsageAtRechargeMultiplier(t *testing.T) {
+	baseline := 100.0
+	balance, next, basis, deducted, initialized := applyManualUsage(10, &baseline, "same", 120, "same", 0.1)
+	if !closeEnough(balance, 8) || !closeEnough(deducted, 2) || initialized || next == nil || *next != 120 {
+		t.Fatalf("discounted settlement: balance %v, deducted %v, baseline %v", balance, deducted, next)
+	}
+	// A changed recharge price applies to the next increment, leaving both the
+	// previous settlement and the cursor in upstream units intact.
+	balance, next, _, deducted, initialized = applyManualUsage(balance, next, basis, 125, "same", 0.2)
+	if !closeEnough(balance, 7) || !closeEnough(deducted, 1) || initialized || next == nil || *next != 125 {
+		t.Fatalf("changed price: balance %v, deducted %v, baseline %v", balance, deducted, next)
+	}
+	balance, _, _, deducted, _ = applyManualUsage(balance, next, basis, 125, "same", 0.2)
+	if !closeEnough(balance, 7) || deducted != 0 {
+		t.Fatalf("repeat charged again: balance %v, deducted %v", balance, deducted)
+	}
+}
+
 func TestApplyManualUsageInitializesBaselineWithoutHistoricalDeduction(t *testing.T) {
-	balance, baseline, basis, deducted, initialized := applyManualUsage(9.98, nil, "", 1.0557681, "current-basis")
+	balance, baseline, basis, deducted, initialized := applyManualUsage(9.98, nil, "", 1.0557681, "current-basis", 1)
 	if !closeEnough(balance, 9.98) || !closeEnough(deducted, 0) || !initialized || baseline == nil || !closeEnough(*baseline, 1.0557681) || basis != "current-basis" {
 		t.Fatalf("first settlement = balance %.7f baseline %#v basis %q deducted %.7f initialized %v", balance, baseline, basis, deducted, initialized)
 	}
@@ -16,7 +34,7 @@ func TestApplyManualUsageInitializesBaselineWithoutHistoricalDeduction(t *testin
 
 func TestApplyManualUsageDoesNotRepeatIdenticalCumulativeCost(t *testing.T) {
 	baseline := 1.0557681
-	balance, next, basis, deducted, initialized := applyManualUsage(8.9242319, &baseline, "same-basis", 1.0557681, "same-basis")
+	balance, next, basis, deducted, initialized := applyManualUsage(8.9242319, &baseline, "same-basis", 1.0557681, "same-basis", 1)
 	if !closeEnough(balance, 8.9242319) || !closeEnough(deducted, 0) || initialized || next == nil || !closeEnough(*next, baseline) || basis != "same-basis" {
 		t.Fatalf("repeated settlement = balance %.7f baseline %#v basis %q deducted %.7f initialized %v", balance, next, basis, deducted, initialized)
 	}
@@ -24,7 +42,7 @@ func TestApplyManualUsageDoesNotRepeatIdenticalCumulativeCost(t *testing.T) {
 
 func TestApplyManualUsageDeductsOnlyCumulativeIncrease(t *testing.T) {
 	baseline := 1.0557681
-	balance, next, basis, deducted, initialized := applyManualUsage(8.9242319, &baseline, "same-basis", 1.2557681, "same-basis")
+	balance, next, basis, deducted, initialized := applyManualUsage(8.9242319, &baseline, "same-basis", 1.2557681, "same-basis", 1)
 	if !closeEnough(balance, 8.7242319) || !closeEnough(deducted, 0.2) || initialized || next == nil || !closeEnough(*next, 1.2557681) || basis != "same-basis" {
 		t.Fatalf("increased settlement = balance %.7f baseline %#v basis %q deducted %.7f initialized %v", balance, next, basis, deducted, initialized)
 	}
@@ -32,7 +50,7 @@ func TestApplyManualUsageDeductsOnlyCumulativeIncrease(t *testing.T) {
 
 func TestApplyManualUsageClampsRelayResetToZeroDeduction(t *testing.T) {
 	baseline := 1.2557681
-	balance, next, basis, deducted, initialized := applyManualUsage(8.7242319, &baseline, "same-basis", 0.1, "same-basis")
+	balance, next, basis, deducted, initialized := applyManualUsage(8.7242319, &baseline, "same-basis", 0.1, "same-basis", 1)
 	if !closeEnough(balance, 8.7242319) || !closeEnough(deducted, 0) || initialized || next == nil || !closeEnough(*next, 0.1) || basis != "same-basis" {
 		t.Fatalf("reset settlement = balance %.7f baseline %#v basis %q deducted %.7f initialized %v", balance, next, basis, deducted, initialized)
 	}
@@ -40,7 +58,7 @@ func TestApplyManualUsageClampsRelayResetToZeroDeduction(t *testing.T) {
 
 func TestApplyManualUsageRebasesWithoutDeductionWhenMultiplierChanges(t *testing.T) {
 	baseline := 141.0018075852
-	balance, next, basis, deducted, initialized := applyManualUsage(42.05661624, &baseline, "multiplier-0.04", 333.868158438, "multiplier-0.10")
+	balance, next, basis, deducted, initialized := applyManualUsage(42.05661624, &baseline, "multiplier-0.04", 333.868158438, "multiplier-0.10", 1)
 	if !closeEnough(balance, 42.05661624) || !closeEnough(deducted, 0) || !initialized || next == nil || !closeEnough(*next, 333.868158438) || basis != "multiplier-0.10" {
 		t.Fatalf("changed basis settlement = balance %.8f baseline %#v basis %q deducted %.8f initialized %v", balance, next, basis, deducted, initialized)
 	}

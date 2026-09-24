@@ -146,7 +146,8 @@ func (s *Service) refreshLegacyAutomaticBalance(ctx context.Context, c *storage.
 		Balance:   balance,
 		SampledAt: sampledAt,
 	})
-	progress.OK(ctx, progress.StageBalance, fmt.Sprintf("当前余额 %.4f", balance), map[string]any{"balance": balance})
+	actualBalance := c.ActualAmount(balance)
+	progress.OK(ctx, progress.StageBalance, fmt.Sprintf("当前余额 ¥%.4f", actualBalance), map[string]any{"balance": actualBalance})
 	s.notifyAutomaticBalanceLow(ctx, c, balance)
 	return nil
 }
@@ -203,7 +204,8 @@ func (s *Service) refreshAutomaticBalances(ctx context.Context, c *storage.Chann
 		s.notifyError(ctx, c, storage.EventMonitorFailed, "余额采集失败", err)
 		return err
 	}
-	progress.OK(ctx, progress.StageBalance, fmt.Sprintf("当前余额 %.4f（%d 个账号）", totalBalance, len(accounts)), map[string]any{"balance": totalBalance, "account_count": len(accounts)})
+	actualBalance := c.ActualAmount(totalBalance)
+	progress.OK(ctx, progress.StageBalance, fmt.Sprintf("当前余额 ¥%.4f（%d 个账号）", actualBalance, len(accounts)), map[string]any{"balance": actualBalance, "account_count": len(accounts)})
 	s.notifyAutomaticBalanceLow(ctx, c, totalBalance)
 	return nil
 }
@@ -239,6 +241,7 @@ func (s *Service) fetchAutomaticBalance(ctx context.Context, c *storage.Channel)
 }
 
 func (s *Service) notifyAutomaticBalanceLow(ctx context.Context, c *storage.Channel, balance float64) {
+	balance = c.ActualAmount(balance)
 	if c.BalanceThreshold > 0 && balance < c.BalanceThreshold {
 		body := fmt.Sprintf("当前余额：%.4f\n告警阈值：%.4f\n建议及时检查该渠道余额。", balance, c.BalanceThreshold)
 		_ = s.dispatcher.Dispatch(ctx, notify.Message{
@@ -293,7 +296,7 @@ func (s *Service) refreshManualBalance(ctx context.Context, c *storage.Channel) 
 		progress.Fail(ctx, progress.StageBalance, "手动余额消费统计不完整")
 		return fmt.Errorf("手动余额消费统计不完整，暂不扣减余额")
 	}
-	balance, baseline, basis, deducted, initialized := applyManualUsage(balance, c.ManualUsageBaseline, c.ManualUsageBasis, total.Cost, total.CostBasis)
+	balance, baseline, basis, deducted, initialized := applyManualUsage(balance, c.ManualUsageBaseline, c.ManualUsageBasis, total.Cost, total.CostBasis, c.EffectiveRechargeMultiplier())
 	now := time.Now()
 	settledBalance, err := s.channels.SettleManualBalance(c.ID, observedBalance, balance, now, "", baseline, basis)
 	if err != nil {
@@ -318,7 +321,7 @@ func (s *Service) refreshManualBalance(ctx context.Context, c *storage.Channel) 
 // A new or invalid baseline starts a fresh accounting period; a relay reset
 // (cumulative cost falling) similarly advances the baseline without charging
 // the balance a negative amount.
-func applyManualUsage(balance float64, baseline *float64, settledBasis string, cumulativeCost float64, currentBasis string) (nextBalance float64, nextBaseline *float64, nextBasis string, deducted float64, initialized bool) {
+func applyManualUsage(balance float64, baseline *float64, settledBasis string, cumulativeCost float64, currentBasis string, rechargeMultiplier float64) (nextBalance float64, nextBaseline *float64, nextBasis string, deducted float64, initialized bool) {
 	nextBalance = balance
 	nextBasis = settledBasis
 	if !validManualUsage(cumulativeCost) || strings.TrimSpace(currentBasis) == "" {
@@ -330,7 +333,9 @@ func applyManualUsage(balance float64, baseline *float64, settledBasis string, c
 	if baseline == nil || !validManualUsage(*baseline) || settledBasis == "" || settledBasis != currentBasis {
 		return nextBalance, nextBaseline, nextBasis, 0, true
 	}
-	deducted = cumulativeCost - *baseline
+	// Keep the cursor in upstream units; apply the current recharge price only
+	// to new usage so changing it never charges historical consumption again.
+	deducted = (cumulativeCost - *baseline) * rechargeMultiplier
 	if !validManualUsage(deducted) || deducted < 0 {
 		return nextBalance, nextBaseline, nextBasis, 0, false
 	}

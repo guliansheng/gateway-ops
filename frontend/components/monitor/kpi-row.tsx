@@ -5,7 +5,7 @@ import { Card } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
 import { useDashboardSummary } from "@/lib/queries"
 import type { RelayUsageRange } from "@/lib/api-types"
-import { money } from "@/lib/format"
+import { cny, money } from "@/lib/format"
 import type { LucideIcon } from "lucide-react"
 import type { ReactNode } from "react"
 
@@ -37,7 +37,7 @@ export function KpiRow({ range = "today" }: { range?: RelayUsageRange }) {
   const kpis: Kpi[] = [
     {
       label: "总余额",
-      value: money(totalBalance),
+      value: cny(totalBalance),
       icon: DollarSign,
       iconBg: "bg-brand/10",
       iconColor: "text-brand",
@@ -46,7 +46,7 @@ export function KpiRow({ range = "today" }: { range?: RelayUsageRange }) {
           {"最低："}
           <span className="font-medium text-foreground">{lowest.name}</span>
           {" "}
-          <span className="text-warning">{money(lowest.balance)}</span>
+          <span className="text-warning">{cny(lowest.balance)}</span>
         </span>
       ) : (
         <span className="text-muted-foreground">{"—"}</span>
@@ -54,7 +54,7 @@ export function KpiRow({ range = "today" }: { range?: RelayUsageRange }) {
     },
     {
       label: "累计充值",
-      value: money(cumulativeRechargeAmount),
+      value: cny(cumulativeRechargeAmount),
       icon: WalletCards,
       iconBg: "bg-success/10",
       iconColor: "text-success",
@@ -86,11 +86,11 @@ export function KpiRow({ range = "today" }: { range?: RelayUsageRange }) {
     },
     {
       label: `${rangeLabel}渠道消耗`,
-      value: money(consumptionAmount),
+      value: cny(consumptionAmount),
       icon: CircleDollarSign,
       iconBg: "bg-warning/10",
       iconColor: "text-warning",
-      footer: <span className="text-muted-foreground">余额下降累计，充值不计入</span>,
+      footer: <span className="text-muted-foreground">按各渠道充值倍率换算的实际消耗</span>,
     },
     {
       label: `${rangeLabel}用户扣费`,
