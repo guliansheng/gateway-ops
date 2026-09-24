@@ -65,7 +65,7 @@ const statusMap: Record<Status, { label: string; cls: string }> = {
 
 function Row({ label, children, className }: { label: string; children: React.ReactNode; className?: string }) {
   return (
-    <div className={cn("flex min-w-0 items-center justify-between gap-3 bg-card px-3 py-2.5", className)}>
+    <div className={cn("flex min-w-0 items-center justify-between gap-3 bg-white px-3 py-2.5", className)}>
       <span className="shrink-0 text-[11px] font-medium text-muted-foreground">{label}</span>
       <div className="min-w-0 truncate text-right text-xs font-semibold text-foreground">{children}</div>
     </div>
