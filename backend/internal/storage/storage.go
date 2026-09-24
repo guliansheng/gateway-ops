@@ -87,6 +87,11 @@ func AutoMigrate(db *gorm.DB) error {
 			return err
 		}
 	}
+	// 帮助文档旧结构（Markdown + 多站发布配置）先升级为“每站一篇 HTML 文档”，
+	// 必须在 GORM AutoMigrate 之前处理 markdown → content 的列改名。
+	if err := migrateHelpSchema(db); err != nil {
+		return err
+	}
 	if err := db.AutoMigrate(
 		&Channel{},
 		&ChannelAccount{},
@@ -102,6 +107,8 @@ func AutoMigrate(db *gorm.DB) error {
 		&NotificationCooldown{},
 		&MonitorLog{},
 		&AppSetting{},
+		&HelpDocument{},
+		&HelpComment{},
 		&LocalAccount{},
 		&OperationLedgerEntry{},
 		&RelayStation{},
@@ -173,7 +180,7 @@ func AutoMigrate(db *gorm.DB) error {
 	// Convert every
 	// consecutive non-zero delta into an idempotent change record so dashboard
 	// ranges remain useful immediately after this feature is deployed.
-	return db.Exec(`
+	if err := db.Exec(`
 		INSERT INTO balance_change_logs
 			(channel_id, balance_snapshot_id, previous_balance, new_balance, delta, kind, detected_at)
 		SELECT channel_id, id, previous_balance, balance, balance - previous_balance,
@@ -186,5 +193,10 @@ func AutoMigrate(db *gorm.DB) error {
 		) snapshots
 		WHERE previous_balance IS NOT NULL AND ABS(balance - previous_balance) > 0.000000001
 		ON CONFLICT (balance_snapshot_id) DO NOTHING
-	`).Error
+	`).Error; err != nil {
+		return err
+	}
+	// 帮助文档数据迁移必须在表结构就绪后执行：绑定中转站、丢弃旧配置表、
+	// 把遗留 Markdown 正文转换成富文本 HTML。
+	return migrateHelpData(db)
 }

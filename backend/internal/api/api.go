@@ -37,6 +37,7 @@ type Deps struct {
 	Relay         *relay.Service
 	RelayStations *storage.RelayStations
 	Operations    *storage.Operations
+	Help          *storage.HelpDocuments
 	Scheduler     *scheduler.Scheduler
 	Dispatcher    *notify.Dispatcher
 	Log           *slog.Logger
@@ -64,6 +65,7 @@ func Register(r *gin.Engine, d *Deps) {
 	registerPublicRelayStations(publicAPI, d)
 	registerPublicModelPricing(publicAPI, d)
 	registerPublicServiceStatus(publicAPI)
+	registerPublicHelp(publicAPI, d)
 
 	api := r.Group("/api")
 	if d.Auth != nil {
@@ -84,6 +86,7 @@ func Register(r *gin.Engine, d *Deps) {
 		registerRelayStations(api, d)
 		registerSyncSettings(api, d)
 		registerOperations(api, d)
+		registerHelp(api, d)
 	}
 
 	if d.Frontend != nil {

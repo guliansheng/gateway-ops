@@ -355,6 +355,32 @@ type AppSetting struct {
 
 func (AppSetting) TableName() string { return "app_settings" }
 
+// HelpDocument 是单个中转站的帮助文档：每个中转站一篇，正文为富文本 HTML。
+// ContentFormat 只服务于启动时的旧数据迁移（md = 旧 Markdown 待转换，html = 富文本）。
+type HelpDocument struct {
+	ID             uint      `gorm:"primaryKey" json:"id"`
+	RelayStationID uint      `gorm:"not null;default:0;index" json:"relay_station_id"`
+	Title          string    `gorm:"size:256;not null;default:''" json:"title"`
+	Content        string    `gorm:"type:text;not null;default:''" json:"content"`
+	ContentFormat  string    `gorm:"size:16;not null;default:'html'" json:"content_format"`
+	Enabled        bool      `gorm:"not null;default:false" json:"enabled"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+func (HelpDocument) TableName() string { return "help_documents" }
+
+type HelpComment struct {
+	ID             uint      `gorm:"primaryKey" json:"id"`
+	HelpDocumentID uint      `gorm:"not null;index" json:"help_document_id"`
+	RelayStationID uint      `gorm:"not null;index" json:"relay_station_id"`
+	AuthorName     string    `gorm:"size:128;not null" json:"author_name"`
+	Body           string    `gorm:"type:text;not null" json:"body"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+func (HelpComment) TableName() string { return "help_comments" }
+
 // LocalAccount 是尚未投放或已经关联到中转站的本地账号资产。
 // 这里只保存经营和生命周期所需的非敏感信息，不保存 token、cookie 或密码。
 type LocalAccount struct {

@@ -427,3 +427,59 @@ CREATE INDEX IF NOT EXISTS idx_operation_ledger_channel ON operation_ledger_entr
 CREATE INDEX IF NOT EXISTS idx_operation_ledger_station ON operation_ledger_entries (relay_station_id);
 CREATE INDEX IF NOT EXISTS idx_operation_ledger_occurred_at ON operation_ledger_entries (occurred_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_operation_ledger_local_account ON operation_ledger_entries (local_account_id) WHERE local_account_id IS NOT NULL;
+
+-- 帮助文档：每个中转站一篇富文本文档，正文 content 存富文本 HTML。
+CREATE TABLE IF NOT EXISTS help_documents (
+    id               BIGSERIAL PRIMARY KEY,
+    relay_station_id BIGINT NOT NULL DEFAULT 0,
+    title            VARCHAR(256) NOT NULL DEFAULT '',
+    content          TEXT NOT NULL DEFAULT '',
+    content_format   VARCHAR(16) NOT NULL DEFAULT 'html',
+    enabled          BOOLEAN NOT NULL DEFAULT false,
+    created_at       TIMESTAMPTZ,
+    updated_at       TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_help_documents_station ON help_documents (relay_station_id);
+
+-- 旧版结构升级（slug + markdown + help_station_configs 多站发布配置）。
+-- Markdown → HTML 的正文转换由应用启动迁移（migrateHelpSchema/migrateHelpData）完成，
+-- 这里只做结构对齐，全部幂等。
+ALTER TABLE help_documents ADD COLUMN IF NOT EXISTS relay_station_id BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE help_documents ADD COLUMN IF NOT EXISTS content TEXT NOT NULL DEFAULT '';
+ALTER TABLE help_documents ADD COLUMN IF NOT EXISTS content_format VARCHAR(16) NOT NULL DEFAULT 'html';
+UPDATE help_documents SET relay_station_id = 0 WHERE relay_station_id IS NULL;
+ALTER TABLE help_documents DROP COLUMN IF EXISTS slug;
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'help_documents' AND column_name = 'markdown'
+    ) THEN
+        UPDATE help_documents SET content = markdown WHERE COALESCE(content, '') = '' AND markdown IS NOT NULL;
+        UPDATE help_documents SET content_format = 'md';
+        ALTER TABLE help_documents DROP COLUMN markdown;
+    END IF;
+END $$;
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_name = 'help_station_configs'
+    ) THEN
+        UPDATE help_documents d
+        SET relay_station_id = c.relay_station_id
+        FROM help_station_configs c
+        WHERE c.help_document_id = d.id AND d.relay_station_id = 0;
+        DROP TABLE help_station_configs;
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS help_comments (
+    id               BIGSERIAL PRIMARY KEY,
+    help_document_id BIGINT NOT NULL REFERENCES help_documents(id) ON DELETE CASCADE,
+    relay_station_id BIGINT NOT NULL REFERENCES relay_stations(id) ON DELETE CASCADE,
+    author_name      VARCHAR(128) NOT NULL,
+    body             TEXT NOT NULL,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_help_comments_document_station ON help_comments (help_document_id, relay_station_id, created_at);

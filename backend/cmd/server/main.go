@@ -92,6 +92,7 @@ func main() {
 	settings := storage.NewSettings(db)
 	relayStations := storage.NewRelayStations(db)
 	operations := storage.NewOperations(db)
+	helpDocuments := storage.NewHelpDocuments(db)
 
 	channelSvc := channel.NewService(channels, authSessions, captchas, monLogs, cipher)
 	dispatcher := notify.NewDispatcher(notifies, cipher, log, notify.Policy{
@@ -142,6 +143,7 @@ func main() {
 		Relay:         relaySvc,
 		RelayStations: relayStations,
 		Operations:    operations,
+		Help:          helpDocuments,
 		Scheduler:     sch,
 		Dispatcher:    dispatcher,
 		Log:           log,
