@@ -41,6 +41,7 @@ import { ChannelFormDialog } from "@/components/monitor/channel-form-dialog"
 import { PlatformBadge } from "@/components/relay/platform-badge"
 import { RateChangeDot, RateTooltipBody } from "@/components/monitor/rate-change"
 import { RecentUsageCard, RecentUsageTooltip, recentUsageTooltipClassName } from "@/components/monitor/recent-usage-tooltip"
+import { ChannelLatencyStatsButton, LatencyMarker, latencyStatsForRate } from "@/components/monitor/channel-latency-stats"
 
 type Status = "healthy" | "low" | "failed" | "idle"
 type MonitorStatusFilter = "enabled" | "disabled" | "all"
@@ -247,11 +248,12 @@ function formatTokens(value: number | undefined) {
 }
 
 function ChannelLatencyTrend({ samples }: { samples: RelayLatencySample[] }) {
-  const ordered = useMemo(() => [...samples].reverse(), [samples])
-  const latestSample = useMemo(() => samples.reduce<RelayLatencySample | null>((latest, sample) => {
+  const recentSamples = useMemo(() => [...samples].sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 60), [samples])
+  const ordered = useMemo(() => [...recentSamples].reverse(), [recentSamples])
+  const latestSample = useMemo(() => recentSamples.reduce<RelayLatencySample | null>((latest, sample) => {
     if (!latest || new Date(sample.created_at).getTime() > new Date(latest.created_at).getTime()) return sample
     return latest
-  }, null), [samples])
+  }, null), [recentSamples])
   return (
     <div className="mt-3 border-t border-border pt-3">
       <div className="mb-1.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
@@ -259,12 +261,12 @@ function ChannelLatencyTrend({ samples }: { samples: RelayLatencySample[] }) {
           最近调用延时
           {latestSample ? <span className="ml-1 inline-flex items-center gap-1 font-mono text-[11px] font-medium tabular-nums text-foreground/80"><span aria-hidden="true">·</span><span>最后调用</span><time dateTime={latestSample.created_at} className="text-xs font-semibold text-foreground">{formatSampleTime(latestSample.created_at)}</time></span> : null}
         </span>
-        <span className="font-mono text-[10px] tabular-nums text-muted-foreground">最近 {samples.length} / 60 条</span>
+        <span className="font-mono text-[10px] tabular-nums text-muted-foreground">最近 {recentSamples.length} / 60 条</span>
       </div>
       {ordered.length === 0 ? <div className="flex h-9 items-center rounded-md border border-dashed border-border px-2 text-[10px] text-muted-foreground">暂无延时数据</div> : (
         <Tooltip delayDuration={160}>
           <TooltipTrigger asChild>
-            <button type="button" className="block h-10 w-full rounded-md px-1 py-1 transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={`查看最近 ${samples.length} 次调用延时`}>
+            <button type="button" className="block h-10 w-full rounded-md px-1 py-1 transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={`查看最近 ${recentSamples.length} 次调用延时`}>
               <span className="flex h-8 w-full items-stretch gap-px overflow-hidden" aria-hidden="true">
                 {ordered.map((sample, index) => {
                   const first = latencyTone(sample.first_token_ms, "first")
@@ -275,7 +277,7 @@ function ChannelLatencyTrend({ samples }: { samples: RelayLatencySample[] }) {
             </button>
           </TooltipTrigger>
           <TooltipContent side="top" align="end" className={recentUsageTooltipClassName}>
-            <RecentUsageTooltip count={samples.length}>
+            <RecentUsageTooltip count={recentSamples.length}>
               {[...ordered].reverse().map((sample, index) => {
                 const first = latencyTone(sample.first_token_ms, "first")
                 const duration = latencyTone(sample.duration_ms, "duration")
@@ -291,7 +293,7 @@ function ChannelLatencyTrend({ samples }: { samples: RelayLatencySample[] }) {
                   <RecentUsageCard key={`${sample.created_at}-detail-${index}`} className="rounded-lg bg-white p-2.5 shadow-sm ring-1 ring-slate-200/80">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <time dateTime={sample.created_at} className="whitespace-nowrap font-mono text-xs font-semibold tabular-nums text-slate-700">{formatSampleTime(sample.created_at)}</time>
-                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500">#{samples.length - index}</span>
+                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500">#{recentSamples.length - index}</span>
                     </div>
                     <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_7.5rem]">
                       <div className="min-w-0 rounded-md bg-slate-50 px-2.5 py-2 ring-1 ring-slate-200/70">
@@ -335,7 +337,7 @@ function ChannelLatencyTrend({ samples }: { samples: RelayLatencySample[] }) {
 }
 
 /** InlineRates 在渠道卡片内部展示当前所有分组倍率，默认完整展开。 */
-function InlineRates({ channelID }: { channelID: number }) {
+function InlineRates({ channelID, latencySamples }: { channelID: number; latencySamples: RelayLatencySample[] }) {
   const { data, loading } = useChannelRates(channelID)
   const rates = [...(data ?? [])].sort((a, b) => a.ratio - b.ratio)
   const [expanded, setExpanded] = useState(true)
@@ -407,6 +409,7 @@ function InlineRates({ channelID }: { channelID: number }) {
                     <RateChangeDot change={r.latest_ratio_change} className="absolute -right-0.5 -top-0.5" />
                     <span className="font-medium">{r.model_name}</span>
                     <span className="font-semibold tabular-nums">{r.ratio.toFixed(3)}</span>
+                    <LatencyMarker stats={latencyStatsForRate(latencySamples, r)} />
                   </span>
                 </TooltipTrigger>
                 <TooltipContent side="top" className="max-w-xs text-xs">
@@ -464,7 +467,7 @@ function BoundAccountsPreview({ accounts }: { accounts?: RateBoundAccount[] }) {
   )
 }
 
-function ManualRatesEditor({ channelID }: { channelID: number }) {
+function ManualRatesEditor({ channelID, latencySamples }: { channelID: number; latencySamples: RelayLatencySample[] }) {
   const { data, loading, refetch } = useChannelRates(channelID)
   const [editingID, setEditingID] = useState<number | null>(null)
   const [name, setName] = useState("")
@@ -550,6 +553,7 @@ function ManualRatesEditor({ channelID }: { channelID: number }) {
                     <span className="inline-flex min-w-0 flex-1 items-center gap-1.5 rounded-sm pt-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" tabIndex={0}>
                       <span className="min-w-0 truncate text-xs font-medium" title={rate.model_name}>{rate.model_name}</span>
                       <RateChangeDot change={rate.latest_ratio_change} />
+                      <LatencyMarker stats={latencyStatsForRate(latencySamples, rate)} />
                     </span>
                   </TooltipTrigger>
                   <TooltipContent side="top" className="max-w-xs text-xs">
@@ -1018,9 +1022,9 @@ export function ChannelCards({ usageRange = "today" }: { usageRange?: RelayUsage
                 </div>
 
                 <ChannelLatencyTrend samples={latencyByChannel.get(c.id) ?? []} />
-                {c.balance_mode !== "manual" ? <div className="mt-3 flex-1 border-t border-border"><InlineRates channelID={c.id} /></div> : <ManualRatesEditor channelID={c.id} />}
+                {c.balance_mode !== "manual" ? <div className="mt-3 flex-1 border-t border-border"><InlineRates channelID={c.id} latencySamples={latencyByChannel.get(c.id) ?? []} /></div> : <ManualRatesEditor channelID={c.id} latencySamples={latencyByChannel.get(c.id) ?? []} />}
 
-				<div className="mt-3 grid grid-cols-3 gap-2">
+				<div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
 				  <Button
                     variant="outline"
                     size="sm"
@@ -1043,6 +1047,7 @@ export function ChannelCards({ usageRange = "today" }: { usageRange?: RelayUsage
                     <LogIn className="size-3" />
                     {"测试登录"}
                   </Button> : <Button variant="outline" size="sm" className="h-11 gap-1 text-xs sm:h-9" disabled>无需登录</Button>}
+                  <ChannelLatencyStatsButton channelName={c.name} samples={latencyByChannel.get(c.id) ?? []} />
                   <Button
                     variant="outline"
                     size="sm"

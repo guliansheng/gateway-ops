@@ -1568,7 +1568,7 @@ func (s *Service) ChannelUsageTotals(ctx context.Context, channels []storage.Cha
 // attributed with the same explicit-binding/automatic-URL rules as cost and
 // user-charge metrics.
 func (s *Service) ChannelLatencyTrends(channels []storage.Channel, limit int) (map[uint][]storage.RelayLatencySample, error) {
-	if limit <= 0 || limit > 100 {
+	if limit <= 0 || limit > latencySampleLimit {
 		limit = latencySampleLimit
 	}
 	result := make(map[uint][]storage.RelayLatencySample, len(channels))
@@ -1621,15 +1621,36 @@ func (s *Service) ChannelLatencyTrends(channels []storage.Channel, limit int) (m
 		}
 	}
 	for channelID, samples := range result {
-		sort.SliceStable(samples, func(i, j int) bool {
-			return samples[i].CreatedAt.After(samples[j].CreatedAt)
-		})
-		if len(samples) > limit {
-			samples = samples[:limit]
-		}
-		result[channelID] = samples
+		result[channelID] = limitLatencySamplesPerModel(samples, limit)
 	}
 	return result, nil
+}
+
+// limitLatencySamplesPerModel preserves a recent window for every model. A
+// channel can serve many models, so trimming the combined slice would hide
+// quieter models behind a busy one.
+func limitLatencySamplesPerModel(samples []storage.RelayLatencySample, limit int) []storage.RelayLatencySample {
+	if limit <= 0 {
+		limit = latencySampleLimit
+	}
+	ordered := append([]storage.RelayLatencySample(nil), samples...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return ordered[i].CreatedAt.After(ordered[j].CreatedAt)
+	})
+	counts := make(map[string]int)
+	result := make([]storage.RelayLatencySample, 0, len(ordered))
+	for _, sample := range ordered {
+		model := strings.TrimSpace(sample.Model)
+		if model == "" {
+			model = "__unknown__"
+		}
+		if counts[model] >= limit {
+			continue
+		}
+		counts[model]++
+		result = append(result, sample)
+	}
+	return result
 }
 
 type channelUsageCostBinding struct {
