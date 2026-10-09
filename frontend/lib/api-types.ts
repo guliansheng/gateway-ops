@@ -210,6 +210,11 @@ export interface DashboardSummary {
   user_charge_amount: number
   matched_account_count: number
   user_charge_complete: boolean
+  user_charge_breakdown: {
+    channel_amount: number
+    channel_complete: boolean
+    unlinked_amount: number | null
+  }
   lowest_balance: DashboardLowest | null
   channels: DashboardChannelStat[]
   rate_change_count: number

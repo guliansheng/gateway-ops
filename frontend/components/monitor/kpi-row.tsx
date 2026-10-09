@@ -1,10 +1,11 @@
 "use client"
 
-import { ArrowUpRight, CircleDollarSign, DollarSign, MessageSquare, WalletCards } from "lucide-react"
+import { ArrowUpRight, CircleDollarSign, DollarSign, Info, MessageSquare, WalletCards } from "lucide-react"
 import { Card } from "@/components/ui/card"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import { useDashboardSummary } from "@/lib/queries"
-import type { RelayUsageRange } from "@/lib/api-types"
+import type { DashboardSummary, RelayUsageRange } from "@/lib/api-types"
 import { cny, money } from "@/lib/format"
 import type { LucideIcon } from "lucide-react"
 import type { ReactNode } from "react"
@@ -18,6 +19,50 @@ interface Kpi {
   footer: ReactNode
 }
 
+function UserChargeDetails({ data, rangeLabel, loading }: { data: DashboardSummary | null; rangeLabel: string; loading: boolean }) {
+  const breakdown = data?.user_charge_breakdown
+
+  return (
+    <Tooltip delayDuration={150}>
+      <TooltipTrigger asChild>
+        <button type="button" className="inline-flex items-center gap-1.5 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={`查看${rangeLabel}用户扣费明细`}>
+          {money(data?.user_charge_amount ?? 0, { precise: true })}
+          <Info className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" align="end" sideOffset={8} className="w-80 max-w-[calc(100vw-24px)] border border-border bg-popover p-3 text-popover-foreground shadow-lg">
+        <div className="space-y-3">
+          <p className="font-semibold">{rangeLabel}用户扣费明细</p>
+          {breakdown ? (
+            <>
+              <dl className="space-y-2">
+                <div className="flex items-center justify-between gap-3">
+                  <dt className="text-muted-foreground">已关联渠道扣费</dt>
+                  <dd className={cn("font-mono tabular-nums", !breakdown.channel_complete && "text-warning")}>
+                    {money(breakdown.channel_amount, { precise: true })}{!breakdown.channel_complete && "（部分）"}
+                  </dd>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <dt className="text-muted-foreground">未关联渠道账号扣费</dt>
+                  <dd className={cn("font-mono tabular-nums", breakdown.unlinked_amount == null && "text-warning")}>
+                    {breakdown.unlinked_amount == null ? "暂不可用" : money(breakdown.unlinked_amount, { precise: true })}
+                  </dd>
+                </div>
+                <div className="flex items-center justify-between gap-3 border-t border-border pt-2 font-semibold">
+                  <dt>用户扣费合计</dt>
+                  <dd className={cn("font-mono tabular-nums", !data?.user_charge_complete && "text-warning")}>{money(data?.user_charge_amount, { precise: true })}{!data?.user_charge_complete && "（部分）"}</dd>
+                </div>
+              </dl>
+              {breakdown.unlinked_amount == null && <p className="text-warning">统计尚不完整或正在更新，暂无法准确拆分未关联扣费。</p>}
+              <p className="text-muted-foreground">按当前渠道关联拆分；未关联扣费为合计减去渠道扣费，含临时、福利账号，不计入渠道消耗。</p>
+            </>
+          ) : <p className="text-muted-foreground">{loading ? "正在读取扣费明细…" : "暂无法读取扣费明细"}</p>}
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
 export function KpiRow({ range = "today" }: { range?: RelayUsageRange }) {
   const summary = useDashboardSummary(range)
 
@@ -28,7 +73,6 @@ export function KpiRow({ range = "today" }: { range?: RelayUsageRange }) {
   const totalBalance = data?.total_balance ?? 0
   const cumulativeRechargeAmount = data?.cumulative_recharge_amount ?? 0
   const consumptionAmount = data?.consumption_amount ?? 0
-  const userChargeAmount = data?.user_charge_amount ?? 0
   const lowest = data?.lowest_balance ?? null
 
   const changeCount = data?.rate_change_count ?? 0
@@ -94,15 +138,15 @@ export function KpiRow({ range = "today" }: { range?: RelayUsageRange }) {
     },
     {
       label: `${rangeLabel}用户扣费`,
-      value: money(userChargeAmount, { precise: true }),
+      value: <UserChargeDetails data={data} rangeLabel={rangeLabel} loading={summary.loading} />,
       icon: CircleDollarSign,
       iconBg: "bg-brand/10",
       iconColor: "text-brand",
       footer: (
         <span className={cn(data && !data.user_charge_complete ? "text-warning" : "text-muted-foreground")}>
           {data && !data.user_charge_complete
-            ? `匹配 ${data.matched_account_count} 个账号，部分统计失败`
-            : `匹配 ${data?.matched_account_count ?? 0} 个归属账号`}
+            ? "部分中转站统计失败，扣费合计不完整"
+            : "全部中转站，含未关联渠道账号"}
         </span>
       ),
     },

@@ -1,7 +1,11 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -9,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/guliansheng/gateway-ops/internal/relay"
 	"github.com/guliansheng/gateway-ops/internal/storage"
 )
 
@@ -80,9 +85,7 @@ func dashboardSummary(c *gin.Context, d *Deps) {
 	stats := make([]dashboardChannelStat, 0, len(channels))
 	var totalBalance float64
 	var consumptionAmount float64
-	var userChargeAmount float64
 	var matchedAccountCount int
-	userChargeComplete := true
 	var lowest *dashboardLowest
 	var activeCount, failedCount int
 
@@ -130,11 +133,7 @@ func dashboardSummary(c *gin.Context, d *Deps) {
 	for _, ch := range channels {
 		interval := usage[ch.ID]
 		consumptionAmount += channelAmounts(ch, interval, consumption[ch.ID], recharges[ch.ID]).ConsumptionAmount
-		userChargeAmount += interval.UserCharge
 		matchedAccountCount += interval.MatchedAccountCount
-		if !interval.Complete {
-			userChargeComplete = false
-		}
 	}
 
 	recentChanges, err := d.Rates.ListChangesSince(since, 20)
@@ -151,6 +150,10 @@ func dashboardSummary(c *gin.Context, d *Deps) {
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err)
 		return
+	}
+	userChargeAmount, userChargeErr := dashboardUserChargeTotal(c.Request.Context(), d.Relay, relayStats, rangeName, since)
+	if userChargeErr != nil && d.Log != nil {
+		d.Log.Warn("dashboard relay user charge failed", "err", userChargeErr)
 	}
 	relayAdjustments, err := relayDashboardAdjustments(d)
 	if err != nil {
@@ -174,7 +177,8 @@ func dashboardSummary(c *gin.Context, d *Deps) {
 			"consumption_amount":         consumptionAmount,
 			"user_charge_amount":         userChargeAmount,
 			"matched_account_count":      matchedAccountCount,
-			"user_charge_complete":       userChargeComplete,
+			"user_charge_complete":       userChargeErr == nil,
+			"user_charge_breakdown":      dashboardUserChargeBreakdown(userChargeAmount, userChargeErr == nil, usage),
 			"lowest_balance":             lowest,
 			"channels":                   stats,
 			"rate_change_count":          rateChangeCount,
@@ -184,6 +188,54 @@ func dashboardSummary(c *gin.Context, d *Deps) {
 			"recent_relay_adjustments":   relayAdjustments,
 		},
 	})
+}
+
+type relayUsageTotalReader interface {
+	UsageTotal(context.Context, uint, string, time.Time) (relay.UsageSummary, error)
+}
+
+type dashboardChargeBreakdown struct {
+	ChannelAmount   float64  `json:"channel_amount"`
+	ChannelComplete bool     `json:"channel_complete"`
+	UnlinkedAmount  *float64 `json:"unlinked_amount"`
+}
+
+func dashboardUserChargeBreakdown(total float64, totalComplete bool, usage map[uint]relay.ChannelUsageTotal) dashboardChargeBreakdown {
+	result := dashboardChargeBreakdown{ChannelComplete: true}
+	for _, item := range usage {
+		result.ChannelAmount += item.UserCharge
+		result.ChannelComplete = result.ChannelComplete && item.Complete
+	}
+	if !totalComplete || !result.ChannelComplete {
+		return result
+	}
+	unlinked := total - result.ChannelAmount
+	// Totals and channel usage have separate caches. If the channel samples
+	// exceed the station total, wait for consistent data instead of reporting
+	// negative unlinked charges. Ignore only floating-point rounding noise.
+	tolerance := math.Max(1, math.Abs(total)) * 1e-9
+	if unlinked < -tolerance {
+		return result
+	}
+	unlinked = math.Max(0, unlinked)
+	result.UnlinkedAmount = &unlinked
+	return result
+}
+
+// User charges cover every relay station, including temporary accounts without
+// a channel binding. Channel consumption is calculated separately by channel.
+func dashboardUserChargeTotal(ctx context.Context, reader relayUsageTotalReader, stations []relayDashboardStat, rangeName string, since time.Time) (float64, error) {
+	var total float64
+	var failures []error
+	for _, station := range stations {
+		usage, err := reader.UsageTotal(ctx, station.StationID, rangeName, since)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("station %d: %w", station.StationID, err))
+			continue
+		}
+		total += usage.UserCharge
+	}
+	return total, errors.Join(failures...)
 }
 
 func dashboardCumulativeRecharge(channels []storage.Channel, amounts map[uint]float64) float64 {
