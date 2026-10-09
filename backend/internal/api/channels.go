@@ -115,6 +115,7 @@ type channelView struct {
 	NewAPIUserID       string               `json:"newapi_user_id,omitempty"`
 	NewAPITokenHeaders []channel.RequestKV  `json:"newapi_token_headers,omitempty"`
 	Accounts           []channelAccountView `json:"accounts"`
+	GroupNames         []string             `json:"group_names"`
 }
 
 type channelAccountView struct {
@@ -130,6 +131,10 @@ func channelViews(d *Deps, channels []storage.Channel) ([]channelView, error) {
 		ids = append(ids, item.ID)
 	}
 	accountsByChannel, err := d.Channels.ListAccountsForChannels(ids)
+	if err != nil {
+		return nil, err
+	}
+	groupsByChannel, err := d.Rates.GroupNamesByChannel(ids)
 	if err != nil {
 		return nil, err
 	}
@@ -151,7 +156,11 @@ func channelViews(d *Deps, channels []storage.Channel) ([]channelView, error) {
 		if err != nil {
 			return nil, err
 		}
-		views = append(views, channelView{Channel: item, LoginHeaders: headers, LoginParams: params, NewAPIAuthType: authType, NewAPIUserID: userID, NewAPITokenHeaders: tokenHeaders, Accounts: accounts})
+		groups := groupsByChannel[item.ID]
+		if groups == nil {
+			groups = []string{}
+		}
+		views = append(views, channelView{Channel: item, LoginHeaders: headers, LoginParams: params, NewAPIAuthType: authType, NewAPIUserID: userID, NewAPITokenHeaders: tokenHeaders, Accounts: accounts, GroupNames: groups})
 	}
 	return views, nil
 }

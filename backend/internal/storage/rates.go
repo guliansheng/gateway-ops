@@ -30,6 +30,27 @@ func (r *Rates) ListByChannel(channelID uint) ([]RateSnapshot, error) {
 	return list, nil
 }
 
+// GroupNamesByChannel loads the current group names for channel-list filtering
+// in one query, without fetching each channel's full rate details.
+func (r *Rates) GroupNamesByChannel(channelIDs []uint) (map[uint][]string, error) {
+	groups := make(map[uint][]string, len(channelIDs))
+	if len(channelIDs) == 0 {
+		return groups, nil
+	}
+	var rows []struct {
+		ChannelID uint
+		ModelName string
+	}
+	if err := r.db.Model(&RateSnapshot{}).Select("channel_id, model_name").
+		Where("channel_id IN ?", channelIDs).Order("model_name ASC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		groups[row.ChannelID] = append(groups[row.ChannelID], row.ModelName)
+	}
+	return groups, nil
+}
+
 func (r *Rates) FindByID(id uint, channelID uint) (*RateSnapshot, error) {
 	var snapshot RateSnapshot
 	if err := r.db.Where("id = ? AND channel_id = ?", id, channelID).First(&snapshot).Error; err != nil {

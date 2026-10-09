@@ -337,9 +337,9 @@ function ChannelLatencyTrend({ samples }: { samples: RelayLatencySample[] }) {
 }
 
 /** InlineRates 在渠道卡片内部展示当前所有分组倍率，默认完整展开。 */
-function InlineRates({ channelID, latencySamples }: { channelID: number; latencySamples: RelayLatencySample[] }) {
+function InlineRates({ channelID, latencySamples, groupNameQuery }: { channelID: number; latencySamples: RelayLatencySample[]; groupNameQuery: string }) {
   const { data, loading } = useChannelRates(channelID)
-  const rates = [...(data ?? [])].sort((a, b) => a.ratio - b.ratio)
+  const rates = (data ?? []).filter((rate) => rate.model_name.toLocaleLowerCase().includes(groupNameQuery)).sort((a, b) => a.ratio - b.ratio)
   const [expanded, setExpanded] = useState(true)
   const [hasOverflow, setHasOverflow] = useState(false)
   const chipBoxRef = useRef<HTMLDivElement>(null)
@@ -368,7 +368,7 @@ function InlineRates({ channelID, latencySamples }: { channelID: number; latency
     <div className="py-3">
       <div className="mb-1.5 flex items-center justify-between">
         <p className="text-[11px] text-muted-foreground">
-          {rates.length} 个分组
+          {groupNameQuery ? "匹配 " : ""}{rates.length} 个分组
         </p>
         {showToggle ? (
           <button
@@ -467,8 +467,9 @@ function BoundAccountsPreview({ accounts }: { accounts?: RateBoundAccount[] }) {
   )
 }
 
-function ManualRatesEditor({ channelID, latencySamples }: { channelID: number; latencySamples: RelayLatencySample[] }) {
+function ManualRatesEditor({ channelID, latencySamples, groupNameQuery, onGroupsChange }: { channelID: number; latencySamples: RelayLatencySample[]; groupNameQuery: string; onGroupsChange: () => Promise<void> }) {
   const { data, loading, refetch } = useChannelRates(channelID)
+  const rates = (data ?? []).filter((rate) => rate.model_name.toLocaleLowerCase().includes(groupNameQuery))
   const [editingID, setEditingID] = useState<number | null>(null)
   const [name, setName] = useState("")
   const [ratio, setRatio] = useState("1")
@@ -500,7 +501,7 @@ function ManualRatesEditor({ channelID, latencySamples }: { channelID: number; l
       })
       toast.success(editingID ? "分组已更新" : "分组已创建")
       reset()
-      await refetch()
+      await Promise.all([refetch(), onGroupsChange()])
     } catch (error) {
       toast.error((error as Error).message || "保存分组失败")
     } finally {
@@ -514,7 +515,7 @@ function ManualRatesEditor({ channelID, latencySamples }: { channelID: number; l
       await apiFetch(`/channels/${channelID}/rates/${rate.id}`, { method: "DELETE" })
       toast.success("分组已删除")
       if (editingID === rate.id) reset()
-      await refetch()
+      await Promise.all([refetch(), onGroupsChange()])
     } catch (error) {
       toast.error((error as Error).message || "删除分组失败")
     }
@@ -527,7 +528,7 @@ function ManualRatesEditor({ channelID, latencySamples }: { channelID: number; l
           <p className="text-xs font-semibold text-foreground">渠道分组</p>
           <span className="rounded-full bg-brand/10 px-1.5 py-0.5 text-[10px] font-medium text-brand">成本绑定</span>
         </div>
-        <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{(data ?? []).length} 个</span>
+        <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{rates.length} 个</span>
       </div>
       <div className="rounded-lg border border-border bg-muted/20 p-2">
         <div className="mb-1.5 flex items-center justify-between px-0.5">
@@ -543,9 +544,9 @@ function ManualRatesEditor({ channelID, latencySamples }: { channelID: number; l
           <Button type="button" size="sm" className="h-10 min-w-16 gap-1 px-2 text-xs" disabled={saving} onClick={() => void save()}>{editingID ? <CheckCircle2 className="size-3.5" /> : <Plus className="size-3.5" />}{editingID ? "保存" : "添加"}</Button>
         </div>
       </div>
-      {loading ? <p className="mt-2 px-1 text-[11px] text-muted-foreground">加载分组中…</p> : (data ?? []).length === 0 ? <p className="mt-2 px-1 text-[11px] text-muted-foreground">暂无渠道分组</p> : (
-        <div className={cn("mt-2 grid grid-cols-1 gap-2 @sm:grid-cols-2", (data ?? []).length > 6 && "max-h-72 overflow-y-auto pr-1")}>
-          {(data ?? []).map((rate) => (
+      {loading ? <p className="mt-2 px-1 text-[11px] text-muted-foreground">加载分组中…</p> : rates.length === 0 ? <p className="mt-2 px-1 text-[11px] text-muted-foreground">暂无渠道分组</p> : (
+        <div className={cn("mt-2 grid grid-cols-1 gap-2 @sm:grid-cols-2", rates.length > 6 && "max-h-72 overflow-y-auto pr-1")}>
+          {rates.map((rate) => (
             <div key={rate.id} className="group min-w-0 rounded-lg border border-border/80 bg-card p-2 transition-colors hover:border-brand/40 hover:bg-muted/20">
               <div className="flex min-w-0 items-start gap-1.5">
                 <Tooltip delayDuration={150}>
@@ -677,8 +678,10 @@ export function ChannelCards({ usageRange = "today" }: { usageRange?: RelayUsage
   const [managementMode, setManagementMode] = useState<ManagementModeFilter>("all")
   const [accountCount, setAccountCount] = useState<AccountCountFilter>("all")
   const [channelNameQuery, setChannelNameQuery] = useState("")
+  const [groupNameQuery, setGroupNameQuery] = useState("")
+  const normalizedGroupNameQuery = groupNameQuery.trim().toLocaleLowerCase()
   const [remarkQuery, setRemarkQuery] = useState("")
-  const hasActiveFilters = monitorStatus !== "enabled" || managementMode !== "all" || accountCount !== "all" || channelNameQuery.trim() !== "" || remarkQuery.trim() !== ""
+  const hasActiveFilters = monitorStatus !== "enabled" || managementMode !== "all" || accountCount !== "all" || channelNameQuery.trim() !== "" || normalizedGroupNameQuery !== "" || remarkQuery.trim() !== ""
   const metrics = useChannelMetrics(usageRange)
   const latencyTrends = useChannelLatencyTrends(60)
   const metricByChannel = new Map((metrics.data ?? []).map((item) => [item.channel_id, item]))
@@ -694,9 +697,10 @@ export function ChannelCards({ usageRange = "today" }: { usageRange?: RelayUsage
       const accountCountMatches = accountCount === "all" || isMultiAccount === (accountCount === "multi")
       const nameMatches = nameQuery === "" || channel.name.toLocaleLowerCase().includes(nameQuery)
       const remarkMatches = normalizedRemarkQuery === "" || channel.remark?.toLocaleLowerCase().includes(normalizedRemarkQuery)
-      return statusMatches && managementMatches && accountCountMatches && nameMatches && remarkMatches
+      const groupMatches = normalizedGroupNameQuery === "" || channel.group_names?.some((name) => name.toLocaleLowerCase().includes(normalizedGroupNameQuery))
+      return statusMatches && managementMatches && accountCountMatches && nameMatches && remarkMatches && groupMatches
     })
-  }, [accountCount, channelNameQuery, channels, managementMode, monitorStatus, remarkQuery])
+  }, [accountCount, channelNameQuery, channels, managementMode, monitorStatus, normalizedGroupNameQuery, remarkQuery])
   const refresh = useTriggerRefresh()
   const { confirm, dialog: confirmDialog } = useConfirm()
   const [editing, setEditing] = useState<Channel | null>(null)
@@ -825,6 +829,7 @@ export function ChannelCards({ usageRange = "today" }: { usageRange?: RelayUsage
     setManagementMode("all")
     setAccountCount("all")
     setChannelNameQuery("")
+    setGroupNameQuery("")
     setRemarkQuery("")
   }
 
@@ -839,6 +844,10 @@ export function ChannelCards({ usageRange = "today" }: { usageRange?: RelayUsage
           <div className="relative">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
             <Input value={channelNameQuery} onChange={(event) => setChannelNameQuery(event.target.value)} placeholder="筛选渠道名称" aria-label="按渠道名称筛选" className="h-11 w-40 pl-8 text-xs sm:h-9" />
+          </div>
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+            <Input value={groupNameQuery} onChange={(event) => setGroupNameQuery(event.target.value)} placeholder="筛选分组名称" aria-label="按分组名称筛选" className="h-11 w-40 pl-8 text-xs sm:h-9" />
           </div>
           <div className="relative">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
@@ -1022,7 +1031,7 @@ export function ChannelCards({ usageRange = "today" }: { usageRange?: RelayUsage
                 </div>
 
                 <ChannelLatencyTrend samples={latencyByChannel.get(c.id) ?? []} />
-                {c.balance_mode !== "manual" ? <div className="mt-3 flex-1 border-t border-border"><InlineRates channelID={c.id} latencySamples={latencyByChannel.get(c.id) ?? []} /></div> : <ManualRatesEditor channelID={c.id} latencySamples={latencyByChannel.get(c.id) ?? []} />}
+                {c.balance_mode !== "manual" ? <div className="mt-3 flex-1 border-t border-border"><InlineRates channelID={c.id} latencySamples={latencyByChannel.get(c.id) ?? []} groupNameQuery={normalizedGroupNameQuery} /></div> : <ManualRatesEditor channelID={c.id} latencySamples={latencyByChannel.get(c.id) ?? []} groupNameQuery={normalizedGroupNameQuery} onGroupsChange={refetch} />}
 
 				<div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
 				  <Button

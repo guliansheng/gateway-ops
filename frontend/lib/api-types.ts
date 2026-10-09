@@ -63,6 +63,7 @@ export interface Channel {
   created_at: string
   updated_at: string
   latest_ratio_changed_at?: string | null
+	group_names: string[]
 	accounts: ChannelAccount[]
 }
 
