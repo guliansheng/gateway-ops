@@ -21,6 +21,7 @@ import (
 func registerDashboard(g *gin.RouterGroup, d *Deps) {
 	g.GET("/dashboard/summary", func(c *gin.Context) { dashboardSummary(c, d) })
 	g.GET("/dashboard/balance-trend", func(c *gin.Context) { dashboardBalanceTrend(c, d) })
+	g.GET("/dashboard/unlinked-accounts", func(c *gin.Context) { dashboardUnlinkedAccounts(c, d) })
 }
 
 type dashboardLowest struct {
@@ -152,6 +153,15 @@ func dashboardSummary(c *gin.Context, d *Deps) {
 		return
 	}
 	userChargeAmount, userChargeErr := dashboardUserChargeTotal(c.Request.Context(), d.Relay, relayStats, rangeName, since)
+	excludedCharges, excludedErr := d.Relay.ExcludedUserCharge(c.Request.Context(), rangeName, since)
+	if excludedErr != nil {
+		// 扣减金额读取失败时按已读到的部分扣减，并把合计标记为不完整。
+		userChargeErr = errors.Join(userChargeErr, excludedErr)
+		if d.Log != nil {
+			d.Log.Warn("dashboard excluded user charge failed", "err", excludedErr)
+		}
+	}
+	userChargeAmount = math.Max(0, userChargeAmount-excludedCharges.Total)
 	if userChargeErr != nil && d.Log != nil {
 		d.Log.Warn("dashboard relay user charge failed", "err", userChargeErr)
 	}
@@ -168,24 +178,25 @@ func dashboardSummary(c *gin.Context, d *Deps) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"data": gin.H{
-			"range":                      rangeName,
-			"total_channels":             len(channels),
-			"active_channels":            activeCount,
-			"failed_channels":            failedCount,
-			"total_balance":              totalBalance,
-			"cumulative_recharge_amount": cumulativeRechargeAmount,
-			"consumption_amount":         consumptionAmount,
-			"user_charge_amount":         userChargeAmount,
-			"matched_account_count":      matchedAccountCount,
-			"user_charge_complete":       userChargeErr == nil,
-			"user_charge_breakdown":      dashboardUserChargeBreakdown(userChargeAmount, userChargeErr == nil, usage),
-			"lowest_balance":             lowest,
-			"channels":                   stats,
-			"rate_change_count":          rateChangeCount,
-			"recent_rate_changes":        recentChanges,
-			"recent_notification_logs":   recentNotifs,
-			"relay":                      relayStats,
-			"recent_relay_adjustments":   relayAdjustments,
+			"range":                       rangeName,
+			"total_channels":              len(channels),
+			"active_channels":             activeCount,
+			"failed_channels":             failedCount,
+			"total_balance":               totalBalance,
+			"cumulative_recharge_amount":  cumulativeRechargeAmount,
+			"consumption_amount":          consumptionAmount,
+			"user_charge_amount":          userChargeAmount,
+			"excluded_user_charge_amount": excludedCharges.Total,
+			"matched_account_count":       matchedAccountCount,
+			"user_charge_complete":        userChargeErr == nil,
+			"user_charge_breakdown":       dashboardUserChargeBreakdown(userChargeAmount, userChargeErr == nil, usage),
+			"lowest_balance":              lowest,
+			"channels":                    stats,
+			"rate_change_count":           rateChangeCount,
+			"recent_rate_changes":         recentChanges,
+			"recent_notification_logs":    recentNotifs,
+			"relay":                       relayStats,
+			"recent_relay_adjustments":    relayAdjustments,
 		},
 	})
 }
@@ -194,12 +205,66 @@ type relayUsageTotalReader interface {
 	UsageTotal(context.Context, uint, string, time.Time) (relay.UsageSummary, error)
 }
 
+type unlinkedAccountsView struct {
+	Range       string                        `json:"range"`
+	Accounts    []relay.UnlinkedAccountCharge `json:"accounts"`
+	TotalAmount float64                       `json:"total_amount"`
+	RawAmount   float64                       `json:"raw_amount"`
+	Complete    bool                          `json:"complete"`
+}
+
+// dashboardUnlinkedAccounts 按账号拆开首页的“未关联渠道账号扣费”。
+// total_amount 是计入 KPI 的金额（剔除被排除账号），raw_amount 是未关联账号的
+// 原始扣费合计，两者不同说明运营对部分账号关闭了统计。
+func dashboardUnlinkedAccountsView(rangeName string, accounts []relay.UnlinkedAccountCharge, readErr error) unlinkedAccountsView {
+	view := unlinkedAccountsView{Range: rangeName, Accounts: accounts, Complete: readErr == nil}
+	if view.Accounts == nil {
+		view.Accounts = []relay.UnlinkedAccountCharge{}
+	}
+	for _, account := range view.Accounts {
+		view.RawAmount += account.UserCharge
+		if account.Failed {
+			view.Complete = false
+			continue
+		}
+		if !account.UserChargeExcluded {
+			view.TotalAmount += account.UserCharge
+		}
+	}
+	return view
+}
+
+func dashboardUnlinkedAccounts(c *gin.Context, d *Deps) {
+	since, rangeName := dashboardSince(c.DefaultQuery("range", "today"))
+	channels, err := d.Channels.List()
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err)
+		return
+	}
+	accounts, readErr := d.Relay.UnlinkedAccounts(c.Request.Context(), channels, rangeName, since)
+	if accounts == nil {
+		if readErr == nil {
+			readErr = errors.New("读取未关联渠道账号失败")
+		}
+		fail(c, http.StatusInternalServerError, readErr)
+		return
+	}
+	if readErr != nil && d.Log != nil {
+		d.Log.Warn("dashboard unlinked accounts failed", "err", readErr)
+	}
+	c.JSON(http.StatusOK, gin.H{"data": dashboardUnlinkedAccountsView(rangeName, accounts, readErr)})
+}
+
 type dashboardChargeBreakdown struct {
 	ChannelAmount   float64  `json:"channel_amount"`
 	ChannelComplete bool     `json:"channel_complete"`
 	UnlinkedAmount  *float64 `json:"unlinked_amount"`
 }
 
+// dashboardUserChargeBreakdown splits the user-charge total into channel-bound
+// and unlinked amounts. The channel side already skips accounts excluded from
+// user-charge statistics, so subtracting the same accounts from the total keeps
+// both sides on one basis and they still add up.
 func dashboardUserChargeBreakdown(total float64, totalComplete bool, usage map[uint]relay.ChannelUsageTotal) dashboardChargeBreakdown {
 	result := dashboardChargeBreakdown{ChannelComplete: true}
 	for _, item := range usage {

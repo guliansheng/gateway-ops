@@ -48,6 +48,7 @@ func registerRelayStations(g *gin.RouterGroup, d *Deps) {
 	gp.PUT("/:id/accounts/model-types", func(c *gin.Context) { updateRelayAccountModelTypes(c, d) })
 	gp.PUT("/:id/accounts/runtime-settings", func(c *gin.Context) { updateRelayAccountRuntimeSettings(c, d) })
 	gp.PUT("/:id/accounts/schedulable", func(c *gin.Context) { updateRelayAccountsSchedulable(c, d) })
+	gp.PUT("/:id/accounts/user-charge-excluded", func(c *gin.Context) { updateRelayAccountsUserChargeExcluded(c, d) })
 	gp.POST("/:id/accounts/apply-suggestions", func(c *gin.Context) { applyRelayAccountSuggestions(c, d) })
 	gp.POST("/:id/accounts/add-downgrades", func(c *gin.Context) { addRelayAccountDowngrades(c, d) })
 	gp.PUT("/:id/accounts/:external_id/groups", func(c *gin.Context) { updateRelayAccountGroups(c, d) })
@@ -132,6 +133,11 @@ type relayAccountModelTypesInput struct {
 	ModelType          string  `json:"model_type"`
 }
 
+type relayAccountUserChargeExcludedInput struct {
+	AccountExternalIDs []int64 `json:"account_external_ids"`
+	UserChargeExcluded *bool   `json:"user_charge_excluded"`
+}
+
 type relayAccountBatchCloneInput struct {
 	Groups []relay.BatchCloneGroup `json:"groups"`
 }
@@ -192,11 +198,11 @@ type relayOverview struct {
 }
 
 type relayUsageAccountView struct {
-	ExternalID        int64   `json:"external_id"`
-	UsageTotalTokens  int64   `json:"usage_total_tokens"`
-	UserChargeAmount  float64 `json:"user_charge_amount"`
-	AccountCostAmount  *float64 `json:"account_cost_amount"`
-	RequestCount      int64   `json:"request_count"`
+	ExternalID        int64    `json:"external_id"`
+	UsageTotalTokens  int64    `json:"usage_total_tokens"`
+	UserChargeAmount  float64  `json:"user_charge_amount"`
+	AccountCostAmount *float64 `json:"account_cost_amount"`
+	RequestCount      int64    `json:"request_count"`
 }
 
 type relayUsageView struct {
@@ -252,6 +258,7 @@ type relayAccountView struct {
 	UserChargeAmount      float64                      `json:"user_charge_amount"`
 	AccountPlan           string                       `json:"account_plan,omitempty"`
 	ModelType             string                       `json:"model_type,omitempty"`
+	UserChargeExcluded    bool                         `json:"user_charge_excluded"`
 	LastUsedAt            *time.Time                   `json:"last_used_at,omitempty"`
 }
 
@@ -833,6 +840,31 @@ func updateRelayAccountSchedulable(c *gin.Context, d *Deps) {
 	relayStationOverview(c, d)
 }
 
+// updateRelayAccountsUserChargeExcluded 批量标记账号是否计入用户扣费统计。
+// 只改 Hub 侧汇总口径，不触碰远端中转站，因此返回的仍是标准批量执行结果。
+func updateRelayAccountsUserChargeExcluded(c *gin.Context, d *Deps) {
+	stationID, err := uintParam(c, "id")
+	if err != nil {
+		fail(c, http.StatusBadRequest, err)
+		return
+	}
+	var in relayAccountUserChargeExcludedInput
+	if err := c.ShouldBindJSON(&in); err != nil || in.UserChargeExcluded == nil {
+		fail(c, http.StatusBadRequest, errors.New("user_charge_excluded 必须是布尔值"))
+		return
+	}
+	if err := validateRelayAccountBatchIDs(in.AccountExternalIDs); err != nil {
+		fail(c, http.StatusBadRequest, err)
+		return
+	}
+	result, err := d.Relay.SetUserChargeExcludedBatch(stationID, in.AccountExternalIDs, *in.UserChargeExcluded)
+	if err != nil {
+		fail(c, http.StatusConflict, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result})
+}
+
 func updateRelayAccountsSchedulable(c *gin.Context, d *Deps) {
 	stationID, err := uintParam(c, "id")
 	if err != nil {
@@ -1116,7 +1148,8 @@ func relayStationOverview(c *gin.Context, d *Deps) {
 			Concurrency: risk.Account.Concurrency, CurrentConcurrency: risk.Account.CurrentConcurrency, Priority: risk.Account.Priority,
 			PoolMode: risk.Account.PoolMode, PoolModeRetryCount: risk.Account.PoolModeRetryCount,
 			AccountPlan: risk.Account.AccountPlan, LastUsedAt: risk.Account.LastUsedAt, ModelType: risk.Account.ModelType,
-			CostMultiplier: risk.Account.RateMultiplier, CurrentGroups: groupOptions(risk.CurrentGroups),
+			UserChargeExcluded: risk.Account.UserChargeExcluded,
+			CostMultiplier:     risk.Account.RateMultiplier, CurrentGroups: groupOptions(risk.CurrentGroups),
 			CostSource: risk.Account.RateSource, CostObservedAt: risk.Account.RateObservedAt,
 			UnsafeGroups: groupOptions(risk.UnsafeGroups), NoProfitGroups: groupOptions(risk.NoProfitGroups), DowngradeGroups: groupOptions(risk.DowngradeGroups), SuggestedGroupIDs: risk.SuggestedGroupIDs,
 			CurrentMinMultiplier: risk.CurrentMinMultiplier, Margin: risk.Margin,

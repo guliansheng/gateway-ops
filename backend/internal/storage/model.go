@@ -549,6 +549,10 @@ type RelayAccount struct {
 	PoolModeRetryCount int    `gorm:"not null;default:3" json:"pool_mode_retry_count"`
 	AccountPlan        string `gorm:"size:64" json:"account_plan,omitempty"`
 	ModelType          string `gorm:"size:64" json:"model_type,omitempty"`
+	// UserChargeExcluded 是 Hub 侧的运营决策：某些账号实际以已关联渠道的账号
+	// 作为上游（例如账号只是转售已有渠道），其用户扣费会与渠道重复统计。
+	// 标记后该账号不参与用户扣费汇总，成本统计保持不变。
+	UserChargeExcluded bool `gorm:"not null;default:false" json:"user_charge_excluded"`
 	// This value is populated only from extra.upstream_billing_probe. The
 	// remote accounts.rate_multiplier defaults to 1 and is not upstream cost.
 	RateMultiplier *float64   `json:"rate_multiplier,omitempty"`

@@ -209,6 +209,7 @@ export interface DashboardSummary {
   cumulative_recharge_amount: number
   consumption_amount: number
   user_charge_amount: number
+  excluded_user_charge_amount: number
   matched_account_count: number
   user_charge_complete: boolean
   user_charge_breakdown: {
@@ -227,6 +228,27 @@ export interface DashboardSummary {
 
 export type DashboardRange = "today" | "24h" | "7d" | "30d"
 export type RelayUsageRange = DashboardRange | "all"
+
+/** 首页“未关联渠道账号扣费”的单账号构成明细。 */
+export interface UnlinkedAccountCharge {
+  station_id: number
+  station_name: string
+  account_external_id: number
+  account_name: string
+  user_charge: number
+  user_charge_excluded: boolean
+  failed: boolean
+}
+
+export interface UnlinkedAccountsResult {
+  range: RelayUsageRange
+  accounts: UnlinkedAccountCharge[]
+  /** 计入首页 KPI 的金额：已剔除“不计入用户扣费统计”的账号。 */
+  total_amount: number
+  /** 未关联账号的原始扣费合计，保留被排除账号的原值。 */
+  raw_amount: number
+  complete: boolean
+}
 
 export interface RelayPricingChange {
   station_id: number
@@ -312,6 +334,8 @@ export interface RelayAccountView {
   pool_mode_retry_count: number
   account_plan?: string
   model_type?: string
+  /** Hub 侧标记：true 表示该账号的扣费不计入用户扣费汇总。 */
+  user_charge_excluded: boolean
   last_used_at?: string | null
   cost_multiplier?: number | null
   cost_source?: "upstream_probe" | "local_group" | "channel_group" | "auto_link" | "" | string

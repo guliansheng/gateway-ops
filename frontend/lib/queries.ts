@@ -10,6 +10,7 @@ import type {
   ChannelMetric,
   ChannelLatencyTrend,
   DashboardSummary,
+  UnlinkedAccountsResult,
   NotificationChannel,
   NotificationLog,
   RateChangeLog,
@@ -183,6 +184,11 @@ function useApi<T>(path: string | null): QueryState<T> {
 
 export function useDashboardSummary(range: RelayUsageRange = "today") {
   return useApi<DashboardSummary>(`/dashboard/summary?range=${range}`)
+}
+
+/** 未关联渠道账号扣费明细；range 传 null 时不发请求（明细弹窗关闭时）。 */
+export function useUnlinkedAccounts(range: RelayUsageRange | null) {
+  return useApi<UnlinkedAccountsResult>(range == null ? null : `/dashboard/unlinked-accounts?range=${range}`)
 }
 
 export type BalanceTrendRange = DashboardRange

@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -69,6 +70,13 @@ func operationsSummary(c *gin.Context, d *Deps) {
 		ledger.RelayRevenueAmount += usage.UserCharge
 		successfulRelayCount++
 	}
+	// 运营收入与首页用户扣费使用同一口径：运营标记为“不计入用户扣费统计”的
+	// 账号要从收入合计中剔除。
+	excluded, excludedErr := d.Relay.ExcludedUserCharge(c.Request.Context(), rangeName, since)
+	if excludedErr != nil && d.Log != nil {
+		d.Log.Warn("operation excluded user charge failed", "err", excludedErr)
+	}
+	ledger.RelayRevenueAmount = math.Max(0, ledger.RelayRevenueAmount-excluded.Total)
 	ledger.IncomeAmount += ledger.RelayRevenueAmount
 	ledger.NetAmount += ledger.RelayRevenueAmount
 	if ledger.RelayRevenueAmount > 0 {

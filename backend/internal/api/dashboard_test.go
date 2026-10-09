@@ -149,6 +149,18 @@ func TestDashboardUserChargeBreakdown(t *testing.T) {
 			usage:       map[uint]relay.ChannelUsageTotal{1: {UserCharge: 0.1, Complete: true}, 2: {UserCharge: 0.2, Complete: true}},
 			wantChannel: 0.3, wantChannelComplete: true,
 		},
+		{
+			// 被排除的账号若已关联渠道：合计与渠道侧同时少掉它的扣费，未关联金额不变。
+			name: "excluded bound charge keeps unlinked amount stable", total: 15, totalComplete: true,
+			usage:       map[uint]relay.ChannelUsageTotal{1: {UserCharge: 5, Complete: true}},
+			wantChannel: 5, wantChannelComplete: true, wantUnlinked: 10,
+		},
+		{
+			// 被排除的账号若未关联渠道：只有合计少掉它的扣费，未关联金额同步减少。
+			name: "excluded unbound charge reduces unlinked amount", total: 15, totalComplete: true,
+			usage:       map[uint]relay.ChannelUsageTotal{1: {UserCharge: 10, Complete: true}},
+			wantChannel: 10, wantChannelComplete: true, wantUnlinked: 5,
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			got := dashboardUserChargeBreakdown(test.total, test.totalComplete, test.usage)
@@ -168,6 +180,33 @@ func TestDashboardUserChargeBreakdown(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDashboardUnlinkedAccountsViewSumsOnlyCountedCharges(t *testing.T) {
+	accounts := []relay.UnlinkedAccountCharge{
+		{StationID: 1, AccountExternalID: 101, AccountName: "临时号", UserCharge: 8},
+		{StationID: 1, AccountExternalID: 102, AccountName: "凡人", UserCharge: 5, UserChargeExcluded: true},
+		{StationID: 2, AccountExternalID: 201, AccountName: "福利号", UserCharge: 2},
+	}
+	view := dashboardUnlinkedAccountsView("today", accounts, nil)
+	if view.RawAmount != 15 || view.TotalAmount != 10 {
+		t.Fatalf("amounts = raw %v, counted %v; want 15 and 10", view.RawAmount, view.TotalAmount)
+	}
+	if !view.Complete || view.Range != "today" || len(view.Accounts) != 3 {
+		t.Fatalf("view = %#v, want complete today view with 3 accounts", view)
+	}
+
+	// 读取失败的账号仍展示，但不计入 KPI 合计，并把明细标记为不完整。
+	accounts[2].Failed = true
+	view = dashboardUnlinkedAccountsView("7d", accounts, errors.New("station 2: boom"))
+	if view.Complete || view.TotalAmount != 8 || view.RawAmount != 15 {
+		t.Fatalf("view = %#v, want incomplete view counting 8 of 15", view)
+	}
+
+	empty := dashboardUnlinkedAccountsView("today", nil, nil)
+	if empty.Accounts == nil || len(empty.Accounts) != 0 || !empty.Complete {
+		t.Fatalf("empty view = %#v, want a non-nil empty account list", empty)
 	}
 }
 

@@ -311,6 +311,7 @@ CREATE TABLE IF NOT EXISTS relay_accounts (
     pool_mode_retry_count INTEGER NOT NULL DEFAULT 3,
     account_plan      VARCHAR(64),
     model_type        VARCHAR(64),
+    user_charge_excluded BOOLEAN NOT NULL DEFAULT false,
     rate_multiplier   DOUBLE PRECISION,
     rate_source       VARCHAR(32),
     rate_observed_at  TIMESTAMPTZ,
@@ -326,6 +327,7 @@ ALTER TABLE relay_accounts ADD COLUMN IF NOT EXISTS pool_mode BOOLEAN NOT NULL D
 ALTER TABLE relay_accounts ADD COLUMN IF NOT EXISTS pool_mode_retry_count INTEGER NOT NULL DEFAULT 3;
 ALTER TABLE relay_groups ADD COLUMN IF NOT EXISTS model_types_json TEXT;
 ALTER TABLE relay_accounts ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ;
+ALTER TABLE relay_accounts ADD COLUMN IF NOT EXISTS user_charge_excluded BOOLEAN NOT NULL DEFAULT false;
 CREATE INDEX IF NOT EXISTS idx_relay_accounts_synced_at ON relay_accounts (synced_at);
 
 CREATE TABLE IF NOT EXISTS relay_account_groups (

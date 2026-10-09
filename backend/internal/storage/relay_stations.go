@@ -180,6 +180,8 @@ func (r *RelayStations) ReplaceSnapshot(
 			for i := range accounts {
 				if previous, ok := previousAccountByExternalID[accounts[i].ExternalID]; ok {
 					accounts[i].ModelType = previous.ModelType
+					// 快照同步只搬运远端字段，Hub 侧的运营标记要跨同步保留。
+					accounts[i].UserChargeExcluded = previous.UserChargeExcluded
 					if accounts[i].RateMultiplier == nil && previous.RateMultiplier != nil && previous.RateSource == "upstream_probe" {
 						value := *previous.RateMultiplier
 						accounts[i].RateMultiplier = &value
@@ -727,6 +729,17 @@ func (r *RelayStations) SetAccountModelTypes(stationID uint, accountExternalIDs 
 		return nil
 	}
 	return r.db.Model(&RelayAccount{}).Where("relay_station_id = ? AND external_id IN ?", stationID, accountExternalIDs).Update("model_type", modelType).Error
+}
+
+// SetAccountsUserChargeExcluded 批量设置账号是否计入用户扣费统计。该标记只属于
+// Hub 侧口径：不改写远端中转站，也不修改账号自身的扣费数据，明细仍按原值展示。
+func (r *RelayStations) SetAccountsUserChargeExcluded(stationID uint, accountExternalIDs []int64, excluded bool) error {
+	if len(accountExternalIDs) == 0 {
+		return nil
+	}
+	return r.db.Model(&RelayAccount{}).
+		Where("relay_station_id = ? AND external_id IN ?", stationID, accountExternalIDs).
+		Update("user_charge_excluded", excluded).Error
 }
 
 func (r *RelayStations) CreateAdjustmentLog(log *RelayAccountAdjustmentLog) error {

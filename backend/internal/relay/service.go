@@ -1513,7 +1513,9 @@ type ChannelUsageTotal struct {
 // ChannelUsageTotals aggregates interval usage by channel. An explicit
 // channel-group cost binding always wins; otherwise an account is attributed
 // to the uniquely matching monitored channel based on its Base URL. Both cost
-// and user charge use this exact same account-to-channel mapping.
+// and user charge use this exact same account-to-channel mapping. Accounts the
+// operator excluded from user-charge statistics keep their cost but are left
+// out of the user-charge side, so every user-charge view agrees with the KPI.
 func (s *Service) ChannelUsageTotals(ctx context.Context, channels []storage.Channel, rangeName string, since time.Time) (map[uint]ChannelUsageTotal, error) {
 	stations, err := s.stations.List()
 	if err != nil {
@@ -1543,6 +1545,10 @@ func (s *Service) ChannelUsageTotals(ctx context.Context, channels []storage.Cha
 		if err != nil {
 			return nil, err
 		}
+		accountByExternalID := make(map[int64]storage.RelayAccount, len(accounts))
+		for _, account := range accounts {
+			accountByExternalID[account.ExternalID] = account
+		}
 		bindings := resolveChannelUsageCostBindings(channels, accounts, overrides, rateByChannel)
 		if len(bindings) == 0 {
 			continue
@@ -1565,7 +1571,11 @@ func (s *Service) ChannelUsageTotals(ctx context.Context, channels []storage.Cha
 			} else {
 				cost, multiplierBits, usesAccountCost := channelBoundAccountCostCalculation(stats, binding)
 				total.Cost += cost
-				total.UserCharge += stats.UserCharge
+				// 运营标记为“不计入用户扣费统计”的账号只从收入侧剔除：成本、
+				// 账号归属和完整性判定保持原样，余额结算与利润判断不受影响。
+				if account := accountByExternalID[accountID]; !account.UserChargeExcluded {
+					total.UserCharge += stats.UserCharge
+				}
 				basisEntries[channelID] = append(basisEntries[channelID], channelUsageCostBasisEntry{
 					RelayStationID: station.ID, RelayAccountExternalID: accountID,
 					MultiplierBits: multiplierBits, UsesAccountCost: usesAccountCost,
