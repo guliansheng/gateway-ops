@@ -928,7 +928,8 @@ export interface HelpComment {
   created_at: string
 }
 
-// 公开页返回的已发布帮助文档。
+// 公开页返回的已发布帮助文档。comments 里的 author_name 已由后端遮蔽（邮箱只留 @ 后的域名），
+// 管理端留言列表接口返回的才是完整邮箱。
 export interface PublicHelpDocument {
   document_id: number
   station_id: number
@@ -937,4 +938,9 @@ export interface PublicHelpDocument {
   content: string
   updated_at: string
   comments: HelpComment[]
+}
+
+// 留言名称默认值：用路由里的 user_id 换来的用户邮箱，查不到用户或邮箱时为空串。
+export interface PublicHelpCommenter {
+  author_name: string
 }

@@ -1,24 +1,29 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { BookOpen, MessageSquare, Search } from "lucide-react"
-import { useParams } from "react-router-dom"
+import { useParams, useSearchParams } from "react-router-dom"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { RichTextBody } from "@/components/ui/rich-text-editor"
 import { apiFetch } from "@/lib/api"
 import { helpHeadings, parseHelpSections } from "@/lib/help-html"
-import type { PublicHelpDocument } from "@/lib/api-types"
+import type { PublicHelpCommenter, PublicHelpDocument } from "@/lib/api-types"
 
 export default function PublicHelpPage() {
   const { stationID } = useParams()
+  const [searchParams] = useSearchParams()
+  // 路由里的 user_id 用来换留言名称的默认值（该用户邮箱），访客仍可修改。
+  const userID = searchParams.get("user_id")?.trim() ?? ""
   const [data, setData] = useState<PublicHelpDocument | null>(null)
   const [error, setError] = useState("")
   const [search, setSearch] = useState("")
   const [author, setAuthor] = useState("游客")
   const [body, setBody] = useState("")
   const [sending, setSending] = useState(false)
+  // 名称一旦被手动编辑，后续刷新就不再覆盖访客输入的内容。
+  const authorTouched = useRef(false)
 
   useEffect(() => {
     if (!stationID) return
@@ -30,6 +35,20 @@ export default function PublicHelpPage() {
         setError((e as Error).message || "帮助文档读取失败")
       })
   }, [stationID])
+
+  // 带 user_id 打开时，向后端换取该用户的邮箱填进名称输入框。
+  // 查不到用户 / 邮箱只影响预填内容，留言区照常可用。
+  useEffect(() => {
+    if (!stationID || !userID || authorTouched.current) return
+    void apiFetch<PublicHelpCommenter>(`/public/relay-stations/${stationID}/help/commenter?user_id=${encodeURIComponent(userID)}`, {
+      skipAuthErrorHandler: true,
+    })
+      .then((res) => {
+        if (authorTouched.current || !res?.author_name) return
+        setAuthor(res.author_name)
+      })
+      .catch(() => undefined)
+  }, [stationID, userID])
 
   // 富文本 HTML 按标题切章节：目录锚点 + 按章节搜索都基于它。
   const sections = useMemo(() => (data ? parseHelpSections(data.content) : []), [data])
@@ -83,7 +102,7 @@ export default function PublicHelpPage() {
                   <a
                     key={heading.id}
                     href={`#${heading.id}`}
-                    className="block truncate rounded px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+                    className="block whitespace-normal break-words rounded px-2 py-1 text-sm font-medium leading-5 text-foreground/80 hover:bg-muted hover:text-foreground"
                     style={{ paddingLeft: `${Math.min(heading.level, 5) * 8 + 8}px` }}
                   >
                     {heading.text}
@@ -115,7 +134,15 @@ export default function PublicHelpPage() {
                   <MessageSquare className="size-4 text-brand" />
                   留言
                 </div>
-                <Input className="mb-2" value={author} onChange={(event) => setAuthor(event.target.value)} placeholder="名称（默认游客）" />
+                <Input
+                  className="mb-2"
+                  value={author}
+                  onChange={(event) => {
+                    authorTouched.current = true
+                    setAuthor(event.target.value)
+                  }}
+                  placeholder="名称（默认游客）"
+                />
                 <Textarea className="min-h-24" value={body} onChange={(event) => setBody(event.target.value)} placeholder="留下你的问题或建议" />
                 <Button className="mt-2 w-full" disabled={sending || !body.trim()} onClick={() => void comment()}>
                   提交留言

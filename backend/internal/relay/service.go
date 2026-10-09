@@ -39,6 +39,14 @@ const (
 	ipLocationErrorTTL = time.Hour
 )
 
+// 公开帮助页带着 user_id 反复来问用户邮箱，命中率必须高一点：
+// 成功结果缓存 1 分钟，查不到 / 上游报错只缓存 15 秒，条数封顶防止公开接口把内存撑大。
+const (
+	userEmailTTL      = time.Minute
+	userEmailErrorTTL = 15 * time.Second
+	userEmailCacheCap = 1024
+)
+
 // ErrGroupAdminAPIKeyMissing indicates that the selected group has no usable
 // administrator API key. Callers can map this configuration error to a
 // client-facing status instead of presenting it as an upstream 502.
@@ -61,6 +69,8 @@ type Service struct {
 	publicMonitorCache map[uint]publicMonitorCacheEntry
 	publicPricingMu    sync.Mutex
 	publicPricingCache map[uint]publicModelPricingCacheEntry
+	userEmailMu        sync.Mutex
+	userEmailCache     map[string]userEmailCacheEntry
 }
 
 func NewService(stations *storage.RelayStations, cipher *crypto.Cipher, deps ...any) *Service {
@@ -84,6 +94,7 @@ func NewService(stations *storage.RelayStations, cipher *crypto.Cipher, deps ...
 		latencyCache:       make(map[string]latencyCacheEntry),
 		publicMonitorCache: make(map[uint]publicMonitorCacheEntry),
 		publicPricingCache: make(map[uint]publicModelPricingCacheEntry),
+		userEmailCache:     make(map[string]userEmailCacheEntry),
 	}
 }
 
@@ -212,6 +223,13 @@ type ipLocationCacheEntry struct {
 type latencyCacheEntry struct {
 	ExpiresAt time.Time
 	Samples   map[int64]string
+}
+
+// userEmailCacheEntry 缓存「站点 + 上游用户 ID → 邮箱」，空邮箱同样占位，
+// 这样查不到的 user_id 也不会每次都去麻烦上游。
+type userEmailCacheEntry struct {
+	ExpiresAt time.Time
+	Email     string
 }
 
 type UserUsageStats struct {
@@ -2846,6 +2864,62 @@ func (s *Service) UserBalanceHistory(ctx context.Context, stationID uint, userID
 	}
 	result.User = user
 	return result, nil
+}
+
+// UserEmail 按上游用户 ID 读取邮箱：公开帮助页带 user_id 来给留言名称预填。
+// 这条路径谁都能访问，所以结果做 TTL 缓存 + 条数上限：
+// 命中缓存不打上游，查不到的 ID 也短缓存，避免公开接口把上游管理接口当放大器。
+func (s *Service) UserEmail(ctx context.Context, stationID uint, userID int64) (string, error) {
+	if userID <= 0 {
+		return "", errors.New("用户 ID 无效")
+	}
+	key := fmt.Sprintf("%d:%d", stationID, userID)
+	now := time.Now()
+	s.userEmailMu.Lock()
+	cached, ok := s.userEmailCache[key]
+	s.userEmailMu.Unlock()
+	if ok && cached.ExpiresAt.After(now) {
+		return cached.Email, nil
+	}
+
+	station, err := s.stations.FindByID(stationID)
+	if err != nil {
+		return "", err
+	}
+	apiKey, err := s.cipher.Decrypt(station.APIKeyCipher)
+	if err != nil {
+		return "", fmt.Errorf("decrypt admin API key: %w", err)
+	}
+	var user remoteUser
+	endpoint := fmt.Sprintf("%s/api/v1/admin/users/%d", strings.TrimRight(station.BaseURL, "/"), userID)
+	if err := s.get(ctx, endpoint, apiKey, &user); err != nil {
+		s.cacheUserEmail(key, "", time.Now(), userEmailErrorTTL)
+		return "", fmt.Errorf("读取中转站用户失败: %w", err)
+	}
+	email := strings.TrimSpace(user.Email)
+	ttl := userEmailTTL
+	if email == "" {
+		ttl = userEmailErrorTTL
+	}
+	s.cacheUserEmail(key, email, time.Now(), ttl)
+	return email, nil
+}
+
+// cacheUserEmail 写入邮箱缓存；缓存打满时先清过期项，仍满则放弃写入。
+func (s *Service) cacheUserEmail(key, email string, now time.Time, ttl time.Duration) {
+	s.userEmailMu.Lock()
+	defer s.userEmailMu.Unlock()
+	if len(s.userEmailCache) >= userEmailCacheCap {
+		for itemKey, entry := range s.userEmailCache {
+			if !entry.ExpiresAt.After(now) {
+				delete(s.userEmailCache, itemKey)
+			}
+		}
+		if len(s.userEmailCache) >= userEmailCacheCap {
+			return
+		}
+	}
+	s.userEmailCache[key] = userEmailCacheEntry{ExpiresAt: now.Add(ttl), Email: email}
 }
 
 func (s *Service) TestAccount(ctx context.Context, stationID uint, accountID int64, modelID, mode string) (AccountTestResult, error) {

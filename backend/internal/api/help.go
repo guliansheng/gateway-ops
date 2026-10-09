@@ -2,8 +2,10 @@ package api
 
 import (
 	"errors"
+	"math"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -25,6 +27,7 @@ func registerHelp(g *gin.RouterGroup, d *Deps) {
 
 func registerPublicHelp(g *gin.RouterGroup, d *Deps) {
 	g.GET("/relay-stations/:id/help", func(c *gin.Context) { publicHelp(c, d) })
+	g.GET("/relay-stations/:id/help/commenter", func(c *gin.Context) { publicHelpCommenter(c, d) })
 	g.POST("/relay-stations/:id/help/comments", func(c *gin.Context) { createPublicHelpComment(c, d) })
 }
 
@@ -59,6 +62,38 @@ func sanitizeHelpHTML(content string) string {
 
 func helpEnabled(in helpDocumentInput) bool {
 	return in.Enabled == nil || *in.Enabled
+}
+
+// maskHelpCommentAuthor 遮蔽留言名称里的邮箱：@ 后面的域名完整展示，
+// @ 前的用户名只露首尾、中间用 * 覆盖——星号约占用户名长度的 60%，
+// 再按字符数夹取上下限（不足 3 字整段打码，最多只遮到剩首尾各 1 字）。
+// 不带 @ 的自定义名称不是邮箱，原样展示。
+// 管理端留言列表走 /help/documents/:id/comments，看到的始终是完整邮箱。
+func maskHelpCommentAuthor(name string) string {
+	at := strings.LastIndex(name, "@")
+	if at <= 0 || at == len(name)-1 {
+		return name
+	}
+	local := []rune(name[:at])
+	domain := name[at:]
+	total := len(local)
+	stars := int(math.Round(float64(total) * 0.6))
+	if total < 3 {
+		// 一两个字符露出来等于没遮，整段打码。
+		stars = total
+	} else {
+		// 至少留 1 个 *，最多遮到剩首尾各 1 字。
+		if stars < 1 {
+			stars = 1
+		}
+		if stars > total-2 {
+			stars = total - 2
+		}
+	}
+	visible := total - stars
+	left := (visible + 1) / 2
+	right := visible - left
+	return string(local[:left]) + strings.Repeat("*", stars) + string(local[total-right:]) + domain
 }
 
 func getStationHelpDocument(c *gin.Context, d *Deps) {
@@ -214,6 +249,10 @@ func publicHelp(c *gin.Context, d *Deps) {
 	if station != nil {
 		stationName = station.Name
 	}
+	// 公开页只给遮蔽后的名称；完整邮箱属于管理端视图。
+	for i := range comments {
+		comments[i].AuthorName = maskHelpCommentAuthor(comments[i].AuthorName)
+	}
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{
 		"document_id":  document.ID,
 		"station_id":   stationID,
@@ -223,6 +262,35 @@ func publicHelp(c *gin.Context, d *Deps) {
 		"updated_at":   document.UpdatedAt,
 		"comments":     comments,
 	}})
+}
+
+// publicHelpCommenter 用 user_id 换留言名称的默认值（该用户的邮箱），前端拿去预填名称输入框，
+// 访客仍可自行修改。查不到用户或邮箱时回空串，公开文档与留言不受影响（名称回落到「游客」）。
+func publicHelpCommenter(c *gin.Context, d *Deps) {
+	stationID, err := uintParam(c, "id")
+	if err != nil || stationID == 0 {
+		fail(c, http.StatusBadRequest, errors.New("无效的中转站 ID"))
+		return
+	}
+	raw := strings.TrimSpace(c.Query("user_id"))
+	if raw == "" {
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{"author_name": ""}})
+		return
+	}
+	userID, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || userID <= 0 {
+		fail(c, http.StatusBadRequest, errors.New("用户 ID 无效"))
+		return
+	}
+	email, err := d.Relay.UserEmail(c.Request.Context(), stationID, userID)
+	if err != nil {
+		if d.Log != nil {
+			d.Log.Warn("help commenter email lookup failed", "station_id", stationID, "user_id", userID, "err", err)
+		}
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{"author_name": ""}})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"author_name": email}})
 }
 
 func createPublicHelpComment(c *gin.Context, d *Deps) {
@@ -240,6 +308,10 @@ func createPublicHelpComment(c *gin.Context, d *Deps) {
 	if name == "" {
 		name = "游客"
 	}
+	if len([]rune(name)) > 128 {
+		fail(c, http.StatusBadRequest, errors.New("留言名称不能超过 128 字"))
+		return
+	}
 	body := strings.TrimSpace(in.Body)
 	if body == "" || len([]rune(body)) > 2000 {
 		fail(c, http.StatusBadRequest, errors.New("留言不能为空且不能超过 2000 字"))
@@ -255,5 +327,8 @@ func createPublicHelpComment(c *gin.Context, d *Deps) {
 		fail(c, http.StatusInternalServerError, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": comment})
+	// 公开接口不回传完整邮箱，落库仍是原文（管理端留言列表可见）。
+	publicComment := *comment
+	publicComment.AuthorName = maskHelpCommentAuthor(comment.AuthorName)
+	c.JSON(http.StatusOK, gin.H{"data": publicComment})
 }
