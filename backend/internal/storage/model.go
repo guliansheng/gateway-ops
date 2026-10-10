@@ -640,11 +640,14 @@ type RelayAccountAdjustmentLog struct {
 
 func (RelayAccountAdjustmentLog) TableName() string { return "relay_account_adjustment_logs" }
 
-// SyncSettings 是管理界面的自动同步设置。
+// SyncSettings 是管理界面的自动同步设置。渠道的余额与倍率各自独立开关、
+// 独立间隔：余额按分钟级节奏刷新即可，倍率需要更短的探测间隔。
 type SyncSettings struct {
 	ChannelConfigured            bool `json:"channel_configured"`
 	ChannelEnabled               bool `json:"channel_enabled"`
 	ChannelIntervalMinutes       int  `json:"channel_interval_minutes"`
+	ChannelRateEnabled           bool `json:"channel_rate_enabled"`
+	ChannelRateIntervalSeconds   int  `json:"channel_rate_interval_seconds"`
 	RelayRateConfigured          bool `json:"relay_rate_configured"`
 	RelayRateEnabled             bool `json:"relay_rate_enabled"`
 	RelayRateIntervalMinutes     int  `json:"relay_rate_interval_minutes"`

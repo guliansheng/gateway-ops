@@ -929,6 +929,8 @@ export interface SyncSettings {
   channel_configured: boolean
   channel_enabled: boolean
   channel_interval_minutes: number
+  channel_rate_enabled: boolean
+  channel_rate_interval_seconds: number
   relay_rate_configured: boolean
   relay_rate_enabled: boolean
   relay_rate_interval_minutes: number

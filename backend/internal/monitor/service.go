@@ -90,6 +90,27 @@ func (s *Service) ScanAllRates(ctx context.Context) {
 // SyncAll 依次同步余额和倍率。手动“同步全部”可包含已暂停监控的渠道，
 // 自动调度则传 false，遵循渠道的监控开关。
 func (s *Service) SyncAll(ctx context.Context, includeDisabled bool) SyncAllResult {
+	return s.sync(ctx, includeDisabled, syncBalance|syncRate)
+}
+
+// SyncBalances 只刷新余额，供余额调度任务单独调用。
+func (s *Service) SyncBalances(ctx context.Context, includeDisabled bool) SyncAllResult {
+	return s.sync(ctx, includeDisabled, syncBalance)
+}
+
+// SyncRates 只刷新倍率，供倍率调度任务按更短的间隔单独调用。
+func (s *Service) SyncRates(ctx context.Context, includeDisabled bool) SyncAllResult {
+	return s.sync(ctx, includeDisabled, syncRate)
+}
+
+type syncScope uint8
+
+const (
+	syncBalance syncScope = 1 << iota
+	syncRate
+)
+
+func (s *Service) sync(ctx context.Context, includeDisabled bool, scope syncScope) SyncAllResult {
 	list, err := s.channels.List()
 	if !includeDisabled {
 		list, err = s.channels.ListMonitorEnabled()
@@ -106,8 +127,13 @@ func (s *Service) SyncAll(ctx context.Context, includeDisabled bool) SyncAllResu
 			return result
 		}
 		channel := &list[i]
-		balanceErr := s.RefreshBalance(ctx, channel)
-		rateErr := s.RefreshRates(ctx, channel)
+		var balanceErr, rateErr error
+		if scope&syncBalance != 0 {
+			balanceErr = s.RefreshBalance(ctx, channel)
+		}
+		if scope&syncRate != 0 {
+			rateErr = s.RefreshRates(ctx, channel)
+		}
 		if balanceErr == nil && rateErr == nil {
 			result.Succeeded++
 		} else {

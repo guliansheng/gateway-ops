@@ -12,6 +12,8 @@ const (
 	SettingChannelSyncConfigured        = "sync.channel.configured"
 	SettingChannelSyncEnabled           = "sync.channel.enabled"
 	SettingChannelSyncInterval          = "sync.channel.interval_minutes"
+	SettingChannelRateEnabled           = "sync.channel.rate.enabled"
+	SettingChannelRateIntervalSeconds   = "sync.channel.rate.interval_seconds"
 	SettingRelayRateConfigured          = "sync.relay.rate.configured"
 	SettingRelayRateEnabled             = "sync.relay.rate.enabled"
 	SettingRelayRateInterval            = "sync.relay.rate.interval_minutes"
@@ -48,6 +50,7 @@ func (s *Settings) Set(key, value string) error {
 func (s *Settings) SyncSettings() (SyncSettings, error) {
 	settings := SyncSettings{
 		ChannelIntervalMinutes:       30,
+		ChannelRateIntervalSeconds:   60,
 		RelayRateIntervalMinutes:     1,
 		RelayRateIntervalSeconds:     10,
 		RelaySnapshotIntervalMinutes: 60,
@@ -89,6 +92,25 @@ func (s *Settings) SyncSettings() (SyncSettings, error) {
 	}
 	if _, err = readInt(SettingChannelSyncInterval, &settings.ChannelIntervalMinutes); err != nil {
 		return settings, err
+	}
+	// 余额与倍率拆分前只有 sync.channel.enabled 一个开关：倍率尚未单独配置时
+	// 沿用余额开关（保持拆分前的行为），间隔直接采用新的 60 秒默认值。
+	if rateEnabled, found, getErr := s.Get(SettingChannelRateEnabled); getErr != nil {
+		return settings, getErr
+	} else if found {
+		settings.ChannelRateEnabled, err = strconv.ParseBool(rateEnabled)
+		if err != nil {
+			return settings, err
+		}
+	} else {
+		settings.ChannelRateEnabled = settings.ChannelEnabled
+	}
+	if _, configured, getErr := s.Get(SettingChannelRateIntervalSeconds); getErr != nil {
+		return settings, getErr
+	} else if configured {
+		if _, readErr := readInt(SettingChannelRateIntervalSeconds, &settings.ChannelRateIntervalSeconds); readErr != nil {
+			return settings, readErr
+		}
 	}
 	legacyRelayInterval := 60
 	legacyRelayIntervalConfigured, err := readInt(settingLegacyRelaySyncInterval, &legacyRelayInterval)
@@ -154,6 +176,11 @@ func (s *Settings) SaveSyncSettings(settings SyncSettings) error {
 	if settings.ChannelIntervalMinutes < 1 {
 		settings.ChannelIntervalMinutes = 30
 	}
+	// 倍率探测最短 5 秒（与中转站倍率探测一致）；0 值说明调用方还没带上该
+	// 字段，回落到默认 60 秒而不是关闭同步。
+	if settings.ChannelRateIntervalSeconds < 5 {
+		settings.ChannelRateIntervalSeconds = 60
+	}
 	if settings.RelayRateIntervalSeconds < 5 {
 		if settings.RelayRateIntervalMinutes > 0 {
 			settings.RelayRateIntervalSeconds = settings.RelayRateIntervalMinutes * 60
@@ -177,6 +204,8 @@ func (s *Settings) SaveSyncSettings(settings SyncSettings) error {
 		SettingChannelSyncConfigured:        "true",
 		SettingChannelSyncEnabled:           strconv.FormatBool(settings.ChannelEnabled),
 		SettingChannelSyncInterval:          strconv.Itoa(settings.ChannelIntervalMinutes),
+		SettingChannelRateEnabled:           strconv.FormatBool(settings.ChannelRateEnabled),
+		SettingChannelRateIntervalSeconds:   strconv.Itoa(settings.ChannelRateIntervalSeconds),
 		SettingRelayRateConfigured:          "true",
 		SettingRelayRateEnabled:             strconv.FormatBool(settings.RelayRateEnabled),
 		SettingRelayRateInterval:            strconv.Itoa(settings.RelayRateIntervalMinutes),

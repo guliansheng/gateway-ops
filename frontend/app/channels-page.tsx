@@ -15,6 +15,15 @@ import type { RelayUsageRange } from "@/lib/api-types"
 import { cn } from "@/lib/utils"
 
 const intervals = [5, 10, 15, 30, 60, 180, 360, 720, 1440]
+// 倍率探测间隔参考中转站“倍率探测”，支持秒级节奏。
+const rateIntervals = [5, 10, 20, 30, 60, 300, 600, 1800, 3600, 18000, 43200, 86400]
+
+function rateIntervalLabel(value: number) {
+  if (value < 60) return `每 ${value} 秒`
+  if (value === 86400) return "每天"
+  if (value % 3600 === 0) return `每 ${value / 3600} 小时`
+  return `每 ${value / 60} 分钟`
+}
 const ranges: { value: RelayUsageRange; label: string }[] = [
   { value: "today", label: "今天" },
   { value: "24h", label: "24 小时" },
@@ -27,6 +36,8 @@ export default function ChannelsPage() {
   const settings = useSyncSettings()
   const [enabled, setEnabled] = useState(false)
   const [interval, setInterval] = useState(30)
+  const [rateEnabled, setRateEnabled] = useState(false)
+  const [rateInterval, setRateInterval] = useState(60)
   const [saving, setSaving] = useState(false)
   const [range, setRange] = useState<RelayUsageRange>("today")
 
@@ -34,6 +45,8 @@ export default function ChannelsPage() {
     if (!settings.data) return
     setEnabled(settings.data.channel_enabled)
     setInterval(settings.data.channel_interval_minutes || 30)
+    setRateEnabled(settings.data.channel_rate_enabled)
+    setRateInterval(settings.data.channel_rate_interval_seconds || 60)
   }, [settings.data])
 
   async function save() {
@@ -46,6 +59,8 @@ export default function ChannelsPage() {
         body: JSON.stringify({
           channel_enabled: enabled,
           channel_interval_minutes: interval,
+          channel_rate_enabled: rateEnabled,
+          channel_rate_interval_seconds: rateInterval,
           relay_rate_enabled: current.relay_rate_enabled,
           relay_rate_interval_minutes: current.relay_rate_interval_minutes,
           relay_rate_interval_seconds: current.relay_rate_interval_seconds,
@@ -55,7 +70,7 @@ export default function ChannelsPage() {
         }),
       })
       settings.refetch()
-      toast.success(enabled ? `渠道自动同步已设置为每 ${interval} 分钟` : "渠道自动同步已关闭")
+      toast.success(`渠道自动同步已保存：余额${enabled ? `每 ${interval} 分钟` : "已关闭"}，倍率${rateEnabled ? rateIntervalLabel(rateInterval) : "已关闭"}`)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "保存失败")
     } finally {
@@ -85,17 +100,25 @@ export default function ChannelsPage() {
         <CardHeader className="flex flex-row items-center justify-between gap-3 px-4 py-3">
           <div className="min-w-0">
             <CardTitle className="flex items-center gap-2 text-sm font-semibold"><Clock3 className="size-4 text-brand" />{"渠道自动同步"}</CardTitle>
-            <p className="mt-1 truncate text-xs text-muted-foreground">{"按间隔同步余额和分组倍率，暂停监控的渠道不会被自动同步。"}</p>
+            <p className="mt-1 truncate text-xs text-muted-foreground">{"余额与倍率分开调度：余额按分钟级间隔刷新，倍率按更短的探测间隔刷新。暂停监控的渠道不会被自动同步。"}</p>
           </div>
           <Button size="sm" className="h-9 shrink-0 gap-1.5" onClick={() => void save()} disabled={saving || !settings.data}><Save className="size-3.5" />{"保存"}</Button>
         </CardHeader>
-        <CardContent className="border-t border-border px-4">
-          <div className="grid min-h-11 max-w-lg grid-cols-[auto_minmax(0,1fr)_7rem] items-center gap-3 py-4">
-            <Switch checked={enabled} onCheckedChange={setEnabled} disabled={!settings.data} aria-label="启用渠道自动同步" />
-            <Label className="truncate text-xs font-medium">{"余额与倍率同步"}</Label>
+        <CardContent className="grid divide-y divide-border border-t border-border px-4 md:grid-cols-2 md:divide-x md:divide-y-0">
+          <div className="grid min-h-11 grid-cols-[auto_minmax(0,1fr)_7rem] items-center gap-3 py-4 md:pr-6">
+            <Switch checked={enabled} onCheckedChange={setEnabled} disabled={!settings.data} aria-label="启用渠道余额同步" />
+            <div className="min-w-0"><Label className="truncate text-xs font-medium">{"余额同步"}</Label><p className="truncate text-[11px] leading-4 text-muted-foreground">{"刷新渠道与账号余额"}</p></div>
             <Select value={String(interval)} onValueChange={(value) => setInterval(Number(value))} disabled={!enabled}>
               <SelectTrigger className="h-9 w-28 text-xs"><SelectValue /></SelectTrigger>
               <SelectContent>{intervals.map((value) => <SelectItem key={value} value={String(value)}>{value < 60 ? `每 ${value} 分钟` : value % 60 === 0 && value < 1440 ? `每 ${value / 60} 小时` : value === 1440 ? "每天" : `每 ${value} 分钟`}</SelectItem>)}</SelectContent>
+            </Select>
+          </div>
+          <div className="grid min-h-11 grid-cols-[auto_minmax(0,1fr)_7rem] items-center gap-3 border-t border-border py-4 md:border-t-0 md:pl-6">
+            <Switch checked={rateEnabled} onCheckedChange={setRateEnabled} disabled={!settings.data} aria-label="启用渠道倍率探测" />
+            <div className="min-w-0"><Label className="truncate text-xs font-medium">{"倍率探测"}</Label><p className="truncate text-[11px] leading-4 text-muted-foreground">{"采集分组倍率与变动，最短 5 秒"}</p></div>
+            <Select value={String(rateInterval)} onValueChange={(value) => setRateInterval(Number(value))} disabled={!rateEnabled}>
+              <SelectTrigger className="h-9 w-28 text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent>{rateIntervals.map((value) => <SelectItem key={value} value={String(value)}>{rateIntervalLabel(value)}</SelectItem>)}</SelectContent>
             </Select>
           </div>
         </CardContent>

@@ -9,11 +9,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/robfig/cron/v3"
 	"github.com/guliansheng/gateway-ops/internal/config"
 	"github.com/guliansheng/gateway-ops/internal/monitor"
 	"github.com/guliansheng/gateway-ops/internal/relay"
 	"github.com/guliansheng/gateway-ops/internal/storage"
+	"github.com/robfig/cron/v3"
 )
 
 type Scheduler struct {
@@ -29,11 +29,13 @@ type Scheduler struct {
 	legacyBalanceID      cron.EntryID
 	legacyRateID         cron.EntryID
 	channelSyncID        cron.EntryID
+	channelRateSyncID    cron.EntryID
 	relayRateSyncID      cron.EntryID
 	relaySnapshotSyncID  cron.EntryID
 	dailyBalanceID       cron.EntryID
 	jobsMu               sync.Mutex
 	channelSyncMu        sync.Mutex
+	channelRateSyncMu    sync.Mutex
 	relaySyncMu          sync.Mutex
 	relayRateRunning     atomic.Bool
 	relaySnapshotRunning atomic.Bool
@@ -149,8 +151,20 @@ func (s *Scheduler) configureSyncJobs() error {
 			s.cron.Remove(s.channelSyncID)
 			s.channelSyncID = 0
 		}
+		if s.channelRateSyncID != 0 {
+			s.cron.Remove(s.channelRateSyncID)
+			s.channelRateSyncID = 0
+		}
+		// 余额与倍率是两个独立 job：余额按分钟级间隔刷，倍率探测可以压到
+		// 秒级（默认 60s，与中转站倍率探测同一套节奏），互不拖慢。
 		if settings.ChannelEnabled {
 			s.channelSyncID, err = s.cron.AddFunc(fmt.Sprintf("@every %dm", settings.ChannelIntervalMinutes), s.runChannelSync)
+			if err != nil {
+				return err
+			}
+		}
+		if settings.ChannelRateEnabled {
+			s.channelRateSyncID, err = s.cron.AddFunc(fmt.Sprintf("@every %ds", settings.ChannelRateIntervalSeconds), s.runChannelRateSync)
 			if err != nil {
 				return err
 			}
@@ -202,14 +216,26 @@ func (s *Scheduler) runRates() {
 
 func (s *Scheduler) runChannelSync() {
 	if !s.channelSyncMu.TryLock() {
-		s.log.Warn("skip overlapping channel sync")
+		s.log.Warn("skip overlapping channel balance sync")
 		return
 	}
 	defer s.channelSyncMu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
-	s.monitor.SyncAll(ctx, false)
+	s.monitor.SyncBalances(ctx, false)
+}
+
+func (s *Scheduler) runChannelRateSync() {
+	if !s.channelRateSyncMu.TryLock() {
+		s.log.Warn("skip overlapping channel rate sync")
+		return
+	}
+	defer s.channelRateSyncMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer cancel()
+	s.monitor.SyncRates(ctx, false)
 }
 
 func (s *Scheduler) runRelayRateSync() {
