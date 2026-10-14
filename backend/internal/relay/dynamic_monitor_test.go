@@ -34,6 +34,13 @@ func ruleGroup(thresholdSeconds float64, consecutive int, ids ...int64) DynamicM
 	}
 }
 
+// ruleGroupWithSingleTimeout 在 ruleGroup 基础上追加单次首字超时阈值。
+func ruleGroupWithSingleTimeout(thresholdSeconds float64, consecutive int, singleTimeoutSeconds float64, ids ...int64) DynamicMonitorRuleGroup {
+	group := ruleGroup(thresholdSeconds, consecutive, ids...)
+	group.SingleTimeoutSeconds = singleTimeoutSeconds
+	return group
+}
+
 func TestConsecutiveFirstTokenOverCountsNewestPrefix(t *testing.T) {
 	base := time.Now().UTC()
 	samples := []storage.RelayLatencySample{
@@ -158,6 +165,18 @@ func TestDynamicMonitorConfigValidate(t *testing.T) {
 		t.Fatal("连续次数非法时应报错")
 	}
 
+	// 0 表示不启用单次超时规则，其余取值都必须落在与连续阈值相同的区间内。
+	disabledSingle := valid
+	disabledSingle.Groups = []DynamicMonitorRuleGroup{ruleGroupWithSingleTimeout(12, 2, 0, 1)}
+	if err := disabledSingle.Validate(); err != nil {
+		t.Fatalf("单次超时为 0 应视为不启用: %v", err)
+	}
+	badSingle := valid
+	badSingle.Groups = []DynamicMonitorRuleGroup{ruleGroupWithSingleTimeout(12, 2, 0.01, 1)}
+	if err := badSingle.Validate(); err == nil {
+		t.Fatal("单次超时越界时应报错")
+	}
+
 	emptyGroup := valid
 	emptyGroup.Groups = []DynamicMonitorRuleGroup{{FirstTokenSeconds: 12, ConsecutiveCount: 1}}
 	if err := emptyGroup.Validate(); err == nil {
@@ -249,6 +268,59 @@ func TestPlanDynamicMonitorAppliesPerGroupThreshold(t *testing.T) {
 	// 分组里 11 即将关闭，可用只剩 12（< 2），但没有任何被规则关闭的账号，无法补开。
 	if len(plan.Reopen) != 0 {
 		t.Fatalf("补开名单 = %v，期望为空", plan.Reopen)
+	}
+}
+
+// 单次超时与连续超标两条规则并存：任一命中即关闭，且关闭原因分别记录。
+func TestPlanDynamicMonitorSingleTimeoutClosesImmediately(t *testing.T) {
+	base := time.Now().UTC()
+	config := DynamicMonitorConfig{
+		Enabled: true,
+		// 账号 21：单次 60 秒；账号 22：单次 60 秒且连续 2 次 12 秒；账号 23：只启用连续规则。
+		Groups: []DynamicMonitorRuleGroup{
+			ruleGroupWithSingleTimeout(12, 3, 60, 21),
+			ruleGroupWithSingleTimeout(12, 2, 60, 22),
+			ruleGroup(12, 3, 23),
+		},
+	}.Normalize()
+	accounts := []storage.RelayAccount{
+		// 单次 90 秒但只有 1 条：连续规则不触发，单次超时直接关闭。
+		{ExternalID: 21, ID: 1, Name: "单次超时", Schedulable: true, Status: "active", LatencySamplesJSON: latencyBody(t, 90000, 1, base)},
+		// 单次 20 秒未达 60 秒，但连续 2 次超过 12 秒：由连续规则关闭。
+		{ExternalID: 22, ID: 2, Name: "连续超标", Schedulable: true, Status: "active", LatencySamplesJSON: latencyBody(t, 20000, 2, base)},
+		// 未启用单次超时：90 秒单次不关闭，需连续 3 次。
+		{ExternalID: 23, ID: 3, Name: "仅连续规则", Schedulable: true, Status: "active", LatencySamplesJSON: latencyBody(t, 90000, 1, base)},
+	}
+
+	plan := planDynamicMonitor(config, DynamicMonitorState{}, accounts, nil, nil)
+	if len(plan.Close) != 2 || plan.Close[0] != 21 || plan.Close[1] != 22 {
+		t.Fatalf("关闭名单 = %v，期望 [21 22]", plan.Close)
+	}
+	if plan.CloseReasons[21] != dynamicMonitorReasonSingleFirstToken {
+		t.Fatalf("账号 21 原因 = %q，期望单次超时", plan.CloseReasons[21])
+	}
+	if plan.CloseReasons[22] != dynamicMonitorReasonFirstToken {
+		t.Fatalf("账号 22 原因 = %q，期望连续超标", plan.CloseReasons[22])
+	}
+}
+
+// 单次超时同样受重开后的采样下界约束，不拿旧样本重新关闭。
+func TestPlanDynamicMonitorSingleTimeoutIgnoresSamplesBeforeBoundary(t *testing.T) {
+	openedAt := time.Date(2026, 10, 13, 9, 23, 39, 0, time.UTC)
+	config := DynamicMonitorConfig{Enabled: true, Groups: []DynamicMonitorRuleGroup{ruleGroupWithSingleTimeout(12, 3, 60, 2276)}}.Normalize()
+	state := DynamicMonitorState{Judged: map[int64]time.Time{2276: openedAt}}
+
+	oldSamples := latencyBody(t, 90000, 3, openedAt.Add(-time.Hour))
+	account := storage.RelayAccount{ID: 1, ExternalID: 2276, Schedulable: true, Status: "active", LatencySamplesJSON: oldSamples}
+	if plan := planDynamicMonitor(config, state, []storage.RelayAccount{account}, nil, nil); len(plan.Close) != 0 {
+		t.Fatalf("重开前的旧样本不应触发单次超时: %v", plan.Close)
+	}
+
+	samples := parseLatencySamples(oldSamples)
+	samples = append(samples, storage.RelayLatencySample{FirstTokenMS: 61000, CreatedAt: openedAt.Add(time.Minute)})
+	account.LatencySamplesJSON = mustLatencyJSON(t, samples)
+	if plan := planDynamicMonitor(config, state, []storage.RelayAccount{account}, nil, nil); len(plan.Close) != 1 {
+		t.Fatalf("重开后的单次超时样本应关闭账号: %v", plan.Close)
 	}
 }
 

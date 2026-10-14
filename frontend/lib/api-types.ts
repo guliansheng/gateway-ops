@@ -921,6 +921,8 @@ export interface RelayDynamicMonitorRuleGroup {
   first_token_seconds: number
   /** 连续超标多少次后关闭账号。 */
   consecutive_count: number
+  /** 单次首字延迟超过该秒数直接关闭；0 表示不启用这条规则。 */
+  single_timeout_seconds: number
   /** 该规则组参与监测的账号；同一账号最多出现在一个规则组里。 */
   account_external_ids: number[]
 }

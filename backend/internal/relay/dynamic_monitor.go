@@ -26,6 +26,9 @@ const sourceDynamicMonitor = "dynamic"
 // dynamicMonitorReasonFirstToken 是关闭原因：首字延迟连续超过设定阈值。
 const dynamicMonitorReasonFirstToken = "first_token"
 
+// dynamicMonitorReasonSingleFirstToken 是关闭原因：单次首字延迟超过设定阈值。
+const dynamicMonitorReasonSingleFirstToken = "first_token_single"
+
 const (
 	// 阈值按秒配置（比毫秒更贴近实际调参直觉），内部仍换算成毫秒与样本比对。
 	dynamicMonitorMinThresholdSeconds = 0.1
@@ -40,8 +43,9 @@ const (
 	dynamicMonitorDefaultConsecutive      = 3
 )
 
-// DynamicMonitorRuleGroup 一组独立规则：自己的首字延迟阈值（秒）、超标次数与参与账号。
-// 同一个账号最多归属一个规则组，判定时按其所在组的阈值与次数评估。
+// DynamicMonitorRuleGroup 一组独立规则：自己的首字延迟阈值（秒）、超标次数、
+// 单次超时阈值与参与账号。同一个账号最多归属一个规则组，判定时按其所在组的规则评估。
+// 两条关闭规则并存：任意一条命中即关闭账号。
 type DynamicMonitorRuleGroup struct {
 	// Name 规则组名称，仅用于界面展示。
 	Name string `json:"name"`
@@ -49,6 +53,8 @@ type DynamicMonitorRuleGroup struct {
 	FirstTokenSeconds float64 `json:"first_token_seconds"`
 	// ConsecutiveCount 连续超标多少次后关闭账号。
 	ConsecutiveCount int `json:"consecutive_count"`
+	// SingleTimeoutSeconds 单次首字延迟超过该秒数时直接关闭账号，0 表示不启用这条规则。
+	SingleTimeoutSeconds float64 `json:"single_timeout_seconds"`
 	// AccountExternalIDs 该规则组参与监测的账号。
 	AccountExternalIDs []int64 `json:"account_external_ids"`
 }
@@ -207,6 +213,9 @@ func (g DynamicMonitorRuleGroup) Normalize() DynamicMonitorRuleGroup {
 	if g.ConsecutiveCount <= 0 {
 		g.ConsecutiveCount = dynamicMonitorDefaultConsecutive
 	}
+	if g.SingleTimeoutSeconds < 0 {
+		g.SingleTimeoutSeconds = 0
+	}
 	ids := make([]int64, 0, len(g.AccountExternalIDs))
 	seen := make(map[int64]struct{}, len(g.AccountExternalIDs))
 	for _, id := range g.AccountExternalIDs {
@@ -237,6 +246,11 @@ func (g DynamicMonitorRuleGroup) thresholdMS() int64 {
 	return int64(g.FirstTokenSeconds * 1000)
 }
 
+// singleTimeoutMS 把单次超时阈值换算成毫秒，0 表示这条规则未启用。
+func (g DynamicMonitorRuleGroup) singleTimeoutMS() int64 {
+	return int64(g.SingleTimeoutSeconds * 1000)
+}
+
 // Validate 校验弹窗提交的规则。
 func (c DynamicMonitorConfig) Validate() error {
 	if len(c.Groups) > dynamicMonitorMaxGroups {
@@ -250,6 +264,10 @@ func (c DynamicMonitorConfig) Validate() error {
 		}
 		if group.ConsecutiveCount < 1 || group.ConsecutiveCount > dynamicMonitorMaxConsecutive {
 			return fmt.Errorf("%s 连续超标次数必须在 1 到 %d 之间", label, dynamicMonitorMaxConsecutive)
+		}
+		// 单次超时为 0 表示不启用，启用时与连续阈值使用同一取值范围。
+		if group.SingleTimeoutSeconds != 0 && (group.SingleTimeoutSeconds < dynamicMonitorMinThresholdSeconds || group.SingleTimeoutSeconds > dynamicMonitorMaxThresholdSeconds) {
+			return fmt.Errorf("%s 单次首字超时必须为 0（不启用）或在 %g 到 %g 秒之间", label, dynamicMonitorMinThresholdSeconds, float64(dynamicMonitorMaxThresholdSeconds))
 		}
 		if len(group.AccountExternalIDs) == 0 {
 			return fmt.Errorf("%s 请至少选择一个参与账号", label)
@@ -272,6 +290,19 @@ func (c DynamicMonitorConfig) Validate() error {
 		return errors.New("允许动态开启时，请设置自动开启时间或分组最少保留账号数")
 	}
 	return nil
+}
+
+// anyFirstTokenOver 判断样本里是否存在任意一条首字延迟超过阈值，用于单次超时直接关闭。
+func anyFirstTokenOver(samples []storage.RelayLatencySample, thresholdMS int64) bool {
+	if thresholdMS <= 0 {
+		return false
+	}
+	for _, sample := range samples {
+		if sample.FirstTokenMS > thresholdMS {
+			return true
+		}
+	}
+	return false
 }
 
 // consecutiveFirstTokenOver 统计最新样本里从头开始连续超过阈值的条数。
@@ -314,6 +345,8 @@ func relayAccountSchedulable(account storage.RelayAccount) bool {
 type dynamicMonitorPlan struct {
 	// Close 本轮应关闭的账号（external id）。
 	Close []int64
+	// CloseReasons 记录每个待关闭账号命中的原因，写入关闭记录用于界面区分。
+	CloseReasons map[int64]string
 	// Reopen 本轮应开启的账号（external id），只来自之前被规则关闭的账号。
 	Reopen []int64
 	// State 是清理过期关闭记录后的状态，执行成功后再补上本轮关闭记录。
@@ -328,7 +361,10 @@ func planDynamicMonitor(
 	groups []storage.RelayGroup,
 	links []storage.RelayAccountGroup,
 ) dynamicMonitorPlan {
-	plan := dynamicMonitorPlan{State: retainedDynamicMonitorState(state, accounts)}
+	plan := dynamicMonitorPlan{
+		State:        retainedDynamicMonitorState(state, accounts),
+		CloseReasons: make(map[int64]string),
+	}
 
 	accountByExternalID := make(map[int64]storage.RelayAccount, len(accounts))
 	accountByLocalID := make(map[uint]storage.RelayAccount, len(accounts))
@@ -361,8 +397,8 @@ func planDynamicMonitor(
 		return plan
 	}
 
-	// 2) 首字延迟连续超标 → 关闭参与监测的账号。
-	// 每个账号只按它所属规则组的阈值与次数判定；账号归属在 Normalize 时已保证唯一。
+	// 2) 关闭参与监测的账号：连续超标或单次超时，命中任意一条即关闭。
+	// 每个账号只按它所属规则组的两条规则判定；账号归属在 Normalize 时已保证唯一。
 	ruleByAccount := make(map[int64]DynamicMonitorRuleGroup)
 	for _, group := range config.Groups {
 		for _, externalID := range group.AccountExternalIDs {
@@ -382,8 +418,15 @@ func planDynamicMonitor(
 			continue
 		}
 		samples := dynamicMonitorSamplesAfter(account.LatencySamplesJSON, plan.State.Judged[account.ExternalID])
+		// 单次超时优先级更高：只要有一条新样本超过它就直接关闭。
+		if anyFirstTokenOver(samples, rule.singleTimeoutMS()) {
+			plan.Close = append(plan.Close, account.ExternalID)
+			plan.CloseReasons[account.ExternalID] = dynamicMonitorReasonSingleFirstToken
+			continue
+		}
 		if consecutiveFirstTokenOver(samples, rule.thresholdMS()) >= rule.ConsecutiveCount {
 			plan.Close = append(plan.Close, account.ExternalID)
+			plan.CloseReasons[account.ExternalID] = dynamicMonitorReasonFirstToken
 		}
 	}
 	sort.Slice(plan.Close, func(i, j int) bool { return plan.Close[i] < plan.Close[j] })
@@ -535,10 +578,14 @@ func (s *Service) applyDynamicMonitor(ctx context.Context, station *storage.Rela
 			failures = append(failures, fmt.Sprintf("账号 %s 关闭调度: %v", account.Name, err))
 			continue
 		}
+		reason := plan.CloseReasons[externalID]
+		if reason == "" {
+			reason = dynamicMonitorReasonFirstToken
+		}
 		nextState.ClosedAccounts = append(nextState.ClosedAccounts, DynamicMonitorClosure{
 			AccountExternalID: account.ExternalID,
 			AccountName:       account.Name,
-			Reason:            dynamicMonitorReasonFirstToken,
+			Reason:            reason,
 			ClosedAt:          now,
 		})
 		nextState.consumeSamples(account, now)

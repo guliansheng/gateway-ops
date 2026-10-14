@@ -33,7 +33,28 @@ interface RuleGroupDraft {
   name: string
   threshold: string
   consecutive: string
+  /** 是否启用“单次首字超时直接关闭”这条规则。 */
+  singleTimeoutEnabled: boolean
+  /** 单次首字超时阈值（秒）。 */
+  singleTimeout: string
   selectedIDs: number[]
+}
+
+/** 把编辑中的规则组翻译成一句可核对的话，避免“N 秒 M 次”这类缩写歧义。 */
+function describeRule(draft: RuleGroupDraft): string {
+  const threshold = draft.threshold.trim() || "?"
+  const consecutive = draft.consecutive.trim() || "?"
+  const rules = [`连续 ${consecutive} 次首字延迟超过 ${threshold} 秒`]
+  const single = draft.singleTimeout.trim()
+  if (draft.singleTimeoutEnabled) rules.push(`单次首字延迟超过 ${single || "?"} 秒`)
+  const prefix = rules.length > 1 ? "命中任意一条即关闭账号：" : "关闭账号条件："
+  return `${prefix}${rules.join("；")}。`
+}
+
+/** 关闭原因的中文说明，与后端 dynamicMonitorReason* 常量对应。 */
+const CLOSE_REASON_LABELS: Record<string, string> = {
+  first_token: "连续超标",
+  first_token_single: "单次超时",
 }
 
 let ruleGroupSeq = 0
@@ -45,6 +66,8 @@ function makeDraft(index: number, overrides: Partial<RuleGroupDraft> = {}): Rule
     name: overrides.name ?? `规则组 ${index}`,
     threshold: overrides.threshold ?? "10",
     consecutive: overrides.consecutive ?? "2",
+    singleTimeoutEnabled: overrides.singleTimeoutEnabled ?? false,
+    singleTimeout: overrides.singleTimeout ?? "60",
     selectedIDs: overrides.selectedIDs ?? [],
   }
 }
@@ -56,6 +79,8 @@ function toDrafts(config: RelayDynamicMonitorConfig): RuleGroupDraft[] {
     name: group.name,
     threshold: String(group.first_token_seconds ?? 0),
     consecutive: String(group.consecutive_count ?? 0),
+    singleTimeoutEnabled: (group.single_timeout_seconds ?? 0) > 0,
+    singleTimeout: (group.single_timeout_seconds ?? 0) > 0 ? String(group.single_timeout_seconds) : "60",
     selectedIDs: [...(group.account_external_ids ?? [])],
   }))
 }
@@ -103,28 +128,53 @@ function RuleGroupCard({
     })
   }
 
+  const closedCount = useMemo(
+    () => draft.selectedIDs.filter((externalID) => closedByExternalID.has(externalID)).length,
+    [draft.selectedIDs, closedByExternalID],
+  )
+
   const allVisibleSelected = visibleAccounts.some((account) => !claimed.has(account.external_id))
     && visibleAccounts.filter((account) => !claimed.has(account.external_id)).every((account) => draft.selectedIDs.includes(account.external_id))
 
   return (
     <section className="rounded-md border border-border bg-muted/20 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-          <span className="shrink-0 text-[11px] font-medium text-muted-foreground">组 {index + 1}</span>
-          <Input value={draft.name} onChange={(event) => onChange({ name: event.target.value })} disabled={busy} placeholder="规则组名称" aria-label={`规则组 ${index + 1} 名称`} className="h-8 w-36 text-xs" />
-          <div className="flex items-center gap-1.5">
-            <Input inputMode="decimal" value={draft.threshold} onChange={(event) => onChange({ threshold: event.target.value })} disabled={busy} className="h-8 w-20 text-xs tabular-nums" aria-label={`规则组 ${index + 1} 首字延迟阈值（秒）`} />
-            <span className="shrink-0 text-xs text-muted-foreground">秒</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <Input inputMode="numeric" value={draft.consecutive} onChange={(event) => onChange({ consecutive: event.target.value })} disabled={busy} className="h-8 w-16 text-xs tabular-nums" aria-label={`规则组 ${index + 1} 连续超标次数`} />
-            <span className="shrink-0 text-xs text-muted-foreground">次超标即关闭</span>
-          </div>
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <span className="shrink-0 text-[11px] font-medium text-muted-foreground">规则组 {index + 1}</span>
+          <Input value={draft.name} onChange={(event) => onChange({ name: event.target.value })} disabled={busy} placeholder="规则组名称" aria-label={`规则组 ${index + 1} 名称`} className="h-8 w-44 text-xs" />
         </div>
         <Button type="button" variant="ghost" size="sm" className="h-8 shrink-0 gap-1 text-xs text-danger hover:text-danger" disabled={busy || !canRemove} onClick={onRemove} aria-label={`删除规则组 ${index + 1}`}>
           <Trash2 className="size-3.5" />删除
         </Button>
       </div>
+
+      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+        <div className="rounded-md border border-border bg-background px-2.5 py-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-medium">连续超时关闭</span>
+          </div>
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+            <span className="shrink-0 text-[11px] text-muted-foreground">首字延迟超过</span>
+            <Input inputMode="decimal" value={draft.threshold} onChange={(event) => onChange({ threshold: event.target.value })} disabled={busy} className="h-8 w-20 text-xs tabular-nums" aria-label={`规则组 ${index + 1} 连续超时阈值（秒）`} />
+            <span className="shrink-0 text-[11px] text-muted-foreground">秒，连续</span>
+            <Input inputMode="numeric" value={draft.consecutive} onChange={(event) => onChange({ consecutive: event.target.value })} disabled={busy} className="h-8 w-16 text-xs tabular-nums" aria-label={`规则组 ${index + 1} 连续超标次数`} />
+            <span className="shrink-0 text-[11px] text-muted-foreground">次后关闭</span>
+          </div>
+        </div>
+        <div className="rounded-md border border-border bg-background px-2.5 py-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-medium">单次超时直接关闭</span>
+            <Switch checked={draft.singleTimeoutEnabled} onCheckedChange={(checked) => onChange({ singleTimeoutEnabled: checked })} disabled={busy} aria-label={`规则组 ${index + 1} 启用单次首字超时直接关闭`} />
+          </div>
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+            <span className="shrink-0 text-[11px] text-muted-foreground">首字延迟超过</span>
+            <Input inputMode="decimal" value={draft.singleTimeout} onChange={(event) => onChange({ singleTimeout: event.target.value })} disabled={busy || !draft.singleTimeoutEnabled} className="h-8 w-20 text-xs tabular-nums" aria-label={`规则组 ${index + 1} 单次首字超时阈值（秒）`} />
+            <span className="shrink-0 text-[11px] text-muted-foreground">秒立即关闭</span>
+          </div>
+        </div>
+      </div>
+
+      <p className="mt-1.5 text-[11px] text-muted-foreground">{describeRule(draft)}</p>
 
       <div className="mt-2.5 flex flex-wrap items-center gap-2">
         <div className="relative">
@@ -173,11 +223,12 @@ function RuleGroupCard({
         })}
       </div>
       {total > 1 ? <p className="mt-1.5 text-[11px] text-muted-foreground">共 {total} 个规则组；同一账号只能归属一个规则组。</p> : null}
+      {closedCount > 0 ? <p className="mt-1.5 text-[11px] text-muted-foreground">本组当前有 {closedCount} 个账号被规则关闭。</p> : null}
     </section>
   )
 }
 
-/** 多规则组动态监测：每组独立的首字延迟阈值（秒）与超标次数，账号跨组互斥；补开规则全局一套。 */
+/** 多规则组动态监测：每组独立的“连续超标”与“单次超时”规则，账号跨组互斥；补开规则全局一套。 */
 export function DynamicMonitorDialog({ open, busy, config, state, accounts, groups, onOpenChange, onSave }: DynamicMonitorDialogProps) {
   const [enabled, setEnabled] = useState(config.enabled)
   const [ruleGroups, setRuleGroups] = useState<RuleGroupDraft[]>(() => toDrafts(config))
@@ -266,8 +317,10 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
       const label = draft.name.trim() || `第 ${index + 1} 组`
       const thresholdValue = Number(draft.threshold)
       const consecutiveValue = Number(draft.consecutive)
-      if (!Number.isFinite(thresholdValue) || thresholdValue < 0.1 || thresholdValue > 600) return setError(`${label}：首字延迟阈值必须在 0.1 到 600 秒之间`)
+      const singleTimeoutValue = draft.singleTimeoutEnabled ? Number(draft.singleTimeout) : 0
+      if (!Number.isFinite(thresholdValue) || thresholdValue < 0.1 || thresholdValue > 600) return setError(`${label}：连续超时阈值必须在 0.1 到 600 秒之间`)
       if (!Number.isInteger(consecutiveValue) || consecutiveValue < 1 || consecutiveValue > 100) return setError(`${label}：连续超标次数必须是 1 到 100 的整数`)
+      if (draft.singleTimeoutEnabled && (!Number.isFinite(singleTimeoutValue) || singleTimeoutValue < 0.1 || singleTimeoutValue > 600)) return setError(`${label}：单次首字超时阈值必须在 0.1 到 600 秒之间`)
       if (draft.selectedIDs.length === 0) return setError(`${label}：请至少勾选一个参与账号`)
     }
 
@@ -281,6 +334,7 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
         name: draft.name.trim(),
         first_token_seconds: Number(draft.threshold),
         consecutive_count: Number(draft.consecutive),
+        single_timeout_seconds: draft.singleTimeoutEnabled ? Number(draft.singleTimeout) : 0,
         account_external_ids: draft.selectedIDs,
       })),
       min_accounts_per_group: minAccountsValue,
@@ -295,7 +349,7 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
         <DialogHeader className="shrink-0 border-b border-border px-4 py-4 sm:px-6">
           <DialogTitle>账号动态监测</DialogTitle>
           <DialogDescription>
-            规则只保存在当前中转站的这个功能里，不会写入分组配置，也不影响自动调组策略：每个规则组按自己的首字延迟阈值与超标次数关闭账号，随后按“分组最少保留账号数”和“超时自动开启”开回来。
+            规则只保存在当前中转站的这个功能里，不会写入分组配置，也不影响自动调组策略：每个规则组命中“连续超标”或“单次超时”任一条件就关闭账号，随后按“分组最少保留账号数”和“超时自动开启”开回来。
           </DialogDescription>
         </DialogHeader>
 
@@ -318,7 +372,7 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
                 </Button>
               </div>
             </div>
-            <p className="text-[11px] text-muted-foreground">每组独立设置首字延迟阈值（秒）与连续超标次数；同一账号只能归属一个规则组，已在别组选中的账号这里不可再选。</p>
+            <p className="text-[11px] text-muted-foreground">每组有两条互相独立的关闭规则，命中任意一条就关闭该组勾选的账号：上面一条看连续调用，首字延迟超过设定秒数且连续达到设定次数才关闭；下面一条只看单次调用，任意一次首字延迟超过设定秒数就立即关闭，关闭开关表示不启用。同一账号只能归属一个规则组，已在别组选中的账号这里不可再选。</p>
             <div className="space-y-3">
               {ruleGroups.map((draft, index) => (
                 <RuleGroupCard
@@ -378,7 +432,11 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
               <div className="max-h-40 space-y-1.5 overflow-y-auto rounded-md border border-border p-2 pr-1">
                 {closedAccounts.map((closure) => (
                   <div key={closure.account_external_id} className="flex flex-wrap items-center justify-between gap-2 border border-transparent px-2 py-1.5">
-                    <span className="min-w-0 truncate text-xs font-medium">{closure.account_name} <span className="font-mono text-[11px] font-normal text-muted-foreground">#{closure.account_external_id}</span></span>
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <span className="truncate text-xs font-medium">{closure.account_name}</span>
+                      <span className="font-mono text-[11px] font-normal text-muted-foreground">#{closure.account_external_id}</span>
+                      <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">{CLOSE_REASON_LABELS[closure.reason] ?? "规则命中"}</span>
+                    </span>
                     <span className="text-[11px] text-muted-foreground">关闭于 {relativeTime(closure.closed_at)}</span>
                   </div>
                 ))}
