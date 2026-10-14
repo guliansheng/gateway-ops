@@ -176,9 +176,7 @@ func extractToken(r *http.Request) string {
 	if strings.HasPrefix(h, "Bearer ") {
 		return strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
 	}
-	if t := r.URL.Query().Get("token"); t != "" {
-		return t
-	}
+	// 不再接受 ?token= 形式的凭据：URL 会进 access log / Referer，等于泄露 token。
 	if c, err := r.Cookie("uh_token"); err == nil {
 		return c.Value
 	}

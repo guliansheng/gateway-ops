@@ -81,3 +81,34 @@ func TestLoginRateLimitedReturns429(t *testing.T) {
 		t.Fatalf("锁定期间正确密码也应 429，实际 %d", rec.Code)
 	}
 }
+
+func TestLoginDoesNotAcceptQueryToken(t *testing.T) {
+	guard := auth.NewDefaultGuard()
+	engine := newAuthTestEngine(t, guard)
+
+	// 先正常登录拿一个有效 token。
+	rec := postLogin(engine, `{"username":"admin","password":"correct-horse-battery"}`)
+	var out struct {
+		Data struct {
+			Token string `json:"token"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("解析响应失败: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/channels?token="+out.Data.Token, nil)
+	rec2 := httptest.NewRecorder()
+	engine.ServeHTTP(rec2, req)
+	if rec2.Code != http.StatusUnauthorized {
+		t.Fatalf("?token= 不应再被接受，期望 401，实际 %d", rec2.Code)
+	}
+
+	// 同样地，Authorization 头仍然可用（这里只验证未被白名单外的路径拒绝为 401 missing token）。
+	req = httptest.NewRequest(http.MethodGet, "/api/version", nil)
+	rec3 := httptest.NewRecorder()
+	engine.ServeHTTP(rec3, req)
+	if rec3.Code != http.StatusOK {
+		t.Fatalf("白名单路径应为 200，实际 %d", rec3.Code)
+	}
+}
