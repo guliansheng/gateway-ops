@@ -229,9 +229,19 @@ func evaluateAccountRiskWithOptions(account storage.RelayAccount, currentGroups,
 
 	candidates := make([]storage.RelayGroup, 0)
 	for _, group := range allGroups {
-		if isActive(group.Status) && samePlatform(group.Platform, account.Platform) && (!restrictModelCandidates || sameModelType(account, group)) && sameAccountType(account, group, groupTypes) && group.RateMultiplier > cost {
-			candidates = append(candidates, group)
+		if !isActive(group.Status) || !samePlatform(group.Platform, account.Platform) ||
+			!sameAccountType(account, group, groupTypes) || group.RateMultiplier <= cost {
+			continue
 		}
+		// 未设置模型类型的分组不参与调组策略：既不作为调组建议，也不作为自动调组候选。
+		if !groupHasModelTypes(group) {
+			continue
+		}
+		// 风险展示沿用销售分组原规则；自动执行时再按账号绑定的模型类型收紧候选。
+		if restrictModelCandidates && !sameModelType(account, group) {
+			continue
+		}
+		candidates = append(candidates, group)
 	}
 	sort.Slice(candidates, func(i, j int) bool {
 		if candidates[i].RateMultiplier != candidates[j].RateMultiplier {
@@ -1211,13 +1221,32 @@ func sameAccountType(account storage.RelayAccount, group storage.RelayGroup, gro
 	return true
 }
 
+// groupHasModelTypes 判断分组是否设置了模型类型。未设置的分组不参与调组策略，
+// 既不会被推荐给账号，也不会成为自动调组的目标。
+func groupHasModelTypes(group storage.RelayGroup) bool {
+	if strings.TrimSpace(group.ModelTypesJSON) == "" {
+		return false
+	}
+	var configured []string
+	if err := json.Unmarshal([]byte(group.ModelTypesJSON), &configured); err != nil {
+		return false
+	}
+	for _, item := range configured {
+		if strings.TrimSpace(item) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func sameModelType(account storage.RelayAccount, group storage.RelayGroup) bool {
 	var configured []string
 	if strings.TrimSpace(group.ModelTypesJSON) != "" {
 		_ = json.Unmarshal([]byte(group.ModelTypesJSON), &configured)
 	}
+	// 未设置模型类型的分组不参与调组策略。
 	if len(configured) == 0 {
-		return true
+		return false
 	}
 	value := strings.ToLower(strings.TrimSpace(account.ModelType))
 	if value == "" {

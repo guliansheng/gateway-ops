@@ -47,10 +47,10 @@ func TestEvaluateAccountRiskReplacesOnlyUnsafeGroups(t *testing.T) {
 	cost := 1.25
 	account := storage.RelayAccount{ExternalID: 8, Platform: "openai", Status: "active", RateMultiplier: &cost, RateSource: "upstream_probe"}
 	groups := []storage.RelayGroup{
-		{ExternalID: 1, Name: "亏损", Platform: "openai", Status: "active", RateMultiplier: 1.2},
-		{ExternalID: 2, Name: "安全", Platform: "openai", Status: "active", RateMultiplier: 1.5},
-		{ExternalID: 3, Name: "更低安全候选", Platform: "openai", Status: "active", RateMultiplier: 1.3},
-		{ExternalID: 4, Name: "异平台", Platform: "anthropic", Status: "active", RateMultiplier: 1.21},
+		{ExternalID: 1, Name: "亏损", Platform: "openai", Status: "active", ModelTypesJSON: `["gpt"]`, RateMultiplier: 1.2},
+		{ExternalID: 2, Name: "安全", Platform: "openai", Status: "active", ModelTypesJSON: `["gpt"]`, RateMultiplier: 1.5},
+		{ExternalID: 3, Name: "更低安全候选", Platform: "openai", Status: "active", ModelTypesJSON: `["gpt"]`, RateMultiplier: 1.3},
+		{ExternalID: 4, Name: "异平台", Platform: "anthropic", Status: "active", ModelTypesJSON: `["gpt"]`, RateMultiplier: 1.21},
 	}
 	risk := evaluateAccountRisk(account, groups[:2], groups, 0.05)
 	if risk.State != RiskStateRisk || !risk.CanApply {
@@ -72,8 +72,8 @@ func TestEvaluateAccountRiskEqualMultiplierIsNoProfit(t *testing.T) {
 	cost := 1.2
 	account := storage.RelayAccount{ExternalID: 8, Type: "apikey", Platform: "openai", Status: "active", RateMultiplier: &cost, RateSource: "upstream_probe"}
 	groups := []storage.RelayGroup{
-		{ID: 1, ExternalID: 1, Name: "同倍率", Platform: "openai", Status: "active", RateMultiplier: 1.2},
-		{ID: 2, ExternalID: 2, Name: "有利润", Platform: "openai", Status: "active", RateMultiplier: 1.4},
+		{ID: 1, ExternalID: 1, Name: "同倍率", Platform: "openai", Status: "active", ModelTypesJSON: `["gpt"]`, RateMultiplier: 1.2},
+		{ID: 2, ExternalID: 2, Name: "有利润", Platform: "openai", Status: "active", ModelTypesJSON: `["gpt"]`, RateMultiplier: 1.4},
 	}
 	risk := evaluateAccountRisk(account, groups[:1], groups, 0)
 	if risk.State != RiskStateNoProfit || !risk.CanApply {
@@ -104,9 +104,9 @@ func TestEvaluateAccountRiskSkipsOAuthOnlyCandidateForAPIKey(t *testing.T) {
 	cost := 1.0
 	account := storage.RelayAccount{ExternalID: 8, Type: "apikey", Platform: "openai", Status: "active", RateMultiplier: &cost, RateSource: "upstream_probe"}
 	groups := []storage.RelayGroup{
-		{ID: 1, ExternalID: 1, Name: "亏损", Platform: "openai", Status: "active", RateMultiplier: 0.8},
-		{ID: 2, ExternalID: 2, Name: "OAuth 候选", Platform: "openai", Status: "active", RequireOAuthOnly: true, RateMultiplier: 1.1},
-		{ID: 3, ExternalID: 3, Name: "API Key 候选", Platform: "openai", Status: "active", RateMultiplier: 1.2},
+		{ID: 1, ExternalID: 1, Name: "亏损", Platform: "openai", Status: "active", ModelTypesJSON: `["gpt"]`, RateMultiplier: 0.8},
+		{ID: 2, ExternalID: 2, Name: "OAuth 候选", Platform: "openai", Status: "active", ModelTypesJSON: `["gpt"]`, RequireOAuthOnly: true, RateMultiplier: 1.1},
+		{ID: 3, ExternalID: 3, Name: "API Key 候选", Platform: "openai", Status: "active", ModelTypesJSON: `["gpt"]`, RateMultiplier: 1.2},
 	}
 	risk := evaluateAccountRisk(account, groups[:1], groups, 0)
 	if risk.RecommendedGroup == nil || risk.RecommendedGroup.ExternalID != 3 {
@@ -118,9 +118,9 @@ func TestEvaluateAccountRiskAddsLowestSafeCandidate(t *testing.T) {
 	cost := 1.0
 	account := storage.RelayAccount{ExternalID: 8, Platform: "openai", Status: "active", RateMultiplier: &cost, RateSource: "upstream_probe"}
 	groups := []storage.RelayGroup{
-		{ExternalID: 1, Name: "亏损", Platform: "openai", Status: "active", RateMultiplier: 0.9},
-		{ExternalID: 2, Name: "高价", Platform: "openai", Status: "active", RateMultiplier: 1.6},
-		{ExternalID: 3, Name: "最低安全", Platform: "openai", Status: "active", RateMultiplier: 1.1},
+		{ExternalID: 1, Name: "亏损", Platform: "openai", Status: "active", ModelTypesJSON: `["gpt"]`, RateMultiplier: 0.9},
+		{ExternalID: 2, Name: "高价", Platform: "openai", Status: "active", ModelTypesJSON: `["gpt"]`, RateMultiplier: 1.6},
+		{ExternalID: 3, Name: "最低安全", Platform: "openai", Status: "active", ModelTypesJSON: `["gpt"]`, RateMultiplier: 1.1},
 	}
 	risk := evaluateAccountRisk(account, groups[:1], groups, 0.05)
 	if risk.State != RiskStateRisk || !risk.CanApply {
@@ -141,10 +141,17 @@ func TestEvaluateAccountRiskRestrictsCandidatesByConfiguredModelType(t *testing.
 		{ID: 1, ExternalID: 1, Platform: "openai", Status: "active", ModelTypesJSON: `["gpt"]`, RateMultiplier: 0.9},
 		{ID: 2, ExternalID: 2, Platform: "openai", Status: "active", ModelTypesJSON: `["claude"]`, RateMultiplier: 1.1},
 		{ID: 3, ExternalID: 3, Platform: "openai", Status: "active", ModelTypesJSON: `["gpt"]`, RateMultiplier: 1.2},
+		// 未设置模型类型的分组倍率更低，但不参与调组策略，不能成为推荐目标。
+		{ID: 4, ExternalID: 4, Platform: "openai", Status: "active", RateMultiplier: 1.05},
 	}
 	risk := evaluateAccountRiskWithOptions(account, groups[:1], groups, nil, true)
 	if risk.RecommendedGroup == nil || risk.RecommendedGroup.ExternalID != 3 {
 		t.Fatalf("recommended = %#v", risk.RecommendedGroup)
+	}
+	// 展示口径同样不把未设置模型类型的分组放进调组建议（否则最低价的 4 号会被推荐）。
+	risk = evaluateAccountRiskWithOptions(account, groups[:1], groups, nil, false)
+	if risk.RecommendedGroup == nil || risk.RecommendedGroup.ExternalID != 2 {
+		t.Fatalf("display recommended = %#v", risk.RecommendedGroup)
 	}
 }
 
@@ -171,9 +178,33 @@ func TestEvaluateAccountRiskRestrictsDowngradeByModelType(t *testing.T) {
 	}
 }
 
-func TestEvaluateAccountRiskKeepsUnconfiguredGroupsCompatible(t *testing.T) {
-	if !sameModelType(storage.RelayAccount{}, storage.RelayGroup{}) {
-		t.Fatal("unconfigured groups must keep legacy behavior")
+func TestEvaluateAccountRiskExcludesGroupsWithoutModelTypes(t *testing.T) {
+	if sameModelType(storage.RelayAccount{}, storage.RelayGroup{}) {
+		t.Fatal("未设置模型类型的分组不应匹配任何账号")
+	}
+	if groupHasModelTypes(storage.RelayGroup{}) || groupHasModelTypes(storage.RelayGroup{ModelTypesJSON: "[]"}) ||
+		groupHasModelTypes(storage.RelayGroup{ModelTypesJSON: `["  "]`}) {
+		t.Fatal("空模型类型必须视为未设置")
+	}
+	if !groupHasModelTypes(storage.RelayGroup{ModelTypesJSON: `["gpt"]`}) {
+		t.Fatal("已设置模型类型的分组应参与调组策略")
+	}
+}
+
+// 未设置模型类型的分组既不能成为调组建议，也不能把账号推进去。
+func TestEvaluateAccountRiskKeepsGroupWithoutModelTypesOutOfSuggestions(t *testing.T) {
+	cost := 1.0
+	account := storage.RelayAccount{ExternalID: 8, ModelType: "gpt", Platform: "openai", Status: "active", RateMultiplier: &cost, RateSource: "upstream_probe"}
+	groups := []storage.RelayGroup{
+		{ID: 1, ExternalID: 1, Name: "当前亏损组", Platform: "openai", Status: "active", RateMultiplier: 0.9},
+		{ID: 2, ExternalID: 2, Name: "未配置候选", Platform: "openai", Status: "active", RateMultiplier: 5.0},
+	}
+	risk := evaluateAccountRisk(account, groups[:1], groups, 0)
+	if risk.RecommendedGroup != nil || len(risk.SuggestedGroupIDs) != 0 {
+		t.Fatalf("未配置模型类型的分组不应出现在调组建议中: %#v / %v", risk.RecommendedGroup, risk.SuggestedGroupIDs)
+	}
+	if risk.State != RiskStateNoSafeCandidate || risk.CanApply {
+		t.Fatalf("state=%q canApply=%v, want no_safe_candidate", risk.State, risk.CanApply)
 	}
 }
 
@@ -229,11 +260,11 @@ func TestEvaluateAccountRiskFindsEverySafeDowngradeGroup(t *testing.T) {
 
 func TestEvaluateAccountRiskHasNoDowngradeAtLowestSafeRate(t *testing.T) {
 	cost := 1.0
-	account := storage.RelayAccount{ExternalID: 8, Type: "apikey", Platform: "openai", Status: "active", RateMultiplier: &cost, RateSource: "upstream_probe"}
+	account := storage.RelayAccount{ExternalID: 8, Type: "apikey", ModelType: "gpt", Platform: "openai", Status: "active", RateMultiplier: &cost, RateSource: "upstream_probe"}
 	groups := []storage.RelayGroup{
-		{ID: 1, ExternalID: 1, Name: "当前最低安全", Platform: "openai", Status: "active", RateMultiplier: 1.1},
-		{ID: 2, ExternalID: 2, Name: "更高倍率", Platform: "openai", Status: "active", RateMultiplier: 1.2},
-		{ID: 3, ExternalID: 3, Name: "无利润", Platform: "openai", Status: "active", RateMultiplier: 1.0},
+		{ID: 1, ExternalID: 1, Name: "当前最低安全", Platform: "openai", Status: "active", ModelTypesJSON: `["gpt"]`, RateMultiplier: 1.1},
+		{ID: 2, ExternalID: 2, Name: "更高倍率", Platform: "openai", Status: "active", ModelTypesJSON: `["gpt"]`, RateMultiplier: 1.2},
+		{ID: 3, ExternalID: 3, Name: "无利润", Platform: "openai", Status: "active", ModelTypesJSON: `["gpt"]`, RateMultiplier: 1.0},
 	}
 	risk := evaluateAccountRisk(account, groups[:1], groups, 0)
 	if risk.DowngradeGroup != nil || len(risk.DowngradeGroups) != 0 {
