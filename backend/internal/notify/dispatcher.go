@@ -200,9 +200,13 @@ func (d *Dispatcher) fanout(ctx context.Context, msg Message, extraFilter func(*
 	var errs []error
 	for i := range channels {
 		ch := channels[i]
-		subs, _ := ParseSubscriptions(ch.Subscriptions)
-		if len(subs) > 0 && !AnyMatch(subs, msg) {
-			continue
+		// ChannelID == 0 的系统消息（如后台登录被限流告警）不受订阅过滤影响，
+		// 订阅规则只用来裁剪具体的上游 / 分组事件。
+		if msg.ChannelID != 0 {
+			subs, _ := ParseSubscriptions(ch.Subscriptions)
+			if len(subs) > 0 && !AnyMatch(subs, msg) {
+				continue
+			}
 		}
 		if extraFilter != nil && !extraFilter(&ch) {
 			continue

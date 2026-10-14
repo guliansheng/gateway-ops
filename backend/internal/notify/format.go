@@ -32,6 +32,8 @@ func notificationIcon(msg Message) string {
 		return "🧩"
 	case storage.EventMonitorFailed:
 		return "⚠️"
+	case storage.EventAdminLoginBlocked:
+		return "🚨"
 	default:
 		return "🔔"
 	}
@@ -53,7 +55,10 @@ func notificationBody(msg Message) string {
 // in failure notifications. The original error remains available in server
 // logs and monitor logs for diagnosis.
 func sanitizeMessage(msg Message) Message {
-	if msg.Event == storage.EventLoginFailed || msg.Event == storage.EventCaptchaFailed || msg.Event == storage.EventMonitorFailed {
+	// 只对"渠道侧"失败做正文脱敏（避免把上游错误细节外发）。
+	// 后台登录被限流属于本系统自身的运维告警，正文里带着来源 IP / 锁定时长，需要原样保留。
+	if msg.Event == storage.EventLoginFailed || msg.Event == storage.EventCaptchaFailed ||
+		msg.Event == storage.EventMonitorFailed {
 		msg.Body = notificationBody(msg)
 	}
 	return msg

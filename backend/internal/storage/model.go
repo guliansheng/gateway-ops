@@ -287,6 +287,9 @@ const (
 	EventLoginFailed   NotificationEvent = "login_failed"
 	EventCaptchaFailed NotificationEvent = "captcha_failed"
 	EventMonitorFailed NotificationEvent = "monitor_failed"
+	// EventAdminLoginBlocked 后台管理员登录连续失败触发限流锁定。
+	// 与 EventLoginFailed（渠道登录失败）区分开：这条是有人在爆破后台。
+	EventAdminLoginBlocked NotificationEvent = "admin_login_blocked"
 )
 
 // NotificationLog 通知发送记录。
