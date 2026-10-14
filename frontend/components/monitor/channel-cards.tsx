@@ -39,7 +39,7 @@ import { syncChannelStream, testLoginStream, type ProgressEvent } from "@/lib/sy
 import type { Channel, ChannelAccount, RateBoundAccount, RateSnapshot, RelayLatencySample, RelayUsageRange } from "@/lib/api-types"
 import { ChannelFormDialog } from "@/components/monitor/channel-form-dialog"
 import { PlatformBadge } from "@/components/relay/platform-badge"
-import { RateChangeDot, RateTooltipBody } from "@/components/monitor/rate-change"
+import { RateChangeDot, RateTooltipBody, isNewGroup } from "@/components/monitor/rate-change"
 import { RecentUsageCard, RecentUsageTooltip, recentUsageTooltipClassName } from "@/components/monitor/recent-usage-tooltip"
 import { ChannelLatencyStatsButton, LatencyMarker, latencyStatsForRate } from "@/components/monitor/channel-latency-stats"
 
@@ -397,15 +397,19 @@ function InlineRates({ channelID, latencySamples, groupNameQuery }: { channelID:
           )}
         >
           {rates.map((r) => {
+            const isNew = isNewGroup(r.first_seen_at)
             return (
               <Tooltip key={r.id} delayDuration={150}>
                 <TooltipTrigger asChild>
                   <span
                     className={cn(
                       "relative inline-flex cursor-default items-center gap-1 rounded px-1.5 py-0.5 text-[11px] ring-1 ring-inset transition-colors hover:bg-muted/60",
+                      // 新分组：左上角放“新”标记，标签内让出左侧空间避免压住文案。
+                      isNew && "pl-5",
                       ratioTone(r.ratio),
                     )}
                   >
+                    {isNew ? <span aria-label="最近 3 天首次出现的新分组" className="absolute left-0 -top-1.5 rounded bg-brand px-1 py-px text-[9px] font-semibold leading-none text-white ring-2 ring-background">新</span> : null}
                     <RateChangeDot change={r.latest_ratio_change} className="absolute -right-0.5 -top-0.5" />
                     <span className="font-medium">{r.model_name}</span>
                     <span className="font-semibold tabular-nums">{r.ratio.toFixed(3)}</span>
@@ -553,6 +557,7 @@ function ManualRatesEditor({ channelID, latencySamples, groupNameQuery, onGroups
                   <TooltipTrigger asChild>
                     <span className="inline-flex min-w-0 flex-1 items-center gap-1.5 rounded-sm pt-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" tabIndex={0}>
                       <span className="min-w-0 truncate text-xs font-medium" title={rate.model_name}>{rate.model_name}</span>
+                      {isNewGroup(rate.first_seen_at) ? <span aria-label="最近 3 天首次出现的新分组" className="shrink-0 rounded bg-brand px-1 py-0.5 text-[9px] font-semibold leading-none text-white">新</span> : null}
                       <RateChangeDot change={rate.latest_ratio_change} />
                       <LatencyMarker stats={latencyStatsForRate(latencySamples, rate)} />
                     </span>
