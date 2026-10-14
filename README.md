@@ -150,8 +150,16 @@ APP_SECRET=替换为至少32字节的随机字符串
 ```env
 AUTH_ENABLED=true
 ADMIN_USERNAME=admin
+# 16 位以上的随机串：后台只有一个账号，密码强度就是最后一道防线。
 ADMIN_PASSWORD=替换为强密码
+# 建议单独设置 32 字节以上随机串，不要和 APP_SECRET 复用同一把钥匙。
+AUTH_TOKEN_SECRET=替换为独立的随机密钥
 ```
+
+后台登录自带失败限流：同一个来源 IP 或账号在窗口内连续失败会触发临时锁定（指数退避，
+锁定时长逐次翻倍直到封顶），锁定时返回 429 并通过通知渠道推送一条
+「后台登录被限流」告警。参数可用 `AUTH_LOGIN_*` 环境变量调整，计数保存在进程内存里，
+重启即清零。
 
 ### 2. 准备 Sub2API 共享网络
 
@@ -214,7 +222,12 @@ PostgreSQL 数据保存在 `gatewayops-postgres-data` volume 中。不要在没�
 | `AUTH_ENABLED` | `false` | 是否开启后台登录 |
 | `ADMIN_USERNAME` | `admin` | 后台管理员账号 |
 | `ADMIN_PASSWORD` | 空 | 后台管理员密码 |
-| `AUTH_TOKEN_SECRET` | 空 | Token 密钥，空时使用 `APP_SECRET` |
+| `AUTH_TOKEN_SECRET` | 空 | Token 密钥，空时使用 `APP_SECRET`；建议单独设置 |
+| `AUTH_LOGIN_MAX_FAILURES_PER_IP` | `5` | 窗口内单 IP 允许的登录失败次数，负数关闭该维度 |
+| `AUTH_LOGIN_MAX_FAILURES_PER_ACCOUNT` | `20` | 窗口内单账号允许的登录失败次数，负数只按 IP 锁定 |
+| `AUTH_LOGIN_WINDOW_MINUTES` | `10` | 登录失败计数的滑动窗口（分钟） |
+| `AUTH_LOGIN_BASE_LOCK_MINUTES` | `10` | 首次触发锁定的时长（分钟），之后每次触发翻倍 |
+| `AUTH_LOGIN_MAX_LOCK_MINUTES` | `1440` | 锁定时长的封顶值（分钟） |
 | `GATEWAYOPS_HTTP_PROXY` | 空 | 应用访问公网时使用的 HTTP 代理 |
 | `GATEWAYOPS_HTTPS_PROXY` | 空 | 应用访问公网时使用的 HTTPS 代理 |
 | `GATEWAYOPS_NO_PROXY` | 内置默认值 | 不使用代理的地址列表 |
@@ -270,6 +283,10 @@ docker build -t gateway-ops:dev .
 
 - 同时备份 `APP_SECRET` 和 PostgreSQL 数据。
 - `AUTH_ENABLED=false` 只适合纯内网或已有反向代理鉴权的环境。
+- 公网暴露时请设置 16 位以上随机 `ADMIN_PASSWORD`，并单独配置 `AUTH_TOKEN_SECRET`；启动时若密码过短会打警告日志。
+- 后台登录失败限流（`AUTH_LOGIN_*`）在进程内计数，重启即清零，适合单实例部署。
+- 登录 token 只通过 `Authorization` 头传递；不再接受 `?token=` 查询参数，避免凭据进入访问日志与 Referer。
+- 前端把 token 存在 `sessionStorage`，刷新保留、关闭标签页即失效。
 - 中转站管理员 API Key 只在后端加密保存，不返回前端。
 - 渠道密码、Token、Cookie、通知密钥和 Webhook 等敏感配置均加密保存。
 - 公开监控页面只展示已开启公开监控的分组，不提供管理能力。

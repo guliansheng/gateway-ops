@@ -29,9 +29,22 @@ auth:
   username: "admin"
   password: ""
   # token 签名密钥；留空时回退使用 security.appSecret。
+  # 建议单独设置 32 字节以上随机串，不要和加密主密钥复用同一把钥匙。
   tokenSecret: ""
   # 登录 token 有效期（小时），默认 168 = 7 天。
   sessionTTLHours: 168
+
+  # 登录防爆破（进程内计数，重启清零）。
+  # 窗口内单个来源 IP 允许的失败次数；设为负数关闭该维度。
+  loginMaxFailuresPerIP: 5
+  # 窗口内单个账号允许的失败次数；设为负数则只按 IP 锁定。
+  loginMaxFailuresPerAccount: 20
+  # 失败计数的滑动窗口（分钟）。
+  loginWindowMinutes: 10
+  # 首次触发锁定的时长（分钟），之后每次触发翻倍。
+  loginBaseLockMinutes: 10
+  # 锁定时长的封顶值（分钟）。
+  loginMaxLockMinutes: 1440
 
 scheduler:
   # 余额监控：每 15 分钟（错开 0/30 秒以避免和其他服务同步刷）。
