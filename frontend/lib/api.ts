@@ -3,7 +3,8 @@
  *
  * 设计目标：
  *   - 不引入 axios，沿用浏览器自带 fetch
- *   - token 存 localStorage，刷新页面后保持登录
+ *   - token 存 sessionStorage，刷新页面后保持登录、关闭标签页即失效，
+ *     比 localStorage 少一份长期驻留的泄露面
  *   - 401 时触发 onUnauthorized，让上层清空 state、回到登录页
  */
 
@@ -17,14 +18,23 @@ export function setUnauthorizedHandler(fn: (() => void) | null) {
 
 export function getToken(): string | null {
   if (typeof window === "undefined") return null
-  return window.localStorage.getItem(TOKEN_KEY)
+  // 兼容旧版本留在 localStorage 里的 token：读到时迁移到 sessionStorage 并清掉原值。
+  const legacy = window.localStorage.getItem(TOKEN_KEY)
+  if (legacy) {
+    window.sessionStorage.setItem(TOKEN_KEY, legacy)
+    window.localStorage.removeItem(TOKEN_KEY)
+    return legacy
+  }
+  return window.sessionStorage.getItem(TOKEN_KEY)
 }
 
 export function setToken(token: string | null) {
   if (typeof window === "undefined") return
   if (token) {
-    window.localStorage.setItem(TOKEN_KEY, token)
+    window.sessionStorage.setItem(TOKEN_KEY, token)
+    window.localStorage.removeItem(TOKEN_KEY)
   } else {
+    window.sessionStorage.removeItem(TOKEN_KEY)
     window.localStorage.removeItem(TOKEN_KEY)
   }
 }

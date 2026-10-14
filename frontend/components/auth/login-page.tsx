@@ -26,6 +26,9 @@ export function LoginPage() {
       const e = err as ApiError
       if (e.status === 401) {
         setError("账号或密码错误")
+      } else if (e.status === 429) {
+        // 后端登录失败限流：提示稍后再试，避免继续硬撞把锁定时间越拉越长。
+        setError("登录尝试过于频繁，已被临时限制，请稍后再试")
       } else {
         setError(e.message || "登录失败")
       }

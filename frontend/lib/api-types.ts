@@ -36,6 +36,7 @@ export type NotificationEvent =
   | "login_failed"
   | "captcha_failed"
   | "monitor_failed"
+  | "admin_login_blocked"
 
 export interface Channel {
   id: number

@@ -14,6 +14,7 @@ import {
   RefreshCw,
   RotateCcw,
   Send,
+  ShieldAlert,
   ShieldCheck,
   ShieldX,
   TestTube2,
@@ -50,6 +51,7 @@ const eventMeta: Record<NotificationEvent, { icon: LucideIcon; cls: string; tag:
   captcha_failed: { icon: KeyRound, cls: "text-orange-600 dark:text-orange-400", tag: "orange" },
   rate_changed: { icon: ArrowUpRight, cls: "text-brand", tag: "brand" },
   monitor_failed: { icon: ShieldX, cls: "text-sky-600 dark:text-sky-400", tag: "sky" },
+  admin_login_blocked: { icon: ShieldAlert, cls: "text-danger", tag: "danger" },
 }
 
 const eventLabel: Record<string, string> = {
@@ -58,6 +60,7 @@ const eventLabel: Record<string, string> = {
   login_failed: "登录失败",
   captcha_failed: "验证码失败",
   monitor_failed: "采集失败",
+  admin_login_blocked: "后台登录被限流",
   "": "测试通知",
 }
 
@@ -421,7 +424,7 @@ export function NotificationLogs() {
           <Input value={query} onChange={(event) => setQuery(event.target.value)} className="h-9 w-full text-xs sm:w-52" placeholder="搜索渠道、标题或内容" aria-label="搜索通知记录" />
           <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as typeof statusFilter)}><SelectTrigger className="h-9 w-[calc(var(--spacing)*26)] text-xs" aria-label="筛选发送状态"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部状态</SelectItem><SelectItem value="success">成功</SelectItem><SelectItem value="failed">失败</SelectItem></SelectContent></Select>
           <Select value={channelFilter} onValueChange={setChannelFilter}><SelectTrigger className="h-9 w-36 text-xs" aria-label="筛选通知渠道"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部渠道</SelectItem>{(channels.data ?? []).map((channel) => <SelectItem key={channel.id} value={String(channel.id)}>{channel.name}</SelectItem>)}</SelectContent></Select>
-          <Select value={eventFilter} onValueChange={setEventFilter}><SelectTrigger className="h-9 w-32 text-xs" aria-label="筛选通知事件"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部事件</SelectItem><SelectItem value="balance_low">余额告警</SelectItem><SelectItem value="rate_changed">倍率变化</SelectItem><SelectItem value="login_failed">登录失败</SelectItem><SelectItem value="captcha_failed">验证码失败</SelectItem><SelectItem value="monitor_failed">采集失败</SelectItem><SelectItem value="test">测试通知</SelectItem></SelectContent></Select>
+          <Select value={eventFilter} onValueChange={setEventFilter}><SelectTrigger className="h-9 w-32 text-xs" aria-label="筛选通知事件"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部事件</SelectItem><SelectItem value="balance_low">余额告警</SelectItem><SelectItem value="rate_changed">倍率变化</SelectItem><SelectItem value="login_failed">登录失败</SelectItem><SelectItem value="captcha_failed">验证码失败</SelectItem><SelectItem value="monitor_failed">采集失败</SelectItem><SelectItem value="admin_login_blocked">后台登录被限流</SelectItem><SelectItem value="test">测试通知</SelectItem></SelectContent></Select>
           <Button type="button" variant="outline" size="sm" className="h-9 gap-1.5" onClick={resetFilters}><RotateCcw className="size-3.5" />重置</Button>
           <Button type="button" variant="outline" size="sm" className="h-9 gap-1.5" onClick={() => void logs.refetch().then(() => refresh())} disabled={logs.refreshing}><RefreshCw className={cn("size-3.5", logs.refreshing && "animate-spin")} />刷新</Button>
         </div>
