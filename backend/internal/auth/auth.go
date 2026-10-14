@@ -21,15 +21,18 @@ import (
 
 // Service 单管理员登录服务。
 type Service struct {
-	username  string
-	password  string
-	secret    []byte
-	tokenTTL  time.Duration
+	username string
+	password string
+	secret   []byte
+	tokenTTL time.Duration
+	guard    *Guard
 }
 
 // New 构造 Service。secret 推荐 32 字节以上；若为空报错。
 // 调用方应在 secret 为空时回退到 APP_SECRET。
-func New(username, password, secret string, ttl time.Duration) (*Service, error) {
+//
+// guard 为 nil 时不限流（保留给测试与内网场景）。
+func New(username, password, secret string, ttl time.Duration, guard *Guard) (*Service, error) {
 	if username == "" || password == "" {
 		return nil, errors.New("auth username / password are required")
 	}
@@ -44,6 +47,7 @@ func New(username, password, secret string, ttl time.Duration) (*Service, error)
 		password: password,
 		secret:   []byte(secret),
 		tokenTTL: ttl,
+		guard:    guard,
 	}, nil
 }
 
@@ -53,12 +57,23 @@ type claims struct {
 	Exp int64  `json:"exp"`
 }
 
+// ErrInvalidCredentials 账号或密码错误。
+var ErrInvalidCredentials = errors.New("invalid username or password")
+
 // Login 校验账号密码，返回新的 token 与过期时间。
-func (s *Service) Login(username, password string) (string, time.Time, error) {
+//
+// clientIP 用于失败限流：同一来源 IP 连续失败会被临时锁定，
+// 锁定时返回 *ErrLoginLocked，调用方应转成 429 并带上 Retry-After。
+func (s *Service) Login(clientIP, username, password string) (string, time.Time, error) {
+	if ok, retryAfter, scope := s.guard.Allow(clientIP, username); !ok {
+		return "", time.Time{}, &ErrLoginLocked{Scope: scope, RetryAfter: retryAfter}
+	}
 	if subtle.ConstantTimeCompare([]byte(username), []byte(s.username)) != 1 ||
 		subtle.ConstantTimeCompare([]byte(password), []byte(s.password)) != 1 {
-		return "", time.Time{}, errors.New("invalid username or password")
+		s.guard.Fail(clientIP, username)
+		return "", time.Time{}, ErrInvalidCredentials
 	}
+	s.guard.Success(clientIP, username)
 	expiresAt := time.Now().Add(s.tokenTTL)
 	c := claims{Sub: s.username, Exp: expiresAt.Unix()}
 	tok, err := s.sign(c)
@@ -128,9 +143,9 @@ func (s *Service) TokenTTL() time.Duration { return s.tokenTTL }
 //   - "/api/auth/login"
 func (s *Service) Middleware() gin.HandlerFunc {
 	whitelist := map[string]struct{}{
-		"/healthz":         {},
-		"/api/version":     {},
-		"/api/auth/login":  {},
+		"/healthz":        {},
+		"/api/version":    {},
+		"/api/auth/login": {},
 	}
 	return func(c *gin.Context) {
 		if _, ok := whitelist[c.FullPath()]; ok {

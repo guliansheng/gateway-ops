@@ -52,23 +52,58 @@ func main() {
 
 	// Auth：默认禁用（AUTH_ENABLED=false），所有 /api/* 免 token；
 	// 显式开启时账号/密码必填，token secret 缺省回退到 AppSecret。
+	//
+	// 登录失败限流（guard）在当前进程内计数：同一来源 IP / 账号连续失败会临时锁定，
+	// 锁定时通过通知渠道告警。dispatcher 在下面才构造，这里用闭包延后取值。
+	var dispatcher *notify.Dispatcher
 	var authSvc *auth.Service
 	if cfg.Auth.Enabled {
 		tokenSecret := cfg.Auth.TokenSecret
 		if tokenSecret == "" {
 			tokenSecret = cfg.Security.AppSecret
 		}
+		guardCfg := cfg.Auth.ToGuardConfig()
+		guardCfg.OnLockout = func(ev auth.LockoutEvent) {
+			log.Warn("admin login locked out",
+				"scope", ev.Scope, "key", ev.Key, "failures", ev.Failures,
+				"lock_seconds", int(ev.LockDuration.Seconds()))
+			if dispatcher == nil {
+				return
+			}
+			// 通知发送可能阻塞，放到 goroutine 里，不拖慢登录响应。
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				_ = dispatcher.Dispatch(ctx, notify.Message{
+					Event:   storage.EventAdminLoginBlocked,
+					Subject: "[GatewayOps] 后台登录被限流锁定",
+					Body: fmt.Sprintf("连续 %d 次后台登录失败，已临时锁定。\n触发维度：%s\n触发值：%s\n锁定时长：%s",
+						ev.Failures, ev.Scope, ev.Key, ev.LockDuration),
+				})
+			}()
+		}
+		guard := auth.NewGuard(guardCfg)
 		authSvc, err = auth.New(
 			cfg.Auth.Username,
 			cfg.Auth.Password,
 			tokenSecret,
 			time.Duration(cfg.Auth.SessionTTLHours)*time.Hour,
+			guard,
 		)
 		if err != nil {
 			log.Error("init auth failed (set ADMIN_USERNAME / ADMIN_PASSWORD or AUTH_ENABLED=false)", "err", err)
 			os.Exit(1)
 		}
 		log.Info("auth enabled", "username", cfg.Auth.Username)
+		// 公网暴露的后台只有一个管理员账号，密码强度就是最后一道防线：
+		// 这里只告警不拦截，避免升级后因为旧密码过短直接起不来。
+		if len(cfg.Auth.Password) < 16 {
+			log.Warn("admin password is shorter than 16 characters; use a long random password for public exposure",
+				"length", len(cfg.Auth.Password))
+		}
+		if cfg.Auth.TokenSecret == "" {
+			log.Warn("AUTH_TOKEN_SECRET is empty, falling back to APP_SECRET; set a dedicated random secret")
+		}
 	} else {
 		log.Warn("auth disabled — all /api/* endpoints are open; set AUTH_ENABLED=true for production exposure")
 	}
@@ -95,7 +130,7 @@ func main() {
 	helpDocuments := storage.NewHelpDocuments(db)
 
 	channelSvc := channel.NewService(channels, authSessions, captchas, monLogs, cipher)
-	dispatcher := notify.NewDispatcher(notifies, cipher, log, notify.Policy{
+	dispatcher = notify.NewDispatcher(notifies, cipher, log, notify.Policy{
 		BatchRateChanges:   cfg.Notifications.BatchRateChanges,
 		MinChangePct:       cfg.Notifications.MinChangePct,
 		BalanceLowCooldown: time.Duration(cfg.Notifications.BalanceLowCooldownMinutes) * time.Minute,
@@ -114,8 +149,16 @@ func main() {
 	gin.SetMode(cfg.Server.Mode)
 	router := gin.New()
 	router.Use(gin.Recovery())
+	// 信任代理决定 Gin 从哪里取客户端 IP：登录限流按 IP 计数依赖它。
+	// 默认只信任回环与私有网段，避免外部直接伪造 X-Forwarded-For 绕过限流。
 	if len(cfg.Server.TrustedProxies) > 0 {
-		_ = router.SetTrustedProxies(cfg.Server.TrustedProxies)
+		if err := router.SetTrustedProxies(cfg.Server.TrustedProxies); err != nil {
+			log.Error("set trusted proxies failed", "err", err)
+			os.Exit(1)
+		}
+		log.Info("trusted proxies configured", "count", len(cfg.Server.TrustedProxies))
+	} else {
+		log.Warn("no trusted proxies configured; client IP will be the direct peer address")
 	}
 
 	// 仅在嵌入了真实前端产物时挂载静态 handler。

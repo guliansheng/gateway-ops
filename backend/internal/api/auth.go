@@ -1,9 +1,12 @@
 package api
 
 import (
+	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/guliansheng/gateway-ops/internal/auth"
 )
 
 func registerAuth(g *gin.RouterGroup, d *Deps) {
@@ -36,8 +39,28 @@ func login(c *gin.Context, d *Deps) {
 		fail(c, http.StatusBadRequest, err)
 		return
 	}
-	token, exp, err := d.Auth.Login(in.Username, in.Password)
+	ip := c.ClientIP()
+	token, exp, err := d.Auth.Login(ip, in.Username, in.Password)
 	if err != nil {
+		var locked *auth.ErrLoginLocked
+		if errors.As(err, &locked) {
+			retry := int(locked.RetryAfter.Seconds())
+			if retry < 1 {
+				retry = 1
+			}
+			c.Header("Retry-After", strconv.Itoa(retry))
+			if d.Log != nil {
+				d.Log.Warn("admin login blocked by rate limit",
+					"scope", locked.Scope, "ip", ip, "username", in.Username,
+					"retry_after_seconds", retry)
+			}
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": "too many failed attempts, retry later"})
+			return
+		}
+		// 凭证错误：返回统一提示，不回显具体是账号还是密码错。
+		if d.Log != nil {
+			d.Log.Warn("admin login failed", "ip", ip, "username", in.Username, "err", err)
+		}
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
 	}

@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/viper"
+	"github.com/guliansheng/gateway-ops/internal/auth"
 	"github.com/guliansheng/gateway-ops/internal/storage"
 )
 
@@ -70,6 +72,43 @@ type AuthConfig struct {
 	Password        string `mapstructure:"password"`
 	TokenSecret     string `mapstructure:"tokenSecret"`
 	SessionTTLHours int    `mapstructure:"sessionTTLHours"`
+
+	// 登录防爆破（进程内计数，重启清零）。
+	//
+	// LoginMaxFailuresPerIP 窗口内单个来源 IP 允许的失败次数；设为负数关闭该维度。
+	LoginMaxFailuresPerIP int `mapstructure:"loginMaxFailuresPerIP"`
+	// LoginMaxFailuresPerAccount 窗口内单个账号允许的失败次数；设为负数只锁 IP。
+	LoginMaxFailuresPerAccount int `mapstructure:"loginMaxFailuresPerAccount"`
+	// LoginWindowMinutes 失败计数的滑动窗口。
+	LoginWindowMinutes int `mapstructure:"loginWindowMinutes"`
+	// LoginBaseLockMinutes 首次触发锁定的时长，之后每次触发翻倍。
+	LoginBaseLockMinutes int `mapstructure:"loginBaseLockMinutes"`
+	// LoginMaxLockMinutes 锁定时长的封顶值。
+	LoginMaxLockMinutes int `mapstructure:"loginMaxLockMinutes"`
+}
+
+// ToGuardConfig 把配置转成 auth.GuardConfig（只填时长与阈值，回调由调用方补）。
+func (a AuthConfig) ToGuardConfig() auth.GuardConfig {
+	return auth.GuardConfig{
+		Window:                time.Duration(a.LoginWindowMinutes) * time.Minute,
+		MaxFailuresPerIP:      a.LoginMaxFailuresPerIP,
+		MaxFailuresPerAccount: a.LoginMaxFailuresPerAccount,
+		BaseLock:              time.Duration(a.LoginBaseLockMinutes) * time.Minute,
+		MaxLock:               time.Duration(a.LoginMaxLockMinutes) * time.Minute,
+	}
+}
+
+// DefaultTrustedProxies 是反代部署下的默认信任来源：本机回环 + 私有网段。
+//
+// 目的是让 Gin 从 X-Forwarded-For 里取出 nginx 追加的真实客户端 IP（登录限流按 IP 计数
+// 依赖它），同时又不信任任意来源——否则客户端可以伪造 XFF 头绕过按 IP 的限流。
+var DefaultTrustedProxies = []string{
+	"127.0.0.1/32",
+	"::1/128",
+	"10.0.0.0/8",
+	"172.16.0.0/12",
+	"192.168.0.0/16",
+	"fc00::/7",
 }
 
 type SchedulerConfig struct {
@@ -145,6 +184,12 @@ func Load(path string) (*Config, error) {
 	_ = v.BindEnv("auth.username", "ADMIN_USERNAME")
 	_ = v.BindEnv("auth.password", "ADMIN_PASSWORD")
 	_ = v.BindEnv("auth.tokenSecret", "AUTH_TOKEN_SECRET")
+	// 登录防爆破参数；命名与上面的 AUTH_* 保持一致。
+	_ = v.BindEnv("auth.loginMaxFailuresPerIP", "AUTH_LOGIN_MAX_FAILURES_PER_IP")
+	_ = v.BindEnv("auth.loginMaxFailuresPerAccount", "AUTH_LOGIN_MAX_FAILURES_PER_ACCOUNT")
+	_ = v.BindEnv("auth.loginWindowMinutes", "AUTH_LOGIN_WINDOW_MINUTES")
+	_ = v.BindEnv("auth.loginBaseLockMinutes", "AUTH_LOGIN_BASE_LOCK_MINUTES")
+	_ = v.BindEnv("auth.loginMaxLockMinutes", "AUTH_LOGIN_MAX_LOCK_MINUTES")
 	// Viper 坑：AutomaticEnv 只对已通过 SetDefault / BindEnv / 配置文件注册过的 key 生效；
 	// 数据库的 user/password/name 没有合理的默认值（拒绝写"change-me"作默认），
 	// 因此显式 BindEnv 以确保从环境变量读取。
@@ -194,6 +239,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.port", 8418)
 	v.SetDefault("server.mode", "debug")
 	v.SetDefault("server.baseURL", "http://localhost:8418")
+	// 反代场景默认信任本机与私有网段，否则 Gin 取不到真实客户端 IP，
+	// 或者反过来信任任意来源导致 XFF 可伪造。
+	v.SetDefault("server.trustedProxies", DefaultTrustedProxies)
 
 	v.SetDefault("database.host", "localhost")
 	v.SetDefault("database.port", 54329)
@@ -217,6 +265,13 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.enabled", false)
 	v.SetDefault("auth.username", "admin")
 	v.SetDefault("auth.sessionTTLHours", 168) // 7 天
+
+	// 登录防爆破默认值，与 auth.DefaultGuardConfig 保持一致。
+	v.SetDefault("auth.loginMaxFailuresPerIP", 5)
+	v.SetDefault("auth.loginMaxFailuresPerAccount", 20)
+	v.SetDefault("auth.loginWindowMinutes", 10)
+	v.SetDefault("auth.loginBaseLockMinutes", 10)
+	v.SetDefault("auth.loginMaxLockMinutes", 24*60) // 24 小时
 
 	// 通知去抖：默认开合并、不过滤涨跌幅、balance_low 1h 内不重复、失败重试 3 次。
 	// 即"默认行为是合并刷屏 + 不重复 balance_low + 抗短时网络抖动"，不丢任何 rate_changed 事件。
