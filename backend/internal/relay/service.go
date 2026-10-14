@@ -65,6 +65,7 @@ type Service struct {
 	ipLocationCache    map[string]ipLocationCacheEntry
 	latencyMu          sync.Mutex
 	latencyCache       map[string]latencyCacheEntry
+	dynamicMonitorMu   sync.Mutex
 	publicMonitorMu    sync.Mutex
 	publicMonitorCache map[uint]publicMonitorCacheEntry
 	publicPricingMu    sync.Mutex
@@ -172,8 +173,8 @@ type GroupSortOrderUpdate struct {
 }
 
 type AccountUsageStats struct {
-	TotalTokens      int64   `json:"total_tokens"`
-	UserCharge       float64 `json:"user_charge"`
+	TotalTokens int64   `json:"total_tokens"`
+	UserCharge  float64 `json:"user_charge"`
 	// AccountCost is recalculated from BaseCost and the account's current
 	// effective cost multiplier by UsageStats.
 	AccountCost      float64 `json:"account_cost"`
@@ -3373,6 +3374,9 @@ func (s *Service) SyncSnapshot(ctx context.Context, stationID uint) error {
 }
 
 func (s *Service) syncSnapshot(ctx context.Context, stationID uint, probeRates bool) error {
+	// 包含远端读取到本地落库的整个窗口，防止旧快照覆盖刚重开的调度状态。
+	s.dynamicMonitorMu.Lock()
+	defer s.dynamicMonitorMu.Unlock()
 	station, err := s.stations.FindByID(stationID)
 	if err != nil {
 		return err
@@ -3513,6 +3517,11 @@ func (s *Service) syncSnapshot(ctx context.Context, stationID uint, probeRates b
 			_ = s.stations.SetSyncError(station.ID, err.Error())
 			return err
 		}
+	}
+	// 快照同步刚刷新首字延迟样本，此时执行账号动态监测的关闭判断与“分组最少保留账号数”补开。
+	if err := s.applyDynamicMonitor(ctx, station); err != nil {
+		_ = s.stations.SetSyncError(station.ID, err.Error())
+		return err
 	}
 	return nil
 }

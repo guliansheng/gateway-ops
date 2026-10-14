@@ -427,20 +427,26 @@ func (OperationLedgerEntry) TableName() string { return "operation_ledger_entrie
 // RelayStation 是要分析的 Sub2API 中转站。管理员 API Key 仅以密文保存，
 // 不会从 API 返回给前端。
 type RelayStation struct {
-	ID                        uint           `gorm:"primaryKey" json:"id"`
-	Name                      string         `gorm:"size:128;not null;uniqueIndex" json:"name"`
-	BaseURL                   string         `gorm:"size:512;not null" json:"base_url"`
-	APIKeyCipher              string         `gorm:"type:text;not null" json:"-"`
-	AutoAdjustEnabled         bool           `gorm:"default:false" json:"auto_adjust_enabled"`
-	AutoAdjustNoProfitEnabled bool           `gorm:"default:false" json:"auto_adjust_no_profit_enabled"`
-	AutoPriorityEnabled       bool           `gorm:"default:false" json:"auto_priority_enabled"`
-	AutoPriorityRecallEnabled bool           `gorm:"default:false" json:"auto_priority_recall_enabled"`
-	AutoPriorityRecallMinutes int            `gorm:"not null;default:180" json:"auto_priority_recall_minutes"`
-	LastSyncedAt              *time.Time     `json:"last_synced_at,omitempty"`
-	LastError                 string         `gorm:"type:text" json:"last_error,omitempty"`
-	CreatedAt                 time.Time      `json:"created_at"`
-	UpdatedAt                 time.Time      `json:"updated_at"`
-	DeletedAt                 gorm.DeletedAt `gorm:"index" json:"-"`
+	ID                        uint   `gorm:"primaryKey" json:"id"`
+	Name                      string `gorm:"size:128;not null;uniqueIndex" json:"name"`
+	BaseURL                   string `gorm:"size:512;not null" json:"base_url"`
+	APIKeyCipher              string `gorm:"type:text;not null" json:"-"`
+	AutoAdjustEnabled         bool   `gorm:"default:false" json:"auto_adjust_enabled"`
+	AutoAdjustNoProfitEnabled bool   `gorm:"default:false" json:"auto_adjust_no_profit_enabled"`
+	AutoPriorityEnabled       bool   `gorm:"default:false" json:"auto_priority_enabled"`
+	AutoPriorityRecallEnabled bool   `gorm:"default:false" json:"auto_priority_recall_enabled"`
+	AutoPriorityRecallMinutes int    `gorm:"not null;default:180" json:"auto_priority_recall_minutes"`
+	// DynamicMonitorConfig 保存“账号动态监测”的规则配置（JSON），只对当前中转站生效，
+	// 不写入分组，也不会影响其它站点的策略。
+	DynamicMonitorConfig string `gorm:"type:text" json:"-"`
+	// DynamicMonitorState 记录被该规则关闭、等待按规则开启的账号（JSON），
+	// 是“开启之前被关闭的账号”的唯一依据。
+	DynamicMonitorState string         `gorm:"type:text" json:"-"`
+	LastSyncedAt        *time.Time     `json:"last_synced_at,omitempty"`
+	LastError           string         `gorm:"type:text" json:"last_error,omitempty"`
+	CreatedAt           time.Time      `json:"created_at"`
+	UpdatedAt           time.Time      `json:"updated_at"`
+	DeletedAt           gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
 func (RelayStation) TableName() string { return "relay_stations" }

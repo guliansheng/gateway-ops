@@ -47,6 +47,7 @@ func registerRelayStations(g *gin.RouterGroup, d *Deps) {
 	gp.PUT("/:id/accounts/groups", func(c *gin.Context) { updateRelayAccountGroupsBatch(c, d) })
 	gp.PUT("/:id/accounts/model-types", func(c *gin.Context) { updateRelayAccountModelTypes(c, d) })
 	gp.PUT("/:id/accounts/runtime-settings", func(c *gin.Context) { updateRelayAccountRuntimeSettings(c, d) })
+	gp.PUT("/:id/dynamic-monitor", func(c *gin.Context) { updateRelayDynamicMonitor(c, d) })
 	gp.PUT("/:id/accounts/schedulable", func(c *gin.Context) { updateRelayAccountsSchedulable(c, d) })
 	gp.PUT("/:id/accounts/user-charge-excluded", func(c *gin.Context) { updateRelayAccountsUserChargeExcluded(c, d) })
 	gp.POST("/:id/accounts/apply-suggestions", func(c *gin.Context) { applyRelayAccountSuggestions(c, d) })
@@ -185,16 +186,18 @@ type relayStationSummary struct {
 }
 
 type relayOverview struct {
-	Station             relayStationSummary    `json:"station"`
-	Groups              []relayGroupView       `json:"groups"`
-	Accounts            []relayAccountView     `json:"accounts"`
-	Summary             relayRiskSummary       `json:"summary"`
-	Adjustments         []relayAdjustmentView  `json:"adjustments"`
-	MonitorChannels     []monitorChannelOption `json:"monitor_channels"`
-	SyncAvailable       bool                   `json:"sync_available"`
-	Range               string                 `json:"range"`
-	UsageComplete       bool                   `json:"usage_complete"`
-	UsageFailedAccounts int                    `json:"usage_failed_accounts"`
+	Station             relayStationSummary        `json:"station"`
+	Groups              []relayGroupView           `json:"groups"`
+	Accounts            []relayAccountView         `json:"accounts"`
+	Summary             relayRiskSummary           `json:"summary"`
+	Adjustments         []relayAdjustmentView      `json:"adjustments"`
+	MonitorChannels     []monitorChannelOption     `json:"monitor_channels"`
+	DynamicMonitor      relay.DynamicMonitorConfig `json:"dynamic_monitor"`
+	DynamicMonitorState relay.DynamicMonitorState  `json:"dynamic_monitor_state"`
+	SyncAvailable       bool                       `json:"sync_available"`
+	Range               string                     `json:"range"`
+	UsageComplete       bool                       `json:"usage_complete"`
+	UsageFailedAccounts int                        `json:"usage_failed_accounts"`
 }
 
 type relayUsageAccountView struct {
@@ -393,6 +396,35 @@ func updateRelayStation(c *gin.Context, d *Deps) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": stationSummary(station)})
+}
+
+// updateRelayDynamicMonitor 保存“账号动态监测”弹窗里的规则。
+// 规则只对当前中转站的这个功能生效，不写分组字段，也不改动自动调组策略。
+func updateRelayDynamicMonitor(c *gin.Context, d *Deps) {
+	id, err := uintParam(c, "id")
+	if err != nil {
+		fail(c, http.StatusBadRequest, err)
+		return
+	}
+	var in relay.DynamicMonitorConfig
+	if err := c.ShouldBindJSON(&in); err != nil {
+		fail(c, http.StatusBadRequest, err)
+		return
+	}
+	config, err := d.Relay.SaveDynamicMonitorConfig(id, in)
+	if err != nil {
+		fail(c, http.StatusBadRequest, err)
+		return
+	}
+	station, err := d.RelayStations.FindByID(id)
+	if err != nil {
+		fail(c, http.StatusNotFound, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"config": config,
+		"state":  relay.ParseDynamicMonitorState(station.DynamicMonitorState),
+	}})
 }
 
 func updateRelayGroup(c *gin.Context, d *Deps) {
@@ -1214,7 +1246,9 @@ func relayStationOverview(c *gin.Context, d *Deps) {
 	c.JSON(http.StatusOK, gin.H{"data": relayOverview{
 		Station: stationSummary(station), Groups: groupViews, Accounts: accountViews, Summary: summary,
 		Adjustments: adjustmentViews, MonitorChannels: monitorOptions, SyncAvailable: station.APIKeyCipher != "",
-		Range: rangeName, UsageComplete: false, UsageFailedAccounts: 0,
+		DynamicMonitor:      relay.ParseDynamicMonitorConfig(station.DynamicMonitorConfig),
+		DynamicMonitorState: relay.ParseDynamicMonitorState(station.DynamicMonitorState),
+		Range:               rangeName, UsageComplete: false, UsageFailedAccounts: 0,
 	}})
 }
 

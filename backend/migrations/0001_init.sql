@@ -209,6 +209,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_relay_stations_name ON relay_stations (nam
 CREATE INDEX IF NOT EXISTS idx_relay_stations_deleted_at ON relay_stations (deleted_at);
 ALTER TABLE relay_stations ADD COLUMN IF NOT EXISTS auto_priority_recall_enabled BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE relay_stations ADD COLUMN IF NOT EXISTS auto_priority_recall_minutes INTEGER NOT NULL DEFAULT 180;
+ALTER TABLE relay_stations ADD COLUMN IF NOT EXISTS dynamic_monitor_config TEXT;
+ALTER TABLE relay_stations ADD COLUMN IF NOT EXISTS dynamic_monitor_state TEXT;
 
 CREATE TABLE IF NOT EXISTS relay_groups (
     id                BIGSERIAL PRIMARY KEY,

@@ -1132,6 +1132,11 @@ func (s *Service) disableScheduling(ctx context.Context, station *storage.RelayS
 }
 
 func (s *Service) setScheduling(ctx context.Context, station *storage.RelayStation, account storage.RelayAccount, groups []storage.RelayGroup, schedulable bool, source string) error {
+	// 自动调组与动态监测在快照/定时任务内已持锁，手动开关也需串行化。
+	if source == "manual" {
+		s.dynamicMonitorMu.Lock()
+		defer s.dynamicMonitorMu.Unlock()
+	}
 	oldIDs := groupIDs(groups)
 	encoded, _ := json.Marshal(oldIDs)
 	action := "disable_scheduling"
@@ -1158,6 +1163,13 @@ func (s *Service) setScheduling(ctx context.Context, station *storage.RelayStati
 		log.ErrorMessage = fmt.Sprintf("远端已更新，本地快照更新失败: %v", err)
 		_ = s.stations.CreateAdjustmentLog(log)
 		return err
+	}
+	if schedulable && source == "manual" {
+		if err := s.resetDynamicMonitorAfterManualOpen(station.ID, account); err != nil {
+			log.ErrorMessage = fmt.Sprintf("账号已开启，重置动态监测采样边界失败: %v", err)
+			_ = s.stations.CreateAdjustmentLog(log)
+			return err
+		}
 	}
 	log.Success = true
 	return s.stations.CreateAdjustmentLog(log)

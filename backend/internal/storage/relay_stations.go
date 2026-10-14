@@ -76,6 +76,17 @@ func (r *RelayStations) SetSyncError(id uint, message string) error {
 	return r.db.Model(&RelayStation{}).Where("id = ?", id).Update("last_error", message).Error
 }
 
+// SetDynamicMonitorConfig 只写账号动态监测的规则配置，不影响站点其它字段。
+func (r *RelayStations) SetDynamicMonitorConfig(id uint, config string) error {
+	return r.db.Model(&RelayStation{}).Where("id = ?", id).Update("dynamic_monitor_config", config).Error
+}
+
+// SetDynamicMonitorState 只写账号动态监测的运行状态（被规则关闭的账号）。
+// 状态随每次快照同步和定时开启任务更新，用独立列避免覆盖整行站点配置。
+func (r *RelayStations) SetDynamicMonitorState(id uint, state string) error {
+	return r.db.Model(&RelayStation{}).Where("id = ?", id).Update("dynamic_monitor_state", state).Error
+}
+
 // ReplaceSnapshot 用一次成功同步的完整结果替换站点镜像。映射不随同步删除，
 // 这样分组/渠道临时缺失后恢复时仍保留用户的显式配置。
 // RelaySnapshotLink is intentionally keyed by remote IDs. RelayChannel and RelayGroup

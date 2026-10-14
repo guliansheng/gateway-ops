@@ -16,10 +16,11 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { HelpDocDialog } from "@/components/relay/help-doc-dialog"
 import { useConfirm } from "@/components/ui/confirm-dialog"
 import { apiFetch } from "@/lib/api"
-import type { RelayAccountBatchActionResult, RelayAccountBatchCloneGroup, RelayAccountBatchCloneResult, RelayUsageRange, RelayAccountTestResult, RelayAccountView, RelayGroupOption, RelayGroupTestResult, RelayGroupView, RelayOverview, RelayRecentUsage, RelayStation } from "@/lib/api-types"
+import type { RelayAccountBatchActionResult, RelayAccountBatchCloneGroup, RelayAccountBatchCloneResult, RelayUsageRange, RelayAccountTestResult, RelayAccountView, RelayDynamicMonitorConfig, RelayGroupOption, RelayGroupTestResult, RelayGroupView, RelayOverview, RelayRecentUsage, RelayStation } from "@/lib/api-types"
 import { useRelayOverview, useRelayRecentUsage, useRelayStations, useRelayUsage, useRelayUserBalanceHistory, useSyncSettings } from "@/lib/queries"
 import { RelayAdjustmentLog } from "@/components/monitor/relay-adjustment-log"
 import { UserManagement } from "@/components/relay/user-management"
+import { DynamicMonitorDialog } from "@/components/relay/dynamic-monitor-dialog"
 import { PlatformBadge } from "@/components/relay/platform-badge"
 import { RecentUsageCard, RecentUsageTooltip, recentUsageTooltipClassName } from "@/components/monitor/recent-usage-tooltip"
 import { cn } from "@/lib/utils"
@@ -1667,6 +1668,7 @@ export default function RelayStationsPage() {
   const [editingID, setEditingID] = useState<number | null>(null)
   const [showForm, setShowForm] = useState(false)
   const [helpDocOpen, setHelpDocOpen] = useState(false)
+  const [dynamicMonitorOpen, setDynamicMonitorOpen] = useState(false)
   const [batchCloneOpen, setBatchCloneOpen] = useState(false)
   const [batchCloneResult, setBatchCloneResult] = useState<RelayAccountBatchCloneResult | null>(null)
   const [busy, setBusy] = useState(false)
@@ -1746,6 +1748,14 @@ export default function RelayStationsPage() {
     }
   }, [baseOverview, usage.data, usageRange])
   const managedAccounts = useMemo(() => (currentOverview?.accounts ?? []).filter((account) => account.type?.trim().toLowerCase() !== "oauth"), [currentOverview])
+  // 动态监测弹窗保存成功后只更新这一份本地副本，不刷新页面数据：
+  // 整页 reload 会带来新的 config 对象，容易把用户正在编辑的内容覆盖掉。
+  const [dynamicMonitorSaved, setDynamicMonitorSaved] = useState<RelayDynamicMonitorConfig | null>(null)
+  useEffect(() => setDynamicMonitorSaved(null), [selectedID])
+  // 旧数据或字段缺失时给出安全默认值，避免弹窗与卡片读取 null.length 崩溃。
+  const dynamicMonitor = dynamicMonitorSaved ?? currentOverview?.dynamic_monitor ?? { enabled: false, groups: [], min_accounts_per_group: 0, allow_auto_open: false, auto_open_minutes: 0 }
+  const dynamicMonitorState = currentOverview?.dynamic_monitor_state ?? { closed_accounts: [] }
+  const closedAccounts = dynamicMonitorState.closed_accounts ?? []
   const cloneableAccounts = useMemo(() => managedAccounts.filter((account) => batchCloneableAccountTypes.has(account.type?.trim().toLowerCase() ?? "")), [managedAccounts])
   const managedAccountIDs = useMemo(() => new Set(managedAccounts.map((account) => account.external_id)), [managedAccounts])
   const usageTotals = useMemo(() => (usage.data?.accounts ?? []).filter((account) => managedAccountIDs.has(account.external_id)).reduce((totals, account) => ({
@@ -1850,6 +1860,9 @@ export default function RelayStationsPage() {
   function toggleAccountSort(key: AccountSortKey, initialDirection: SortDirection) { setAccountSort((current) => current?.key === key ? { key, direction: current.direction === "asc" ? "desc" : "asc" } : { key, direction: initialDirection }) }
   async function savePolicy() { if (!selectedID) return; setBusy(true); try { await apiFetch(`/relay-stations/${selectedID}`, { method: "PUT", body: JSON.stringify({ auto_adjust_enabled: autoAdjustEnabled, auto_adjust_no_profit_enabled: autoAdjustNoProfitEnabled }) }); await reload(); toast.success("自动调组策略已保存") } catch (error) { toast.error(error instanceof Error ? error.message : "保存失败") } finally { setBusy(false) } }
   async function savePriorityPolicy() { if (!selectedID) return; setBusy(true); try { await apiFetch(`/relay-stations/${selectedID}`, { method: "PUT", body: JSON.stringify({ auto_priority_enabled: autoPriorityEnabled, auto_priority_recall_enabled: autoPriorityRecallEnabled, auto_priority_recall_minutes: autoPriorityRecallMinutes }) }); await reload(); toast.success("自动优先级策略已保存") } catch (error) { toast.error(error instanceof Error ? error.message : "保存失败") } finally { setBusy(false) } }
+  // 保存动态监测规则：只写这一份本地副本，不触发整页 reload，
+  // 避免刷新把弹窗里正在编辑的内容覆盖掉；页面其它数据等下次自然轮询再更新。
+  async function saveDynamicMonitor(config: RelayDynamicMonitorConfig) { if (!selectedID) return; setBusy(true); try { const result = await apiFetch<{ config: RelayDynamicMonitorConfig }>(`/relay-stations/${selectedID}/dynamic-monitor`, { method: "PUT", body: JSON.stringify(config) }); setDynamicMonitorSaved(result?.config ?? config); setDynamicMonitorOpen(false); toast.success(config.enabled ? "账号动态监测规则已保存" : "规则已保存，动态监测当前未启用") } catch (error) { toast.error(error instanceof Error ? error.message : "保存失败") } finally { setBusy(false) } }
   async function updateGroup(groupID: number, patch: RelayGroupPatch) { if (!selectedID) return; await apiFetch(`/relay-stations/${selectedID}/groups/${groupID}`, { method: "PUT", body: JSON.stringify(patch) }); await reload(); toast.success("分组已更新") }
   async function updateGroupOrder(ids: number[]) { if (!selectedID) return; await apiFetch(`/relay-stations/${selectedID}/groups/sort-order`, { method: "PUT", body: JSON.stringify({ updates: ids.map((id, index) => ({ id, sort_order: index * 10 })) }) }); await reload(); toast.success("分组排序已保存") }
   async function applySuggestion(account: RelayAccountView) { if (!selectedID || !account.can_apply) return; const selection = await openAccountAdjustmentDialog({ mode: "suggestion", title: `应用“${account.name}”的调组建议？`, confirmLabel: "应用建议", accounts: [account], totalCount: 1 }); if (!selection) return; setBusy(true); try { const result = await apiFetch<RelayAccountBatchActionResult>(`/relay-stations/${selectedID}/accounts/apply-suggestions`, { method: "POST", body: JSON.stringify({ account_external_ids: [account.external_id], account_group_external_ids: selection }) }); if (result.failed) throw new Error(result.errors?.[0] || "应用建议失败"); await reload(); toast.success(result.applied > 0 ? "账号分组已更新并写入审计记录" : "未选择可应用分组，已跳过") } catch (error) { toast.error(error instanceof Error ? error.message : "应用建议失败") } finally { setBusy(false) } }
@@ -1910,6 +1923,15 @@ export default function RelayStationsPage() {
             <div className="flex min-h-11 items-center justify-between gap-4 py-4 md:pr-6"><div className="min-w-0"><p className="whitespace-nowrap text-xs font-medium">流畅度排序</p><p className="mt-1 flex items-center gap-1 truncate text-[11px] text-muted-foreground">按近期响应排序<Tooltip delayDuration={200}><TooltipTrigger asChild><button type="button" className="shrink-0 rounded text-muted-foreground hover:text-foreground" aria-label="查看流畅度排序说明"><CircleHelp className="size-3.5" /></button></TooltipTrigger><TooltipContent side="top" className="max-w-72 text-xs">OAuth 账号固定为优先级 1；未调用及响应最流畅的 API Key 从优先级 2 开始，按最近调用的首字与总耗时综合排序，最慢逐级排到 10。</TooltipContent></Tooltip></p></div><Switch className="relative shrink-0 cursor-pointer before:absolute before:-inset-3 before:content-['']" checked={autoPriorityEnabled} onCheckedChange={setAutoPriorityEnabled} aria-label="按最近调用流畅度自动调整优先级" /></div>
             <div className="grid min-h-11 grid-cols-[auto_minmax(0,1fr)_5.5rem] items-center gap-2 py-4 md:pl-6"><Switch className="shrink-0" checked={autoPriorityRecallEnabled} onCheckedChange={setAutoPriorityRecallEnabled} disabled={!autoPriorityEnabled} aria-label="启用自动回调优先级" /><div className="min-w-0"><p className="whitespace-nowrap text-xs font-medium">自动回调优先级</p><p className="mt-1 flex items-center gap-1 truncate text-[11px] text-muted-foreground">超时逐步提升<Tooltip delayDuration={200}><TooltipTrigger asChild><button type="button" className="shrink-0 rounded text-muted-foreground hover:text-foreground" aria-label="查看自动回调优先级说明"><CircleHelp className="size-3.5" /></button></TooltipTrigger><TooltipContent side="top" className="max-w-72 text-xs">已启用调度的 API Key 账号若在设定时间内未被调用，每次快照同步会将当前优先级提高一级，最低提升到按流畅度计算出的基础优先级 2；账号重新产生调用后继续按近期表现排序。</TooltipContent></Tooltip></p></div><Select value={String(autoPriorityRecallMinutes)} onValueChange={(value) => setAutoPriorityRecallMinutes(Number(value))} disabled={!autoPriorityEnabled || !autoPriorityRecallEnabled}><SelectTrigger className="h-9 w-[88px] px-2 text-xs"><SelectValue /></SelectTrigger><SelectContent>{[[30,"30 分"],[60,"1 小时"],[180,"3 小时"],[360,"6 小时"],[720,"12 小时"],[1440,"1 天"]].map(([value,label]) => <SelectItem key={value} value={String(value)}>{label}</SelectItem>)}</SelectContent></Select></div>
           </CardContent>
+        </Card>
+        <Card className="gap-0 border border-border py-0 shadow-none xl:col-span-3">
+          <CardHeader className="flex flex-row items-center justify-between gap-3 px-4 py-3">
+            <div className="min-w-0"><CardTitle className="flex items-center gap-2 text-sm font-semibold"><Activity className="size-4 text-brand" />账号动态监测<Tooltip delayDuration={200}><TooltipTrigger asChild><button type="button" className="rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label="查看账号动态监测说明"><CircleHelp className="size-3.5" /></button></TooltipTrigger><TooltipContent side="top" className="max-w-96 text-xs leading-5">每个规则组按自己的首字延迟阈值（秒）与连续超标次数关闭参与监测的账号，再按“分组最少保留账号数”补开；允许动态开启时，关闭超过设定时间的账号会自动开启。规则只保存在这个弹窗里，不写入分组配置，也不改动自动调组策略。</TooltipContent></Tooltip></CardTitle><p className="mt-1 truncate text-xs text-muted-foreground">{dynamicMonitor.enabled ? (() => { const groupList = dynamicMonitor.groups ?? []; const total = groupList.reduce((sum, group) => sum + (group.account_external_ids?.length ?? 0), 0); const parts = groupList.map((group) => `${group.name || "未命名组"}：${group.first_token_seconds} 秒连续 ${group.consecutive_count} 次`); return `已启用 · ${groupList.length} 个规则组 · 参与 ${total} 个账号` + (parts.length > 0 ? ` · ${parts.join("；")}` : "") })() : "未启用，按需为参与账号配置首字延迟与补开规则。"}</p></div>
+            <div className="flex shrink-0 items-center gap-2">
+              {closedAccounts.length > 0 ? <span className="hidden rounded bg-warning/10 px-2 py-1 text-[11px] font-medium text-warning sm:inline">{closedAccounts.length} 个账号被规则关闭</span> : null}
+              <Button size="sm" className="h-9 gap-1.5" disabled={busy} onClick={() => setDynamicMonitorOpen(true)}><SlidersHorizontal className="size-3.5" />配置规则</Button>
+            </div>
+          </CardHeader>
         </Card>
       </div>
 
@@ -2003,6 +2025,7 @@ export default function RelayStationsPage() {
       </DialogContent>
     </Dialog>
     <AccountAdjustmentSelectionDialog state={accountAdjustmentDialog} selections={accountAdjustmentSelections} busy={busy} groupsByID={groupsByID} onSelectionChange={updateAccountAdjustmentSelection} onCancel={() => finishAccountAdjustmentDialog(null)} onConfirm={() => finishAccountAdjustmentDialog(accountAdjustmentSelections)} />
+    {currentOverview ? <DynamicMonitorDialog open={dynamicMonitorOpen} busy={busy} config={dynamicMonitor} state={dynamicMonitorState} accounts={currentOverview.accounts} groups={currentOverview.groups} onOpenChange={setDynamicMonitorOpen} onSave={(config) => void saveDynamicMonitor(config)} /> : null}
     {currentOverview ? <HelpDocDialog key={currentOverview.station.id} open={helpDocOpen} onOpenChange={setHelpDocOpen} station={{ id: currentOverview.station.id, name: currentOverview.station.name }} /> : null}
     {confirmDialog}
   </section>

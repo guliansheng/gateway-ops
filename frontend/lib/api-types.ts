@@ -681,7 +681,7 @@ export interface RelayAdjustmentView {
   new_priority?: number | null
   old_pool_mode_retry_count?: number | null
   new_pool_mode_retry_count?: number | null
-  source: "manual" | "auto"
+  source: "manual" | "auto" | "dynamic"
   action: "group_update" | "enable_scheduling" | "disable_scheduling" | string
   success: boolean
   error_message?: string
@@ -912,6 +912,43 @@ export interface RelayMonitorChannelOption {
   groups: string[]
 }
 
+// 账号动态监测规则：只保存在中转站上，仅对这个功能生效，不写入分组配置。
+// 阈值与超标次数按规则组各自设置；补开相关的三项是整个中转站通用设置。
+export interface RelayDynamicMonitorRuleGroup {
+  /** 规则组名称，仅用于界面展示。 */
+  name: string
+  /** 首字延迟超过该秒数记为一次超标。 */
+  first_token_seconds: number
+  /** 连续超标多少次后关闭账号。 */
+  consecutive_count: number
+  /** 该规则组参与监测的账号；同一账号最多出现在一个规则组里。 */
+  account_external_ids: number[]
+}
+
+export interface RelayDynamicMonitorConfig {
+  enabled: boolean
+  /** 多组规则，每组独立的阈值与超标次数。 */
+  groups: RelayDynamicMonitorRuleGroup[]
+  /** 分组至少保留多少个可用账号，0 表示不设置。 */
+  min_accounts_per_group: number
+  /** 关闭的账号是否允许被动态开启。 */
+  allow_auto_open: boolean
+  /** 关闭多久后自动开启，0 表示不启用。 */
+  auto_open_minutes: number
+}
+
+// 被规则关闭、等待按规则开启的账号。
+export interface RelayDynamicMonitorClosure {
+  account_external_id: number
+  account_name: string
+  reason: string
+  closed_at: string
+}
+
+export interface RelayDynamicMonitorState {
+  closed_accounts: RelayDynamicMonitorClosure[]
+}
+
 export interface RelayOverview {
   station: RelayStation
   groups: RelayGroupView[]
@@ -919,6 +956,8 @@ export interface RelayOverview {
   summary: RelayRiskSummary
   adjustments: RelayAdjustmentView[]
   monitor_channels: RelayMonitorChannelOption[]
+  dynamic_monitor: RelayDynamicMonitorConfig
+  dynamic_monitor_state: RelayDynamicMonitorState
   sync_available: boolean
   range: RelayUsageRange
   usage_complete: boolean

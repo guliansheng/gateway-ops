@@ -62,7 +62,7 @@ export function RelayAdjustmentLog({ rows, title = "调整记录", storageKey = 
                 <span className="font-medium text-foreground">{row.account_name}</span>
                 {showStation ? <span className="text-muted-foreground">{row.relay_station_name || `中转站 #${row.relay_station_id}`} · {row.account_platform || "-"}</span> : <span className="text-muted-foreground">{row.account_platform || "-"}</span>}
                 <span className={cn("rounded px-1.5 py-0.5", row.success ? "bg-success/10 text-success" : "bg-danger/10 text-danger")}>{row.success ? "已完成" : "失败"}</span>
-                <span className={cn("rounded px-1.5 py-0.5 font-medium", row.source === "auto" ? "bg-brand/10 text-brand" : "bg-muted text-muted-foreground")}>{row.source === "auto" ? "自动" : "手动"}</span>
+                <span className={cn("rounded px-1.5 py-0.5 font-medium", row.source === "auto" ? "bg-brand/10 text-brand" : row.source === "dynamic" ? "bg-violet-500/10 text-violet-700 dark:text-violet-400" : "bg-muted text-muted-foreground")}>{row.source === "auto" ? "自动" : row.source === "dynamic" ? "动态" : "手动"}</span>
                 <span className="rounded bg-muted px-1.5 py-0.5 text-muted-foreground">{relayAdjustmentActionLabel(row)}</span>
               </div>
               <p className="mt-1 break-words text-muted-foreground">{relayAdjustmentDetail(row)}</p>

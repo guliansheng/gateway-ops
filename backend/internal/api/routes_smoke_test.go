@@ -16,6 +16,7 @@ func TestRegisterExposesUserChargeRoutes(t *testing.T) {
 	want := map[string]bool{
 		"PUT /api/relay-stations/:id/accounts/user-charge-excluded": false,
 		"GET /api/dashboard/unlinked-accounts":                      false,
+		"PUT /api/relay-stations/:id/dynamic-monitor":               false,
 	}
 	for _, route := range engine.Routes() {
 		key := route.Method + " " + route.Path

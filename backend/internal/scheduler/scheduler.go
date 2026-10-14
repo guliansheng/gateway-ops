@@ -17,28 +17,30 @@ import (
 )
 
 type Scheduler struct {
-	cfg                  config.SchedulerConfig
-	log                  *slog.Logger
-	cron                 *cron.Cron
-	monitor              *monitor.Service
-	monLogs              *storage.MonitorLogs
-	rates                *storage.Rates
-	notifies             *storage.Notifications
-	settings             *storage.Settings
-	relay                *relay.Service
-	legacyBalanceID      cron.EntryID
-	legacyRateID         cron.EntryID
-	channelSyncID        cron.EntryID
-	channelRateSyncID    cron.EntryID
-	relayRateSyncID      cron.EntryID
-	relaySnapshotSyncID  cron.EntryID
-	dailyBalanceID       cron.EntryID
-	jobsMu               sync.Mutex
-	channelSyncMu        sync.Mutex
-	channelRateSyncMu    sync.Mutex
-	relaySyncMu          sync.Mutex
-	relayRateRunning     atomic.Bool
-	relaySnapshotRunning atomic.Bool
+	cfg                   config.SchedulerConfig
+	log                   *slog.Logger
+	cron                  *cron.Cron
+	monitor               *monitor.Service
+	monLogs               *storage.MonitorLogs
+	rates                 *storage.Rates
+	notifies              *storage.Notifications
+	settings              *storage.Settings
+	relay                 *relay.Service
+	legacyBalanceID       cron.EntryID
+	legacyRateID          cron.EntryID
+	channelSyncID         cron.EntryID
+	channelRateSyncID     cron.EntryID
+	relayRateSyncID       cron.EntryID
+	relaySnapshotSyncID   cron.EntryID
+	dynamicMonitorID      cron.EntryID
+	dailyBalanceID        cron.EntryID
+	jobsMu                sync.Mutex
+	channelSyncMu         sync.Mutex
+	channelRateSyncMu     sync.Mutex
+	relaySyncMu           sync.Mutex
+	relayRateRunning      atomic.Bool
+	relaySnapshotRunning  atomic.Bool
+	dynamicMonitorRunning atomic.Bool
 }
 
 func New(
@@ -95,6 +97,13 @@ func (s *Scheduler) Start() error {
 		if _, err := s.cron.AddFunc(s.cfg.Retention.Cron, s.runRetention); err != nil {
 			return err
 		}
+	}
+	// 账号动态监测的“超时自动开启”走独立短间隔任务：关闭判断仍由快照同步触发，
+	// 这里只负责把到达设定时间的账号开回来。
+	if entryID, err := s.cron.AddFunc("@every 1m", s.runDynamicMonitorAutoOpen); err != nil {
+		return err
+	} else {
+		s.dynamicMonitorID = entryID
 	}
 	if err := s.configureSyncJobs(); err != nil {
 		return err
@@ -267,6 +276,24 @@ func (s *Scheduler) runRelaySnapshotSync() {
 	defer cancel()
 	if _, _, err := s.relay.SyncAllSnapshots(ctx); err != nil {
 		s.log.Warn("sync relay station snapshots failed", "err", err)
+	}
+}
+
+// runDynamicMonitorAutoOpen 每分钟检查一次账号动态监测的关闭记录，
+// 只处理“超时自动开启”，与快照同步里的关闭判断互不重叠。
+func (s *Scheduler) runDynamicMonitorAutoOpen() {
+	if !s.dynamicMonitorRunning.CompareAndSwap(false, true) {
+		return
+	}
+	defer s.dynamicMonitorRunning.Store(false)
+	// 与快照同步、倍率探测共用一把锁，避免同时改写同一个账号的调度状态。
+	s.relaySyncMu.Lock()
+	defer s.relaySyncMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if err := s.relay.ReopenTimedDynamicAccounts(ctx); err != nil {
+		s.log.Warn("relay dynamic monitor auto open failed", "err", err)
 	}
 }
 
