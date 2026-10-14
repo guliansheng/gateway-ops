@@ -79,15 +79,18 @@ function RuleGroupCard({
 }) {
   const [query, setQuery] = useState("")
   const [groupFilter, setGroupFilter] = useState("all")
+  const [onlySelected, setOnlySelected] = useState(false)
+  const selectedAccountIDs = useMemo(() => new Set(draft.selectedIDs), [draft.selectedIDs])
 
   const visibleAccounts = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase()
     return accounts.filter((account) => {
+      if (onlySelected && !selectedAccountIDs.has(account.external_id)) return false
       if (groupFilter !== "all" && !account.current_groups.some((group) => String(group.external_id) === groupFilter)) return false
       if (needle !== "" && !account.name.toLocaleLowerCase().includes(needle)) return false
       return true
     })
-  }, [accounts, groupFilter, query])
+  }, [accounts, groupFilter, query, onlySelected, selectedAccountIDs])
 
   function toggleAllVisible() {
     const visibleIDs = visibleAccounts.filter((account) => !claimed.has(account.external_id)).map((account) => account.external_id)
@@ -135,6 +138,10 @@ function RuleGroupCard({
             {groups.map((group) => <SelectItem key={group.external_id} value={String(group.external_id)}>{group.name}</SelectItem>)}
           </SelectContent>
         </Select>
+        <div className="flex h-8 items-center gap-1.5">
+          <Switch id={`${draft.key}-only-selected`} checked={onlySelected} onCheckedChange={setOnlySelected} aria-label={`规则组 ${index + 1} 仅显示本组已选账号`} />
+          <Label htmlFor={`${draft.key}-only-selected`} className="cursor-pointer whitespace-nowrap text-xs">仅显示本组已选</Label>
+        </div>
         <Button type="button" variant="outline" size="sm" className="h-8 gap-1 text-xs" disabled={busy || visibleAccounts.length === 0} onClick={toggleAllVisible}>
           {allVisibleSelected ? "取消全选" : "全选当前列表"}
         </Button>
@@ -142,7 +149,7 @@ function RuleGroupCard({
       </div>
 
       <div className="mt-2 max-h-52 space-y-1.5 overflow-y-auto rounded-md border border-border bg-background p-2 pr-1">
-        {visibleAccounts.length === 0 ? <p className="py-6 text-center text-xs text-muted-foreground">当前筛选没有账号</p> : visibleAccounts.map((account) => {
+        {visibleAccounts.length === 0 ? <p className="py-6 text-center text-xs text-muted-foreground">{onlySelected ? "当前筛选没有本组已选账号" : "当前筛选没有账号"}</p> : visibleAccounts.map((account) => {
           const checked = draft.selectedIDs.includes(account.external_id)
           // 已被其它规则组占用的账号不可再勾，保证一个账号只有一套判定规则。
           const taken = !checked && claimed.has(account.external_id)
