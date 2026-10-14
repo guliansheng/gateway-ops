@@ -83,7 +83,7 @@ export default function ChannelsPage() {
       <header className="flex flex-wrap items-end justify-between gap-3 border-l-2 border-brand pl-3">
         <div>
           <h1 className="flex items-center gap-2 text-xl font-bold text-foreground"><LayoutList className="size-5 text-brand" />{"渠道管理"}</h1>
-          <p className="mt-1 text-xs text-muted-foreground">{"按最近分组倍率变动排序，管理监控状态、账号、余额与同步任务。"}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{"默认按最近分组倍率变动排序，可切换按余额正序 / 倒序，管理监控状态、账号、余额与同步任务。"}</p>
         </div>
         <div className="inline-flex rounded-md border border-border bg-muted/30 p-0.5" role="group" aria-label="渠道统计时间范围">
           {ranges.map((item) => (

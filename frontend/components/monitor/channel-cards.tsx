@@ -47,6 +47,26 @@ type Status = "healthy" | "low" | "failed" | "idle"
 type MonitorStatusFilter = "enabled" | "disabled" | "all"
 type ManagementModeFilter = "auto" | "manual" | "all"
 type AccountCountFilter = "multi" | "single" | "all"
+/** 渠道列表排序：默认沿用后端顺序（最近分组倍率变动在前），其余按余额排序。 */
+type ChannelSortMode = "default" | "balance_desc" | "balance_asc"
+
+const CHANNEL_SORT_STORAGE_KEY = "uh_channel_sort_mode"
+
+const channelSortLabels: Record<ChannelSortMode, string> = {
+  default: "默认（倍率变动）",
+  balance_desc: "余额从高到低",
+  balance_asc: "余额从低到高",
+}
+
+function readChannelSortMode(): ChannelSortMode {
+  try {
+    if (typeof window === "undefined") return "default"
+    const stored = window.localStorage.getItem(CHANNEL_SORT_STORAGE_KEY)
+    return stored === "balance_desc" || stored === "balance_asc" ? stored : "default"
+  } catch {
+    return "default"
+  }
+}
 
 function statusOf(c: Channel, balance?: number | null): Status {
   if (c.last_error) return "failed"
@@ -682,6 +702,21 @@ export function ChannelCards({ usageRange = "today" }: { usageRange?: RelayUsage
   const [monitorStatus, setMonitorStatus] = useState<MonitorStatusFilter>("enabled")
   const [managementMode, setManagementMode] = useState<ManagementModeFilter>("all")
   const [accountCount, setAccountCount] = useState<AccountCountFilter>("all")
+  const [sortMode, setSortMode] = useState<ChannelSortMode>("default")
+
+  // 排序偏好本地持久化：首帧用默认值渲染，挂载后再读取，避免 SSR 水合不一致。
+  useEffect(() => {
+    setSortMode(readChannelSortMode())
+  }, [])
+
+  function changeSortMode(value: ChannelSortMode) {
+    setSortMode(value)
+    try {
+      window.localStorage.setItem(CHANNEL_SORT_STORAGE_KEY, value)
+    } catch {
+      // 存储不可用时排序仍然生效，只是不跨会话记忆。
+    }
+  }
   const [channelNameQuery, setChannelNameQuery] = useState("")
   const [groupNameQuery, setGroupNameQuery] = useState("")
   const normalizedGroupNameQuery = groupNameQuery.trim().toLocaleLowerCase()
@@ -695,7 +730,7 @@ export function ChannelCards({ usageRange = "today" }: { usageRange?: RelayUsage
     if (!channels) return []
     const nameQuery = channelNameQuery.trim().toLocaleLowerCase()
     const normalizedRemarkQuery = remarkQuery.trim().toLocaleLowerCase()
-    return channels.filter((channel) => {
+    const matched = channels.filter((channel) => {
       const statusMatches = monitorStatus === "all" || channel.monitor_enabled === (monitorStatus === "enabled")
       const managementMatches = managementMode === "all" || channel.balance_mode === managementMode
       const isMultiAccount = (channel.accounts?.length ?? 0) > 1
@@ -705,7 +740,21 @@ export function ChannelCards({ usageRange = "today" }: { usageRange?: RelayUsage
       const groupMatches = normalizedGroupNameQuery === "" || channel.group_names?.some((name) => name.toLocaleLowerCase().includes(normalizedGroupNameQuery))
       return statusMatches && managementMatches && accountCountMatches && nameMatches && remarkMatches && groupMatches
     })
-  }, [accountCount, channelNameQuery, channels, managementMode, monitorStatus, normalizedGroupNameQuery, remarkQuery])
+    if (sortMode === "default") return matched
+    // 余额排序：空余额（尚未采集）固定排在末尾，其余按数值比较。
+    const direction = sortMode === "balance_desc" ? -1 : 1
+    return [...matched].sort((a, b) => {
+      const left = actualChannelBalance(a)
+      const right = actualChannelBalance(b)
+      const leftMissing = left == null || !Number.isFinite(left)
+      const rightMissing = right == null || !Number.isFinite(right)
+      if (leftMissing && rightMissing) return 0
+      if (leftMissing) return 1
+      if (rightMissing) return -1
+      if (left === right) return a.name.localeCompare(b.name)
+      return (left - right) * direction
+    })
+  }, [accountCount, channelNameQuery, channels, managementMode, monitorStatus, normalizedGroupNameQuery, remarkQuery, sortMode])
   const refresh = useTriggerRefresh()
   const { confirm, dialog: confirmDialog } = useConfirm()
   const [editing, setEditing] = useState<Channel | null>(null)
@@ -880,6 +929,14 @@ export function ChannelCards({ usageRange = "today" }: { usageRange?: RelayUsage
               <SelectItem value="all">全部账号</SelectItem>
               <SelectItem value="multi">多账号渠道</SelectItem>
               <SelectItem value="single">单账号渠道</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={sortMode} onValueChange={(value) => changeSortMode(value as ChannelSortMode)}>
+            <SelectTrigger className="h-11 w-36 text-xs sm:h-9" aria-label="渠道排序方式"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {(Object.keys(channelSortLabels) as ChannelSortMode[]).map((value) => (
+                <SelectItem key={value} value={value}>{channelSortLabels[value]}</SelectItem>
+              ))}
             </SelectContent>
           </Select>
           <Button type="button" size="sm" variant="outline" className="h-11 gap-1.5 text-xs sm:h-9" disabled={!hasActiveFilters} onClick={resetFilters}>
