@@ -1,7 +1,7 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
-import { Power, Plus, RefreshCw, Search, Trash2 } from "lucide-react"
+import { useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react"
+import { Activity, Layers3, Power, Plus, RefreshCw, Search, SlidersHorizontal, Trash2, Zap } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -15,6 +15,40 @@ import { cn } from "@/lib/utils"
 
 /** 与后端 dynamicMonitorMaxGroups 对齐。 */
 const MAX_RULE_GROUPS = 20
+
+/**
+ * 弹窗里的一级模块：统一“彩色图标 + 标题 + 右侧操作”的标题栏与卡片外观，
+ * 让启用开关、监测规则组、分组最少保留账号数等大模块一眼可区分。
+ */
+function ModuleSection({
+  icon: Icon, title, description, action, tone = "brand", children,
+}: {
+  icon: ComponentType<{ className?: string }>
+  title: string
+  description?: ReactNode
+  action?: ReactNode
+  tone?: "brand" | "warning"
+  children?: ReactNode
+}) {
+  const iconTone = tone === "warning" ? "bg-warning/10 text-warning" : "bg-brand/10 text-brand"
+  return (
+    <section className="overflow-hidden rounded-lg border border-border bg-card shadow-none">
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-muted/40 px-3 py-2.5">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className={cn("flex size-6 shrink-0 items-center justify-center rounded-md", iconTone)}>
+            <Icon className="size-3.5" />
+          </span>
+          <div className="min-w-0">
+            <h3 className="truncate text-xs font-semibold text-foreground">{title}</h3>
+            {description ? <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">{description}</p> : null}
+          </div>
+        </div>
+        {action ? <div className="flex shrink-0 items-center gap-2">{action}</div> : null}
+      </header>
+      {children ? <div className="space-y-2.5 px-3 py-3">{children}</div> : null}
+    </section>
+  )
+}
 
 interface DynamicMonitorDialogProps {
   open: boolean
@@ -147,10 +181,11 @@ function RuleGroupCard({
     && visibleAccounts.filter((account) => !claimed.has(account.external_id)).every((account) => draft.selectedIDs.includes(account.external_id))
 
   return (
-    <section className="rounded-md border border-border bg-muted/20 p-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
+    <section className="overflow-hidden rounded-lg border border-border bg-card shadow-none">
+      {/* 左侧色条 + 序号徽标，让每个规则组的边界一眼可见。 */}
+      <div className="flex flex-wrap items-center justify-between gap-2 border-y-2 border-l-4 border-l-brand border-y-transparent bg-muted/50 px-3 py-2">
         <div className="flex min-w-0 flex-1 items-center gap-2">
-          <span className="shrink-0 text-[11px] font-medium text-muted-foreground">规则组 {index + 1}</span>
+          <span className="shrink-0 rounded bg-brand/10 px-1.5 py-0.5 text-[11px] font-semibold text-brand">规则组 {index + 1}</span>
           <Input value={draft.name} onChange={(event) => onChange({ name: event.target.value })} disabled={busy} placeholder="规则组名称" aria-label={`规则组 ${index + 1} 名称`} className="h-8 w-44 text-xs" />
         </div>
         <Button type="button" variant="ghost" size="sm" className="h-8 shrink-0 gap-1 text-xs text-danger hover:text-danger" disabled={busy || !canRemove} onClick={onRemove} aria-label={`删除规则组 ${index + 1}`}>
@@ -158,10 +193,11 @@ function RuleGroupCard({
         </Button>
       </div>
 
-      <div className="mt-2 grid gap-2 sm:grid-cols-2">
-        <div className="rounded-md border border-border bg-background px-2.5 py-2">
+      <div className="space-y-2.5 px-3 py-3">
+      <div className="grid gap-2 sm:grid-cols-2">
+        <div className="rounded-md border border-border bg-muted/30 px-2.5 py-2">
           <div className="flex items-center justify-between gap-2">
-            <span className="text-xs font-medium">连续超时关闭</span>
+            <span className="flex items-center gap-1.5 text-xs font-semibold text-foreground"><span className="flex size-4 shrink-0 items-center justify-center rounded bg-foreground/10 text-[10px] font-bold">1</span>连续超时关闭</span>
           </div>
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
             <span className="shrink-0 text-[11px] text-muted-foreground">首字延迟超过</span>
@@ -171,9 +207,9 @@ function RuleGroupCard({
             <span className="shrink-0 text-[11px] text-muted-foreground">次后关闭</span>
           </div>
         </div>
-        <div className="rounded-md border border-border bg-background px-2.5 py-2">
+        <div className="rounded-md border border-border bg-muted/30 px-2.5 py-2">
           <div className="flex items-center justify-between gap-2">
-            <span className="text-xs font-medium">单次超时直接关闭</span>
+            <span className="flex items-center gap-1.5 text-xs font-semibold text-foreground"><span className="flex size-4 shrink-0 items-center justify-center rounded bg-foreground/10 text-[10px] font-bold">2</span>单次超时直接关闭</span>
             <Switch checked={draft.singleTimeoutEnabled} onCheckedChange={(checked) => onChange({ singleTimeoutEnabled: checked })} disabled={busy} aria-label={`规则组 ${index + 1} 启用单次首字超时直接关闭`} />
           </div>
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
@@ -232,8 +268,9 @@ function RuleGroupCard({
           )
         })}
       </div>
-      {total > 1 ? <p className="mt-1.5 text-[11px] text-muted-foreground">共 {total} 个规则组；同一账号只能归属一个规则组。</p> : null}
-      {closedCount > 0 ? <p className="mt-1.5 text-[11px] text-muted-foreground">本组当前有 {closedCount} 个账号被规则关闭。</p> : null}
+      </div>
+      {total > 1 ? <p className="px-3 pb-3 text-[11px] text-muted-foreground">共 {total} 个规则组；同一账号只能归属一个规则组。</p> : null}
+      {closedCount > 0 ? <p className="px-3 pb-3 text-[11px] text-muted-foreground">本组当前有 {closedCount} 个账号被规则关闭。</p> : null}
     </section>
   )
 }
@@ -381,26 +418,24 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
         </DialogHeader>
 
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4 sm:px-6">
-          <div className="flex min-h-11 items-center justify-between gap-6 rounded-md border border-border bg-muted/30 px-3 py-3">
-            <div className="min-w-0">
-              <p className="text-xs font-medium">启用账号动态监测</p>
-              <p className="mt-0.5 text-[11px] text-muted-foreground">关闭判断在每次快照同步时执行，超时开启由后台每分钟任务处理。</p>
-            </div>
-            <Switch checked={enabled} onCheckedChange={setEnabled} disabled={busy} aria-label="启用账号动态监测" />
-          </div>
+          <ModuleSection
+            icon={Power}
+            title="启用账号动态监测"
+            description="关闭判断在每次快照同步时执行，超时开启由后台每分钟任务处理。"
+            action={<Switch checked={enabled} onCheckedChange={setEnabled} disabled={busy} aria-label="启用账号动态监测" />}
+          />
 
-          <section className="space-y-2.5">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <Label className="text-xs font-medium">监测规则组</Label>
-              <div className="flex items-center gap-3">
-                <span className="text-[11px] text-muted-foreground">共 {ruleGroups.length} 组 · 已选 {totalSelected} / {accounts.length} 个账号</span>
-                <Button type="button" variant="outline" size="sm" className="h-8 gap-1 text-xs" disabled={busy || ruleGroups.length >= MAX_RULE_GROUPS} onClick={addGroup}>
-                  <Plus className="size-3.5" />添加规则组
-                </Button>
-              </div>
-            </div>
-            <p className="text-[11px] text-muted-foreground">每组有两条互相独立的关闭规则，命中任意一条就关闭该组勾选的账号：上面一条看连续调用，首字延迟超过设定秒数且连续达到设定次数才关闭；下面一条只看单次调用，任意一次首字延迟超过设定秒数就立即关闭，关闭开关表示不启用。同一账号只能归属一个规则组，已在别组选中的账号这里不可再选。</p>
-            <div className="space-y-3">
+          <ModuleSection
+            icon={Layers3}
+            title="监测规则组"
+            description="每组两条互相独立的关闭规则，命中任意一条就关闭该组勾选的账号：规则 1 看连续调用，规则 2 只看单次调用。"
+            action={<>
+              <span className="hidden text-[11px] text-muted-foreground sm:inline">共 {ruleGroups.length} 组 · 已选 {totalSelected} / {accounts.length} 个账号</span>
+              <Button type="button" variant="outline" size="sm" className="h-8 gap-1 text-xs" disabled={busy || ruleGroups.length >= MAX_RULE_GROUPS} onClick={addGroup}>
+                <Plus className="size-3.5" />添加规则组
+              </Button>
+            </>}
+          >
               {ruleGroups.map((draft, index) => (
                 <RuleGroupCard
                   key={draft.key}
@@ -418,21 +453,21 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
                   onRemove={() => removeGroup(draft.key)}
                 />
               ))}
-            </div>
-          </section>
+          </ModuleSection>
 
-          <section className="space-y-2.5">
-            <div className="space-y-1.5">
-              <div className="flex flex-wrap items-center gap-1.5">
-                <Label htmlFor="dm-min-accounts" className="text-xs">分组最少保留账号数</Label>
-                <Input id="dm-min-accounts" inputMode="numeric" value={minAccounts} onChange={(event) => setMinAccounts(event.target.value)} disabled={busy} className="h-9 w-24 text-xs tabular-nums" />
-                <span className="text-[11px] text-muted-foreground">个 · 公共值</span>
-              </div>
-              <p className="text-[11px] text-muted-foreground">公共值：任一分组可用账号低于该数时，会优先补开之前被规则关闭的账号；未单独设置的分组都使用这个值。0 表示不设置，只在本弹窗生效。</p>
-            </div>
+          <ModuleSection
+            icon={SlidersHorizontal}
+            title="分组最少保留账号数"
+            description="可用账号低于下限时优先补开被规则关闭的账号；0 表示不设置，只在本弹窗生效。"
+            action={<>
+              <Label htmlFor="dm-min-accounts" className="text-[11px] text-muted-foreground">公共值</Label>
+              <Input id="dm-min-accounts" inputMode="numeric" value={minAccounts} onChange={(event) => setMinAccounts(event.target.value)} disabled={busy} className="h-8 w-20 text-xs tabular-nums" />
+              <span className="text-[11px] text-muted-foreground">个</span>
+            </>}
+          >
             <div className="space-y-2 rounded-md border border-border bg-muted/20 p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-xs font-medium">按分组单独设置</p>
+                <p className="text-xs font-semibold text-foreground">按分组单独设置</p>
                 <span className="text-[11px] text-muted-foreground">开启后该分组使用自定义值，关闭则沿用公共值</span>
               </div>
               {groups.length === 0 ? (
@@ -484,31 +519,31 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
                 </div>
               )}
             </div>
-          </section>
+          </ModuleSection>
 
-          <section className="rounded-md border border-border bg-muted/30 px-3 py-3">
-            <div className="flex min-h-9 items-center justify-between gap-6">
-              <div className="min-w-0">
-                <p className="text-xs font-medium">允许动态开启</p>
-                <p className="mt-0.5 text-[11px] text-muted-foreground">被规则关闭的账号，按超时时间或分组最少保留账号数自动开启。</p>
-              </div>
-              <Switch checked={allowAutoOpen} onCheckedChange={setAllowAutoOpen} disabled={busy} aria-label="允许动态开启" />
-            </div>
-            <div className="mt-3 flex items-center gap-3">
+          <ModuleSection
+            icon={Zap}
+            title="允许动态开启"
+            description="被规则关闭的账号，按超时时间或分组最少保留账号数自动开启。"
+            action={<Switch checked={allowAutoOpen} onCheckedChange={setAllowAutoOpen} disabled={busy} aria-label="允许动态开启" />}
+          >
+            <div className="flex flex-wrap items-center gap-3">
               <Label htmlFor="dm-auto-open" className="shrink-0 text-xs">关闭多久后自动开启</Label>
               <div className="flex items-center gap-1.5">
-                <Input id="dm-auto-open" inputMode="numeric" value={autoOpenMinutes} onChange={(event) => setAutoOpenMinutes(event.target.value)} disabled={busy || !allowAutoOpen} className="h-9 w-24 text-xs tabular-nums" aria-label="关闭多久后自动开启（分钟）" />
-                <span className="text-xs text-muted-foreground">分钟</span>
+                <Input id="dm-auto-open" inputMode="numeric" value={autoOpenMinutes} onChange={(event) => setAutoOpenMinutes(event.target.value)} disabled={busy || !allowAutoOpen} className="h-8 w-20 text-xs tabular-nums" aria-label="关闭多久后自动开启（分钟）" />
+                <span className="text-[11px] text-muted-foreground">分钟</span>
               </div>
               <span className="text-[11px] text-muted-foreground">0 表示不启用超时开启</span>
             </div>
-          </section>
+          </ModuleSection>
 
-          <section className="space-y-2">
-            <div className="flex items-center justify-between gap-2">
-              <Label className="flex items-center gap-1.5 text-xs font-medium"><Power className="size-3.5 text-warning" />当前被规则关闭的账号</Label>
-              <span className="text-[11px] text-muted-foreground">{closedAccounts.length} 个</span>
-            </div>
+          <ModuleSection
+            icon={Activity}
+            tone="warning"
+            title="当前被规则关闭的账号"
+            description="这些账号由动态监测自动关闭，将按上面的规则自动开启。"
+            action={<span className="rounded bg-warning/10 px-2 py-0.5 text-[11px] font-medium tabular-nums text-warning">{closedAccounts.length} 个</span>}
+          >
             {closedAccounts.length === 0 ? (
               <p className="rounded-md border border-dashed border-border px-3 py-4 text-center text-[11px] text-muted-foreground">暂无被规则关闭的账号</p>
             ) : (
@@ -525,7 +560,7 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
                 ))}
               </div>
             )}
-          </section>
+          </ModuleSection>
         </div>
 
         <DialogFooter className="shrink-0 items-center justify-between gap-3 border-t border-border px-4 py-3 sm:px-6">
