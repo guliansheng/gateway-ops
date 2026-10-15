@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -188,6 +189,9 @@ func (r *RelayStations) ReplaceSnapshot(
 			}
 		}
 		if len(accounts) > 0 {
+			// 首次出现的新账号默认继承“所在分组”的模型类型：同属多个分组时取倍率最高者，
+			// 再取该分组 model_types 的第一个值；分组未配置模型类型时保持为空。
+			newAccountModelType := resolveNewAccountModelTypes(groups, accountLinks)
 			for i := range accounts {
 				if previous, ok := previousAccountByExternalID[accounts[i].ExternalID]; ok {
 					accounts[i].ModelType = previous.ModelType
@@ -199,7 +203,13 @@ func (r *RelayStations) ReplaceSnapshot(
 						accounts[i].RateSource = previous.RateSource
 						accounts[i].RateObservedAt = previous.RateObservedAt
 					}
+					continue
 				}
+				// 已有模型类型（理论上不会，快照不携带该字段）时保留，避免覆盖。
+				if strings.TrimSpace(accounts[i].ModelType) != "" {
+					continue
+				}
+				accounts[i].ModelType = newAccountModelType[accounts[i].ExternalID]
 			}
 			if err := tx.Create(&accounts).Error; err != nil {
 				return err
@@ -277,6 +287,66 @@ func (r *RelayStations) ReplaceSnapshot(
 			"last_error":     "",
 		}).Error
 	})
+}
+
+// resolveNewAccountModelTypes 计算“首次出现的新账号”应继承的模型类型。
+//
+// 规则：取账号所属分组中 rate_multiplier 最高的那个分组，再取其 model_types 的第一个值；
+// 倍率相同时取 name 更靠前（字典序）的分组，保证结果稳定。分组未配置模型类型时返回空串。
+// 返回 external_id → 模型类型，仅包含有值可设的账号。
+func resolveNewAccountModelTypes(groups []RelayGroup, accountLinks []RelayAccountSnapshotLink) map[int64]string {
+	type groupMeta struct {
+		rate       float64
+		name       string
+		modelTypes string
+	}
+	metaByExternalID := make(map[int64]groupMeta, len(groups))
+	for _, group := range groups {
+		metaByExternalID[group.ExternalID] = groupMeta{rate: group.RateMultiplier, name: group.Name, modelTypes: group.ModelTypesJSON}
+	}
+	if len(metaByExternalID) == 0 || len(accountLinks) == 0 {
+		return nil
+	}
+
+	bestByAccount := make(map[int64]groupMeta, len(accountLinks))
+	for _, link := range accountLinks {
+		meta, ok := metaByExternalID[link.GroupExternalID]
+		if !ok {
+			continue
+		}
+		current, exists := bestByAccount[link.AccountExternalID]
+		if !exists || meta.rate > current.rate || (meta.rate == current.rate && meta.name < current.name) {
+			bestByAccount[link.AccountExternalID] = meta
+		}
+	}
+
+	result := make(map[int64]string, len(bestByAccount))
+	for externalID, meta := range bestByAccount {
+		if modelType := firstGroupModelType(meta.modelTypes); modelType != "" {
+			result[externalID] = modelType
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+// firstGroupModelType 返回分组 model_types 里的第一个值（转小写并去空白）；无值时返回空串。
+func firstGroupModelType(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	var values []string
+	if err := json.Unmarshal([]byte(raw), &values); err != nil {
+		return ""
+	}
+	for _, value := range values {
+		if trimmed := strings.ToLower(strings.TrimSpace(value)); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func (r *RelayStations) ListPricingChanges(stationID uint, since time.Time, limit int) ([]RelayChannelPricingChange, error) {
