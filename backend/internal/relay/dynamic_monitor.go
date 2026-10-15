@@ -72,6 +72,9 @@ type DynamicMonitorConfig struct {
 	// GroupMinAccounts 按销售分组（external id 的十进制字符串）单独设置的最少保留账号数。
 	// 出现即覆盖 MinAccountsPerGroup；未出现的分组沿用公共值。值为 0 表示该分组不设下限。
 	GroupMinAccounts map[string]int `json:"group_min_accounts,omitempty"`
+	// GroupRuleGroups 销售分组（external id 的十进制字符串）关联的规则组下标（0 基，指向 Groups）。
+	// 同步时该分组下“首次出现”的新账号会自动加入对应规则组；未出现的分组不自动关联。
+	GroupRuleGroups map[string]int `json:"group_rule_groups,omitempty"`
 	// AllowAutoOpen 通用规则：关闭的账号是否允许被动态开启。
 	AllowAutoOpen bool `json:"allow_auto_open"`
 	// AutoOpenMinutes 通用规则：关闭多久后自动开启，0 表示不启用超时开启。
@@ -85,6 +88,15 @@ func (c DynamicMonitorConfig) GroupMinFloor(groupExternalID int64) int {
 		return value
 	}
 	return c.MinAccountsPerGroup
+}
+
+// GroupRuleGroup 返回销售分组关联的规则组下标；未关联或下标越界时返回 -1。
+func (c DynamicMonitorConfig) GroupRuleGroup(groupExternalID int64) int {
+	index, ok := c.GroupRuleGroups[strconv.FormatInt(groupExternalID, 10)]
+	if !ok || index < 0 || index >= len(c.Groups) {
+		return -1
+	}
+	return index
 }
 
 // anyGroupMinFloor 判断是否存在生效下限大于 0 的分组，用于决定是否需要计算补开。
@@ -116,6 +128,10 @@ type DynamicMonitorState struct {
 	// 不把重开前的旧样本拼进新一轮。普通快照不会推进下界，以便跨同步累计。
 	// 持久化保留到账号删除，兼容没有该字段的旧运行状态。
 	Judged map[int64]time.Time `json:"judged,omitempty"`
+	// SeenAccounts 记录所有快照里出现过的账号（external id）。
+	// 只有“首次出现”的账号才会被自动加入关联规则组，之后即使被手动移除也不再自动加回。
+	// 持久化保留到账号删除，兼容没有该字段的旧运行状态（旧状态视为全部已见过）。
+	SeenAccounts map[int64]struct{} `json:"seen_accounts,omitempty"`
 }
 
 func (state *DynamicMonitorState) advanceJudged(externalID int64, at time.Time) {
@@ -129,12 +145,24 @@ func (state *DynamicMonitorState) advanceJudged(externalID int64, at time.Time) 
 }
 
 // retainedDynamicMonitorState 不共享输入 map，避免计划计算改写待比较的旧状态。
+// 只保留当前仍存在的账号的采样下界与“已见过”记录，账号删除后自动清理。
 func retainedDynamicMonitorState(state DynamicMonitorState, accounts []storage.RelayAccount) DynamicMonitorState {
 	next := DynamicMonitorState{ClosedAccounts: []DynamicMonitorClosure{}}
 	for _, account := range accounts {
 		next.advanceJudged(account.ExternalID, state.Judged[account.ExternalID])
+		if _, seen := state.SeenAccounts[account.ExternalID]; seen {
+			next.markSeen(account.ExternalID)
+		}
 	}
 	return next
+}
+
+// markSeen 记录账号已经出现过，用于判断下次同步是否属于“新增”。
+func (state *DynamicMonitorState) markSeen(externalID int64) {
+	if state.SeenAccounts == nil {
+		state.SeenAccounts = make(map[int64]struct{})
+	}
+	state.SeenAccounts[externalID] = struct{}{}
 }
 
 func dynamicMonitorSamplesAfter(raw string, after time.Time) []storage.RelayLatencySample {
@@ -215,7 +243,9 @@ func (c DynamicMonitorConfig) Normalize() DynamicMonitorConfig {
 	}
 	claimed := make(map[int64]struct{})
 	groups := make([]DynamicMonitorRuleGroup, 0, len(c.Groups))
-	for _, group := range c.Groups {
+	// 规则组下标会被“丢弃空组”改变，这里记录旧下标 → 新下标，用于重映射分组关联。
+	remap := make(map[int]int, len(c.Groups))
+	for oldIndex, group := range c.Groups {
 		normalized := group.Normalize()
 		ids := make([]int64, 0, len(normalized.AccountExternalIDs))
 		for _, id := range normalized.AccountExternalIDs {
@@ -230,10 +260,31 @@ func (c DynamicMonitorConfig) Normalize() DynamicMonitorConfig {
 			// 没有参与账号的规则组不保留，避免界面出现空壳分组。
 			continue
 		}
+		remap[oldIndex] = len(groups)
 		groups = append(groups, normalized)
 	}
 	c.Groups = groups
+	c.GroupRuleGroups = remapGroupRuleGroups(c.GroupRuleGroups, remap)
 	return c
+}
+
+// remapGroupRuleGroups 按规则组重排后的下标修正分组关联；指向已删除规则组的关联被丢弃。
+func remapGroupRuleGroups(source map[string]int, remap map[int]int) map[string]int {
+	if len(source) == 0 {
+		return nil
+	}
+	result := make(map[string]int, len(source))
+	for externalID, index := range source {
+		next, ok := remap[index]
+		if !ok {
+			continue
+		}
+		result[externalID] = next
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 // Normalize 补齐规则组内字段的默认值并去重排序账号。
@@ -321,6 +372,15 @@ func (c DynamicMonitorConfig) Validate() error {
 			return fmt.Errorf("分组 %d 的最少保留账号数必须在 0 到 %d 之间", id, dynamicMonitorMaxMinAccounts)
 		}
 	}
+	for externalID, index := range c.GroupRuleGroups {
+		id, err := strconv.ParseInt(strings.TrimSpace(externalID), 10, 64)
+		if err != nil || id <= 0 {
+			return fmt.Errorf("分组关联规则组的分组 ID %q 不合法", externalID)
+		}
+		if index < 0 || index >= len(c.Groups) {
+			return fmt.Errorf("分组 %d 关联的规则组下标 %d 超出范围", id, index)
+		}
+	}
 	if c.AutoOpenMinutes < 0 || c.AutoOpenMinutes > dynamicMonitorMaxAutoOpen {
 		return fmt.Errorf("自动开启时间必须在 0 到 %d 分钟之间", dynamicMonitorMaxAutoOpen)
 	}
@@ -382,6 +442,107 @@ func relayAccountSchedulable(account storage.RelayAccount) bool {
 	return account.Schedulable && isActive(account.Status)
 }
 
+// autoAssignNewAccounts 把“分组规则”关联的新账号加入对应规则组。
+//
+// 规则：
+//   - 只有本次快照里“首次出现”的账号才自动加入；已见过（含曾被手动移除）的账号不再自动加回。
+//   - 账号按其所属销售分组找关联规则组；同时属于多个已关联分组时，取分组倍率（rate_multiplier）最高的那个。
+//   - 已属于任一规则组的账号不重复处理；一个账号只归属一个规则组。
+//   - SeenAccounts 为空（旧状态或首次启用）时只建立基线，不自动加入，避免把存量账号一次性塞进规则组。
+//
+// 传入的 state 是 retainedDynamicMonitorState 的结果，函数就地更新它的 SeenAccounts。
+func autoAssignNewAccounts(
+	config DynamicMonitorConfig,
+	previous DynamicMonitorState,
+	accounts []storage.RelayAccount,
+	groups []storage.RelayGroup,
+	links []storage.RelayAccountGroup,
+	state *DynamicMonitorState,
+) (DynamicMonitorConfig, bool) {
+	// 没有配置任何分组关联时，只需维护“已见过”基线。
+	hasRuleGroups := len(config.GroupRuleGroups) > 0
+	coldStart := len(previous.SeenAccounts) == 0
+
+	// 账号当前是否已属于某个规则组，避免重复加入。
+	memberOfRuleGroup := make(map[int64]struct{})
+	for _, group := range config.Groups {
+		for _, externalID := range group.AccountExternalIDs {
+			memberOfRuleGroup[externalID] = struct{}{}
+		}
+	}
+
+	if hasRuleGroups && !coldStart {
+		groupByLocalID := make(map[uint]storage.RelayGroup, len(groups))
+		for _, group := range groups {
+			groupByLocalID[group.ID] = group
+		}
+		// 账号 local id → 其所属的（已关联规则组的）销售分组，用于挑选倍率最高的关联。
+		linkedGroupsByAccount := make(map[uint][]storage.RelayGroup)
+		for _, link := range links {
+			group, ok := groupByLocalID[link.RelayGroupID]
+			if !ok {
+				continue
+			}
+			linkedGroupsByAccount[link.RelayAccountID] = append(linkedGroupsByAccount[link.RelayAccountID], group)
+		}
+
+		// 收集本轮要加入各规则组的账号；按外部 ID 升序保证结果稳定。
+		pending := make(map[int][]int64)
+		for _, account := range accounts {
+			if _, seen := previous.SeenAccounts[account.ExternalID]; seen {
+				continue
+			}
+			if _, already := memberOfRuleGroup[account.ExternalID]; already {
+				continue
+			}
+			bestIndex := -1
+			bestRate := 0.0
+			for _, group := range linkedGroupsByAccount[account.ID] {
+				index := config.GroupRuleGroup(group.ExternalID)
+				if index < 0 {
+					continue
+				}
+				// 倍率更高者胜出；倍率相等时取更靠前的规则组，保证结果稳定可预期。
+				if bestIndex < 0 || group.RateMultiplier > bestRate || (group.RateMultiplier == bestRate && index < bestIndex) {
+					bestIndex = index
+					bestRate = group.RateMultiplier
+				}
+			}
+			if bestIndex < 0 {
+				continue
+			}
+			pending[bestIndex] = append(pending[bestIndex], account.ExternalID)
+		}
+
+		assigned := false
+		for index, ids := range pending {
+			if len(ids) == 0 {
+				continue
+			}
+			sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+			merged := append([]int64{}, config.Groups[index].AccountExternalIDs...)
+			for _, id := range ids {
+				merged = append(merged, id)
+				memberOfRuleGroup[id] = struct{}{}
+			}
+			config.Groups[index].AccountExternalIDs = merged
+			assigned = true
+		}
+
+		// 建立/更新“已见过”基线：本轮快照里出现的所有账号都记下来。
+		for _, account := range accounts {
+			state.markSeen(account.ExternalID)
+		}
+		return config, assigned
+	}
+
+	// 未配置分组关联或处于冷启动：只维护“已见过”基线。
+	for _, account := range accounts {
+		state.markSeen(account.ExternalID)
+	}
+	return config, false
+}
+
 // dynamicMonitorPlan 是一次纯计算结果，便于单独测试。
 type dynamicMonitorPlan struct {
 	// Close 本轮应关闭的账号（external id）。
@@ -392,6 +553,8 @@ type dynamicMonitorPlan struct {
 	Reopen []int64
 	// State 是清理过期关闭记录后的状态，执行成功后再补上本轮关闭记录。
 	State DynamicMonitorState
+	// Config 是本轮计算后（可能已被自动加入改写账号名单）的规则，调用方据此持久化。
+	Config DynamicMonitorConfig
 }
 
 // planDynamicMonitor 计算关闭与补开名单。输入全部来自最近一次快照，不触发任何写操作。
@@ -406,6 +569,10 @@ func planDynamicMonitor(
 		State:        retainedDynamicMonitorState(state, accounts),
 		CloseReasons: make(map[int64]string),
 	}
+	// 0) 分组关联：把关联销售分组下“首次出现”的新账号自动加入对应规则组。
+	// 这一步会改写 config.Groups 的账号名单，必须在关闭判定之前执行，加入即参与监测。
+	config, _ = autoAssignNewAccounts(config, state, accounts, groups, links, &plan.State)
+	plan.Config = config
 
 	accountByExternalID := make(map[int64]storage.RelayAccount, len(accounts))
 	accountByLocalID := make(map[uint]storage.RelayAccount, len(accounts))
@@ -594,6 +761,10 @@ func (s *Service) applyDynamicMonitor(ctx context.Context, station *storage.Rela
 		return fmt.Errorf("读取账号分组关联失败: %w", err)
 	}
 	plan := planDynamicMonitor(config, state, accounts, groups, links)
+	// 自动加入改写了账号名单：先落库，保证下次同步与关闭判定都用最新名单。
+	if err := s.persistDynamicMonitorConfigIfChanged(station.ID, config, plan.Config); err != nil {
+		return err
+	}
 	if len(plan.Close) == 0 && len(plan.Reopen) == 0 {
 		return s.persistDynamicMonitorStateIfChanged(station.ID, state, plan.State)
 	}
@@ -763,6 +934,22 @@ func (s *Service) resetDynamicMonitorAfterManualOpen(stationID uint, account sto
 	next.ClosedAccounts = removeDynamicMonitorClosure(next.ClosedAccounts, account.ExternalID)
 	next.consumeSamples(account, time.Now().UTC())
 	return s.persistDynamicMonitorStateIfChanged(stationID, previous, next)
+}
+
+// persistDynamicMonitorConfigIfChanged 只在规则实际被改写时写库，避免每次同步都产生写入。
+func (s *Service) persistDynamicMonitorConfigIfChanged(stationID uint, previous, next DynamicMonitorConfig) error {
+	nextBody, err := json.Marshal(next)
+	if err != nil {
+		return fmt.Errorf("编码动态监测规则失败: %w", err)
+	}
+	previousBody, err := json.Marshal(previous)
+	if err != nil {
+		return err
+	}
+	if string(nextBody) == string(previousBody) {
+		return nil
+	}
+	return s.stations.SetDynamicMonitorConfig(stationID, string(nextBody))
 }
 
 func (s *Service) persistDynamicMonitorStateIfChanged(stationID uint, previous, next DynamicMonitorState) error {

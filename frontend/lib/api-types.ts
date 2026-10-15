@@ -942,6 +942,11 @@ export interface RelayDynamicMonitorConfig {
    * 出现即覆盖公共值；未出现的分组沿用公共值。值为 0 表示该分组不设下限。
    */
   group_min_accounts?: Record<string, number>
+  /**
+   * 销售分组（external_id 的十进制字符串）关联的规则组下标（0 基，指向 groups）。
+   * 同步时该分组下首次出现的新账号会自动加入对应规则组；未出现的分组不自动关联。
+   */
+  group_rule_groups?: Record<string, number>
   /** 关闭的账号是否允许被动态开启。 */
   allow_auto_open: boolean
   /** 关闭多久后自动开启，0 表示不启用。 */

@@ -679,3 +679,182 @@ func TestPlanDynamicMonitorSkipsGroupOverriddenToZero(t *testing.T) {
 		t.Fatalf("分组覆盖成 0 时不应补开，实际 %v", plan.Reopen)
 	}
 }
+
+// 关联分组里“首次出现”的新账号应自动加入对应规则组，并立即参与监测。
+func TestAutoAssignNewAccountJoinsLinkedRuleGroup(t *testing.T) {
+	config := DynamicMonitorConfig{
+		Enabled: true,
+		Groups: []DynamicMonitorRuleGroup{
+			ruleGroup(1, 2, 11),  // 规则组 1 已有一个账号
+			ruleGroup(30, 5, 12), // 规则组 2
+		},
+		GroupRuleGroups: map[string]int{"1": 0},
+	}.Normalize()
+
+	accounts := []storage.RelayAccount{
+		{ExternalID: 11, ID: 1, Name: "老账号", Schedulable: true, Status: "active"},
+		// 账号 13 属于分组 1（external id 1），且是首次出现 → 应自动加入规则组 1。
+		{ExternalID: 13, ID: 3, Name: "新账号", Schedulable: true, Status: "active"},
+	}
+	groups := []storage.RelayGroup{{ID: 1, ExternalID: 1, Status: "active", RateMultiplier: 3}}
+	links := []storage.RelayAccountGroup{
+		{RelayGroupID: 1, RelayAccountID: 1},
+		{RelayGroupID: 1, RelayAccountID: 3},
+	}
+	// 已有 11，说明不是冷启动；13 尚未见过。
+	state := DynamicMonitorState{SeenAccounts: map[int64]struct{}{11: {}}}
+
+	plan := planDynamicMonitor(config, state, accounts, groups, links)
+	if !containsID(plan.Config.Groups[0].AccountExternalIDs, 13) {
+		t.Fatalf("新账号 13 未加入规则组 1：%v", plan.Config.Groups[0].AccountExternalIDs)
+	}
+	if containsID(plan.Config.Groups[1].AccountExternalIDs, 13) {
+		t.Fatalf("新账号 13 不应加入规则组 2：%v", plan.Config.Groups[1].AccountExternalIDs)
+	}
+	if _, seen := plan.State.SeenAccounts[13]; !seen {
+		t.Fatal("新账号 13 未被记入 SeenAccounts")
+	}
+}
+
+// 冷启动（SeenAccounts 为空）只建立基线，不把存量账号一次性塞进规则组。
+func TestAutoAssignColdStartOnlyBuildsBaseline(t *testing.T) {
+	config := DynamicMonitorConfig{
+		Enabled:         true,
+		Groups:          []DynamicMonitorRuleGroup{ruleGroup(30, 5, 11)},
+		GroupRuleGroups: map[string]int{"1": 0},
+	}.Normalize()
+	accounts := []storage.RelayAccount{
+		{ExternalID: 11, ID: 1, Name: "老账号", Schedulable: true, Status: "active"},
+		{ExternalID: 13, ID: 3, Name: "存量账号", Schedulable: true, Status: "active"},
+	}
+	groups := []storage.RelayGroup{{ID: 1, ExternalID: 1, Status: "active"}}
+	links := []storage.RelayAccountGroup{{RelayGroupID: 1, RelayAccountID: 3}}
+
+	plan := planDynamicMonitor(config, DynamicMonitorState{}, accounts, groups, links)
+	if containsID(plan.Config.Groups[0].AccountExternalIDs, 13) {
+		t.Fatalf("冷启动不应自动加入：%v", plan.Config.Groups[0].AccountExternalIDs)
+	}
+	if _, seen := plan.State.SeenAccounts[13]; !seen {
+		t.Fatal("冷启动仍应建立 SeenAccounts 基线")
+	}
+}
+
+// 已见过（含被手动移除）的账号不再自动加回。
+func TestAutoAssignDoesNotReAddSeenAccount(t *testing.T) {
+	config := DynamicMonitorConfig{
+		Enabled:         true,
+		Groups:          []DynamicMonitorRuleGroup{ruleGroup(30, 5, 11)},
+		GroupRuleGroups: map[string]int{"1": 0},
+	}.Normalize()
+	accounts := []storage.RelayAccount{
+		{ExternalID: 11, ID: 1, Name: "老账号", Schedulable: true, Status: "active"},
+		{ExternalID: 13, ID: 3, Name: "曾移除", Schedulable: true, Status: "active"},
+	}
+	groups := []storage.RelayGroup{{ID: 1, ExternalID: 1, Status: "active"}}
+	links := []storage.RelayAccountGroup{{RelayGroupID: 1, RelayAccountID: 3}}
+	// 13 已经见过，但当前不在任何规则组（模拟被手动移除）。
+	state := DynamicMonitorState{SeenAccounts: map[int64]struct{}{11: {}, 13: {}}}
+
+	plan := planDynamicMonitor(config, state, accounts, groups, links)
+	if containsID(plan.Config.Groups[0].AccountExternalIDs, 13) {
+		t.Fatalf("已见账号不应被重新加入：%v", plan.Config.Groups[0].AccountExternalIDs)
+	}
+}
+
+// 账号同属多个已关联分组时，取分组倍率最高的那个关联规则组。
+func TestAutoAssignPrefersHighestMultiplierGroup(t *testing.T) {
+	config := DynamicMonitorConfig{
+		Enabled: true,
+		Groups: []DynamicMonitorRuleGroup{
+			ruleGroup(1, 2, 11),
+			ruleGroup(30, 5, 12),
+		},
+		GroupRuleGroups: map[string]int{"1": 0, "2": 1},
+	}.Normalize()
+	accounts := []storage.RelayAccount{
+		{ExternalID: 11, ID: 1, Name: "组A账号", Schedulable: true, Status: "active"},
+		{ExternalID: 12, ID: 2, Name: "组B账号", Schedulable: true, Status: "active"},
+		// 账号 99 同时属于分组 1（倍率 2）与分组 2（倍率 9），应加入倍率更高的分组 2 → 规则组 2。
+		{ExternalID: 99, ID: 9, Name: "双分组账号", Schedulable: true, Status: "active"},
+	}
+	groups := []storage.RelayGroup{
+		{ID: 1, ExternalID: 1, Status: "active", RateMultiplier: 2},
+		{ID: 2, ExternalID: 2, Status: "active", RateMultiplier: 9},
+	}
+	links := []storage.RelayAccountGroup{
+		{RelayGroupID: 1, RelayAccountID: 9},
+		{RelayGroupID: 2, RelayAccountID: 9},
+	}
+	state := DynamicMonitorState{SeenAccounts: map[int64]struct{}{11: {}, 12: {}}}
+
+	plan := planDynamicMonitor(config, state, accounts, groups, links)
+	if containsID(plan.Config.Groups[0].AccountExternalIDs, 99) {
+		t.Fatalf("不应加入低倍率分组对应的规则组 1：%v", plan.Config.Groups[0].AccountExternalIDs)
+	}
+	if !containsID(plan.Config.Groups[1].AccountExternalIDs, 99) {
+		t.Fatalf("应加入高倍率分组对应的规则组 2：%v", plan.Config.Groups[1].AccountExternalIDs)
+	}
+}
+
+// 删除空规则组后，分组关联的下标要跟着重映射，不能指向错误的规则组。
+func TestNormalizeRemapsGroupRuleGroupsAfterDroppingEmptyGroup(t *testing.T) {
+	config := DynamicMonitorConfig{
+		Groups: []DynamicMonitorRuleGroup{
+			ruleGroup(1, 2, 11), // 保留 → 新下标 0
+			ruleGroup(1, 2),     // 无账号 → 丢弃
+			ruleGroup(1, 2, 12), // 保留 → 新下标 1
+		},
+		// 分组 1 关联旧下标 2（第 3 组）；分组 2 关联旧下标 1（将被丢弃的空组）。
+		GroupRuleGroups: map[string]int{"1": 2, "2": 1},
+	}.Normalize()
+
+	if len(config.Groups) != 2 {
+		t.Fatalf("空规则组应被丢弃，实际剩 %d 组", len(config.Groups))
+	}
+	if got := config.GroupRuleGroups["1"]; got != 1 {
+		t.Fatalf("分组 1 关联下标应重映射为 1，实际 %d", got)
+	}
+	if _, ok := config.GroupRuleGroups["2"]; ok {
+		t.Fatalf("指向被删空组的关联应被丢弃，实际 %+v", config.GroupRuleGroups)
+	}
+}
+
+// 越界的分组关联下标应被 Validate 拒绝，而不是静默指向别的规则组。
+func TestValidateRejectsOutOfRangeGroupRuleGroup(t *testing.T) {
+	config := DynamicMonitorConfig{
+		Enabled:         true,
+		Groups:          []DynamicMonitorRuleGroup{ruleGroup(10, 2, 11)},
+		GroupRuleGroups: map[string]int{"1": 5},
+	}
+	if err := config.Validate(); err == nil {
+		t.Fatal("越界的规则组下标应报错")
+	}
+}
+
+// SeenAccounts 在状态往返（JSON 序列化）后应保留。
+func TestDynamicMonitorStateSeenAccountsRoundTrip(t *testing.T) {
+	state := DynamicMonitorState{}
+	state.markSeen(11)
+	state.markSeen(13)
+	body, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("编码失败: %v", err)
+	}
+	parsed := ParseDynamicMonitorState(string(body))
+	if _, ok := parsed.SeenAccounts[11]; !ok {
+		t.Fatalf("往返后丢失 SeenAccounts：%s", body)
+	}
+	if _, ok := parsed.SeenAccounts[13]; !ok {
+		t.Fatalf("往返后丢失 SeenAccounts：%s", body)
+	}
+}
+
+// containsID 判断切片里是否含指定 id。
+func containsID(ids []int64, target int64) bool {
+	for _, id := range ids {
+		if id == target {
+			return true
+		}
+	}
+	return false
+}

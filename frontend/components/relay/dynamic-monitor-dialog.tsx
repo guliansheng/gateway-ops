@@ -129,6 +129,16 @@ function toGroupMinDrafts(config: RelayDynamicMonitorConfig): Record<string, { e
   return result
 }
 
+/** 把配置里“销售分组 → 关联规则组下标”读成编辑态（值为规则组下标字符串）。 */
+function toGroupRuleDrafts(config: RelayDynamicMonitorConfig): Record<string, string> {
+  const source = config.group_rule_groups ?? {}
+  const result: Record<string, string> = {}
+  for (const [externalID, index] of Object.entries(source)) {
+    result[externalID] = String(index)
+  }
+  return result
+}
+
 /** 单个规则组：自己的阈值、超标次数与账号勾选。 */
 function RuleGroupCard({
   draft, index, total, accounts, groups, closedByExternalID, claimed, busy, canRemove, onChange, onToggleAccount, onRemove,
@@ -283,6 +293,8 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
   // 按销售分组单独设置的最少保留账号数：key 为分组 external_id 字符串。
   // 只保留用户明确启用自定义的分组，其余分组保存时不下发，运行时沿用公共值。
   const [groupMinAccounts, setGroupMinAccounts] = useState<Record<string, { enabled: boolean; value: string }>>({})
+  // 按销售分组关联的规则组：key 为分组 external_id，值为规则组下标的字符串（空串表示不关联）。
+  const [groupRuleGroups, setGroupRuleGroups] = useState<Record<string, string>>({})
   const [allowAutoOpen, setAllowAutoOpen] = useState(config.allow_auto_open)
   const [autoOpenMinutes, setAutoOpenMinutes] = useState(String(config.auto_open_minutes))
   const [error, setError] = useState("")
@@ -303,6 +315,7 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
       setRuleGroups(toDrafts(next))
       setMinAccounts(String(next.min_accounts_per_group))
       setGroupMinAccounts(toGroupMinDrafts(next))
+      setGroupRuleGroups(toGroupRuleDrafts(next))
       setAllowAutoOpen(next.allow_auto_open)
       setAutoOpenMinutes(String(next.auto_open_minutes))
       setError("")
@@ -355,7 +368,21 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
   }
 
   function removeGroup(key: string) {
-    setRuleGroups((current) => (current.length <= 1 ? current : current.filter((draft) => draft.key !== key)))
+    if (ruleGroups.length <= 1) return
+    const removedIndex = ruleGroups.findIndex((draft) => draft.key === key)
+    if (removedIndex < 0) return
+    setRuleGroups(ruleGroups.filter((draft) => draft.key !== key))
+    // 规则组下标会整体前移，同步修正分组关联；指向被删规则组的关联直接清空。
+    setGroupRuleGroups((assignments) => {
+      const remapped: Record<string, string> = {}
+      for (const [externalID, raw] of Object.entries(assignments)) {
+        const index = Number(raw)
+        if (!Number.isInteger(index)) continue
+        if (index === removedIndex) continue
+        remapped[externalID] = String(index > removedIndex ? index - 1 : index)
+      }
+      return remapped
+    })
   }
 
   function submit() {
@@ -373,6 +400,18 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
       const value = Number(draft.value)
       if (!Number.isInteger(value) || value < 0 || value > 1000) return setError(`分组“${group.name}”的最少保留账号数必须是 0 到 1000 的整数`)
       overrides[key] = value
+    }
+    // 分组关联规则组：只保留仍存在的分组，且下标必须指向本次提交的规则组。
+    const ruleAssignments: Record<string, number> = {}
+    for (const group of groups) {
+      const key = String(group.external_id)
+      const raw = groupRuleGroups[key]
+      if (raw == null || raw === "") continue
+      const index = Number(raw)
+      if (!Number.isInteger(index) || index < 0 || index >= ruleGroups.length) {
+        return setError(`分组“${group.name}”关联的规则组无效，请重新选择`)
+      }
+      ruleAssignments[key] = index
     }
 
     for (const [index, draft] of ruleGroups.entries()) {
@@ -402,6 +441,7 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
       })),
       min_accounts_per_group: minAccountsValue,
       group_min_accounts: Object.keys(overrides).length > 0 ? overrides : undefined,
+      group_rule_groups: Object.keys(ruleAssignments).length > 0 ? ruleAssignments : undefined,
       allow_auto_open: allowAutoOpen,
       auto_open_minutes: autoOpenValue,
     })
@@ -457,8 +497,8 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
 
           <ModuleSection
             icon={SlidersHorizontal}
-            title="分组最少保留账号数"
-            description="可用账号低于下限时优先补开被规则关闭的账号；0 表示不设置，只在本弹窗生效。"
+            title="分组规则"
+            description="关联规则组与最少保留账号数：关联后分组新增账号自动加入该规则组；可用账号低于下限时优先补开。"
             action={<>
               <Label htmlFor="dm-min-accounts" className="text-[11px] text-muted-foreground">公共值</Label>
               <Input id="dm-min-accounts" inputMode="numeric" value={minAccounts} onChange={(event) => setMinAccounts(event.target.value)} disabled={busy} className="h-8 w-20 text-xs tabular-nums" />
@@ -468,7 +508,7 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
             <div className="space-y-2 rounded-md border border-border bg-muted/20 p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-xs font-semibold text-foreground">按分组单独设置</p>
-                <span className="text-[11px] text-muted-foreground">开启后该分组使用自定义值，关闭则沿用公共值</span>
+                <span className="text-[11px] text-muted-foreground">每个分组可关联一个规则组（新增账号自动加入），并可单独设置最少保留账号数</span>
               </div>
               {groups.length === 0 ? (
                 <p className="rounded-md border border-dashed border-border px-3 py-4 text-center text-[11px] text-muted-foreground">当前中转站暂无销售分组</p>
@@ -485,33 +525,59 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
                           <span className="font-mono text-[10px] font-normal text-muted-foreground">#{group.external_id}</span>
                           <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] font-medium tabular-nums text-muted-foreground" title="该分组当前关联的账号数">账号 {group.account_count}</span>
                         </span>
-                        <span className="flex shrink-0 items-center gap-2">
-                          <Switch
-                            checked={enabled}
-                            disabled={busy}
-                            aria-label={`分组 ${group.name} 自定义最少保留账号数`}
-                            onCheckedChange={(checked) => {
-                              setGroupMinAccounts((current) => ({
-                                ...current,
-                                [key]: { enabled: checked, value: current[key]?.value ?? String(minAccounts || "0") },
-                              }))
-                            }}
-                          />
-                          {enabled ? (
-                            <>
-                              <Input
-                                inputMode="numeric"
-                                value={draft?.value ?? ""}
-                                disabled={busy}
-                                aria-label={`分组 ${group.name} 最少保留账号数`}
-                                onChange={(event) => setGroupMinAccounts((current) => ({ ...current, [key]: { enabled: true, value: event.target.value } }))}
-                                className="h-8 w-20 text-xs tabular-nums"
-                              />
-                              <span className="text-[11px] text-muted-foreground">个</span>
-                            </>
-                          ) : (
-                            <span className="w-24 text-right text-[11px] text-muted-foreground">公共值 {minAccounts.trim() || "0"}</span>
-                          )}
+                        <span className="flex shrink-0 flex-wrap items-center gap-2">
+                          <span className="flex items-center gap-1.5">
+                            <span className="text-[11px] text-muted-foreground">关联规则组</span>
+                            <Select
+                              value={groupRuleGroups[key] ?? "__none"}
+                              onValueChange={(value) => setGroupRuleGroups((current) => {
+                                const next = { ...current }
+                                if (value === "__none") delete next[key]
+                                else next[key] = value
+                                return next
+                              })}
+                              disabled={busy}
+                            >
+                              <SelectTrigger className="h-8 w-32 text-xs" aria-label={`分组 ${group.name} 关联规则组`}><SelectValue /></SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="__none">不关联</SelectItem>
+                                {ruleGroups.map((draft, index) => (
+                                  <SelectItem key={draft.key} value={String(index)}>
+                                    规则组 {index + 1}{draft.name.trim() ? ` · ${draft.name.trim()}` : ""}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </span>
+                          <span className="flex items-center gap-1.5">
+                            <span className="text-[11px] text-muted-foreground">最少保留</span>
+                            <Switch
+                              checked={enabled}
+                              disabled={busy}
+                              aria-label={`分组 ${group.name} 自定义最少保留账号数`}
+                              onCheckedChange={(checked) => {
+                                setGroupMinAccounts((current) => ({
+                                  ...current,
+                                  [key]: { enabled: checked, value: current[key]?.value ?? String(minAccounts || "0") },
+                                }))
+                              }}
+                            />
+                            {enabled ? (
+                              <>
+                                <Input
+                                  inputMode="numeric"
+                                  value={draft?.value ?? ""}
+                                  disabled={busy}
+                                  aria-label={`分组 ${group.name} 最少保留账号数`}
+                                  onChange={(event) => setGroupMinAccounts((current) => ({ ...current, [key]: { enabled: true, value: event.target.value } }))}
+                                  className="h-8 w-16 text-xs tabular-nums"
+                                />
+                                <span className="text-[11px] text-muted-foreground">个</span>
+                              </>
+                            ) : (
+                              <span className="w-20 text-right text-[11px] text-muted-foreground">公共值 {minAccounts.trim() || "0"}</span>
+                            )}
+                          </span>
                         </span>
                       </div>
                     )
