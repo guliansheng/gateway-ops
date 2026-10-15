@@ -858,3 +858,19 @@ func containsID(ids []int64, target int64) bool {
 	}
 	return false
 }
+
+// 越界的分组关联下标必须在规范化之前被拒，而不是被 Normalize 静默丢弃。
+func TestValidateGroupRuleGroupRangeRejectsOutOfRange(t *testing.T) {
+	if err := validateGroupRuleGroupRange(map[string]int{"24": 9}, 3); err == nil {
+		t.Fatal("越界下标应报错")
+	}
+	if err := validateGroupRuleGroupRange(map[string]int{"abc": 0}, 3); err == nil {
+		t.Fatal("非法分组 ID 应报错")
+	}
+	if err := validateGroupRuleGroupRange(map[string]int{"24": -1}, 3); err == nil {
+		t.Fatal("负数下标应报错")
+	}
+	if err := validateGroupRuleGroupRange(map[string]int{"24": 2, "66": 0}, 3); err != nil {
+		t.Fatalf("合法下标不应报错: %v", err)
+	}
+}

@@ -714,8 +714,11 @@ func planDynamicMonitor(
 
 // SaveDynamicMonitorConfig 保存当前中转站的动态监测规则。
 func (s *Service) SaveDynamicMonitorConfig(stationID uint, config DynamicMonitorConfig) (DynamicMonitorConfig, error) {
-	// Normalize 只做形状规范化，不清洗分组覆盖：Validate 会直接拒绝越界值与非法键，
-	// 避免调用方以为设置生效、实际被静默丢弃。
+	// 分组关联的规则组下标先按原始输入校验范围：Normalize 会因丢弃空规则组而下标前移，
+	// 若先规范化再校验，越界下标会被静默丢弃，调用方以为设置生效、实际没保存。
+	if err := validateGroupRuleGroupRange(config.GroupRuleGroups, len(config.Groups)); err != nil {
+		return DynamicMonitorConfig{}, err
+	}
 	config = config.Normalize()
 	if err := config.Validate(); err != nil {
 		return DynamicMonitorConfig{}, err
@@ -728,6 +731,20 @@ func (s *Service) SaveDynamicMonitorConfig(stationID uint, config DynamicMonitor
 		return DynamicMonitorConfig{}, err
 	}
 	return config, nil
+}
+
+// validateGroupRuleGroupRange 按原始（未规范化）输入校验分组关联下标是否合法。
+func validateGroupRuleGroupRange(assignments map[string]int, groupCount int) error {
+	for externalID, index := range assignments {
+		id, err := strconv.ParseInt(strings.TrimSpace(externalID), 10, 64)
+		if err != nil || id <= 0 {
+			return fmt.Errorf("分组关联规则组的分组 ID %q 不合法", externalID)
+		}
+		if index < 0 || index >= groupCount {
+			return fmt.Errorf("分组 %d 关联的规则组下标 %d 超出范围", id, index)
+		}
+	}
+	return nil
 }
 
 // ApplyDynamicMonitor 在快照同步末尾执行关闭判断与“最少保留账号”补开。
