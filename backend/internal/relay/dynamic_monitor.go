@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -66,11 +67,37 @@ type DynamicMonitorConfig struct {
 	// Groups 多组规则，每组独立的阈值与超标次数。
 	Groups []DynamicMonitorRuleGroup `json:"groups"`
 	// MinAccountsPerGroup 通用规则：分组至少保留多少个可用账号，0 表示不设置。
+	// 未在 GroupMinAccounts 中单独设置的分组都使用这个公共值。
 	MinAccountsPerGroup int `json:"min_accounts_per_group"`
+	// GroupMinAccounts 按销售分组（external id 的十进制字符串）单独设置的最少保留账号数。
+	// 出现即覆盖 MinAccountsPerGroup；未出现的分组沿用公共值。值为 0 表示该分组不设下限。
+	GroupMinAccounts map[string]int `json:"group_min_accounts,omitempty"`
 	// AllowAutoOpen 通用规则：关闭的账号是否允许被动态开启。
 	AllowAutoOpen bool `json:"allow_auto_open"`
 	// AutoOpenMinutes 通用规则：关闭多久后自动开启，0 表示不启用超时开启。
 	AutoOpenMinutes int `json:"auto_open_minutes"`
+}
+
+// GroupMinFloor 返回指定销售分组实际生效的最少保留账号数：
+// 单独设置过就用设置值，否则回落到公共值。
+func (c DynamicMonitorConfig) GroupMinFloor(groupExternalID int64) int {
+	if value, ok := c.GroupMinAccounts[strconv.FormatInt(groupExternalID, 10)]; ok {
+		return value
+	}
+	return c.MinAccountsPerGroup
+}
+
+// anyGroupMinFloor 判断是否存在生效下限大于 0 的分组，用于决定是否需要计算补开。
+func (c DynamicMonitorConfig) anyGroupMinFloor() bool {
+	if c.MinAccountsPerGroup > 0 {
+		return true
+	}
+	for _, value := range c.GroupMinAccounts {
+		if value > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // DynamicMonitorClosure 记录一个被规则关闭、等待按规则开启的账号。
@@ -181,6 +208,11 @@ func (c DynamicMonitorConfig) Normalize() DynamicMonitorConfig {
 	if c.AutoOpenMinutes < 0 {
 		c.AutoOpenMinutes = 0
 	}
+	// 分组覆盖不在 Normalize 里清洗：Validate 会直接拒绝越界值与非法键，
+	// 避免调用方以为设置生效、实际被静默丢弃。
+	if len(c.GroupMinAccounts) == 0 {
+		c.GroupMinAccounts = nil
+	}
 	claimed := make(map[int64]struct{})
 	groups := make([]DynamicMonitorRuleGroup, 0, len(c.Groups))
 	for _, group := range c.Groups {
@@ -280,13 +312,22 @@ func (c DynamicMonitorConfig) Validate() error {
 	if c.MinAccountsPerGroup < 0 || c.MinAccountsPerGroup > dynamicMonitorMaxMinAccounts {
 		return fmt.Errorf("分组最少保留账号数必须在 0 到 %d 之间", dynamicMonitorMaxMinAccounts)
 	}
+	for externalID, value := range c.GroupMinAccounts {
+		id, err := strconv.ParseInt(strings.TrimSpace(externalID), 10, 64)
+		if err != nil || id <= 0 {
+			return fmt.Errorf("分组最少保留账号数的分组 ID %q 不合法", externalID)
+		}
+		if value < 0 || value > dynamicMonitorMaxMinAccounts {
+			return fmt.Errorf("分组 %d 的最少保留账号数必须在 0 到 %d 之间", id, dynamicMonitorMaxMinAccounts)
+		}
+	}
 	if c.AutoOpenMinutes < 0 || c.AutoOpenMinutes > dynamicMonitorMaxAutoOpen {
 		return fmt.Errorf("自动开启时间必须在 0 到 %d 分钟之间", dynamicMonitorMaxAutoOpen)
 	}
 	if c.Enabled && len(c.Groups) == 0 {
 		return errors.New("启用监测时请至少配置一个规则组")
 	}
-	if c.Enabled && c.AllowAutoOpen && c.AutoOpenMinutes <= 0 && c.MinAccountsPerGroup <= 0 {
+	if c.Enabled && c.AllowAutoOpen && c.AutoOpenMinutes <= 0 && !c.anyGroupMinFloor() {
 		return errors.New("允许动态开启时，请设置自动开启时间或分组最少保留账号数")
 	}
 	return nil
@@ -431,7 +472,7 @@ func planDynamicMonitor(
 	}
 	sort.Slice(plan.Close, func(i, j int) bool { return plan.Close[i] < plan.Close[j] })
 
-	if !config.AllowAutoOpen || config.MinAccountsPerGroup <= 0 || len(closed) == 0 {
+	if !config.AllowAutoOpen || !config.anyGroupMinFloor() || len(closed) == 0 {
 		return plan
 	}
 
@@ -458,6 +499,11 @@ func planDynamicMonitor(
 		if !isActive(group.Status) {
 			continue
 		}
+		// 该销售分组实际生效的下限：单独设置过就用设置值，否则用公共值。
+		floor := config.GroupMinFloor(group.ExternalID)
+		if floor <= 0 {
+			continue
+		}
 		count := 0
 		for _, account := range membersByGroupID[group.ID] {
 			if !relayAccountSchedulable(account) {
@@ -468,7 +514,7 @@ func planDynamicMonitor(
 			}
 			count++
 		}
-		if count >= config.MinAccountsPerGroup {
+		if count >= floor {
 			continue
 		}
 		candidates := make([]DynamicMonitorClosure, 0)
@@ -484,7 +530,7 @@ func planDynamicMonitor(
 			return candidates[i].AccountExternalID < candidates[j].AccountExternalID
 		})
 		for _, candidate := range candidates {
-			if count >= config.MinAccountsPerGroup {
+			if count >= floor {
 				break
 			}
 			if _, done := plannedReopen[candidate.AccountExternalID]; done {
@@ -501,6 +547,8 @@ func planDynamicMonitor(
 
 // SaveDynamicMonitorConfig 保存当前中转站的动态监测规则。
 func (s *Service) SaveDynamicMonitorConfig(stationID uint, config DynamicMonitorConfig) (DynamicMonitorConfig, error) {
+	// Normalize 只做形状规范化，不清洗分组覆盖：Validate 会直接拒绝越界值与非法键，
+	// 避免调用方以为设置生效、实际被静默丢弃。
 	config = config.Normalize()
 	if err := config.Validate(); err != nil {
 		return DynamicMonitorConfig{}, err
@@ -522,7 +570,6 @@ func (s *Service) ApplyDynamicMonitor(ctx context.Context, station *storage.Rela
 	return s.applyDynamicMonitor(ctx, station)
 }
 
-// applyDynamicMonitor 要求调用方持有 dynamicMonitorMu。
 func (s *Service) applyDynamicMonitor(ctx context.Context, station *storage.RelayStation) error {
 	// 快照采集期间定时任务可能已经重开账号，不能覆盖它刚保存的采样下界。
 	station, err := s.stations.FindByID(station.ID)

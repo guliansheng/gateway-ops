@@ -526,3 +526,156 @@ func mustLatencyJSON(t *testing.T, samples []storage.RelayLatencySample) string 
 	}
 	return string(body)
 }
+
+// 单独设置过分组下限时用设置值，未设置的分组回落到公共值。
+func TestGroupMinFloorPrefersPerGroupOverride(t *testing.T) {
+	config := DynamicMonitorConfig{
+		MinAccountsPerGroup: 3,
+		GroupMinAccounts:    map[string]int{"11": 7, "12": 0},
+	}
+	if got := config.GroupMinFloor(11); got != 7 {
+		t.Fatalf("分组 11 生效下限 = %d，期望 7", got)
+	}
+	// 明确设置为 0 时不再回落公共值。
+	if got := config.GroupMinFloor(12); got != 0 {
+		t.Fatalf("分组 12 生效下限 = %d，期望 0", got)
+	}
+	// 未出现的分组沿用公共值。
+	if got := config.GroupMinFloor(99); got != 3 {
+		t.Fatalf("分组 99 生效下限 = %d，期望公共值 3", got)
+	}
+}
+
+// Normalize 只把空 map 归一成 nil，不清洗分组覆盖：越界值与非法键交给 Validate 报错。
+func TestConfigNormalizeKeepsGroupMinAccountsForValidation(t *testing.T) {
+	config := DynamicMonitorConfig{
+		GroupMinAccounts: map[string]int{"11": 5, "13": 99999},
+	}.Normalize()
+	// Normalize 不应静默裁剪：越界值原样保留，由 Validate 决定是否拒绝。
+	if got := config.GroupMinAccounts["13"]; got != 99999 {
+		t.Fatalf("Normalize 不应裁剪覆盖值，分组 13 = %d", got)
+	}
+	if got := config.GroupMinAccounts["11"]; got != 5 {
+		t.Fatalf("分组 11 = %d，期望 5", got)
+	}
+
+	// 空 map 归一成 nil，JSON 序列化时不输出空对象。
+	if empty := (DynamicMonitorConfig{}).Normalize(); empty.GroupMinAccounts != nil {
+		t.Fatalf("空 map 应归一为 nil，实际 %+v", empty.GroupMinAccounts)
+	}
+
+	// Validate 拒绝越界值与非法键。
+	badRange := DynamicMonitorConfig{GroupMinAccounts: map[string]int{"11": 99999}}
+	if err := badRange.Validate(); err == nil {
+		t.Fatal("越界的分组覆盖应报错")
+	}
+	badKey := DynamicMonitorConfig{GroupMinAccounts: map[string]int{"abc": 3}}
+	if err := badKey.Validate(); err == nil {
+		t.Fatal("非法分组 ID 应报错")
+	}
+	negative := DynamicMonitorConfig{GroupMinAccounts: map[string]int{"11": -1}}
+	if err := negative.Validate(); err == nil {
+		t.Fatal("负数分组覆盖应报错")
+	}
+}
+
+// 只设置分组覆盖（公共值为 0）时，也允许动态开启并参与补开。
+func TestConfigValidateWithPerGroupOnlyFloor(t *testing.T) {
+	config := DynamicMonitorConfig{
+		Enabled:          true,
+		Groups:           []DynamicMonitorRuleGroup{ruleGroup(10, 2, 11)},
+		AllowAutoOpen:    true,
+		AutoOpenMinutes:  0,
+		GroupMinAccounts: map[string]int{"11": 4},
+	}
+	if err := config.Validate(); err != nil {
+		t.Fatalf("仅分组覆盖也应合法: %v", err)
+	}
+	if !config.anyGroupMinFloor() {
+		t.Fatal("存在分组下限时 anyGroupMinFloor 应为 true")
+	}
+
+	bad := DynamicMonitorConfig{
+		Enabled:          true,
+		Groups:           []DynamicMonitorRuleGroup{ruleGroup(10, 2, 11)},
+		AllowAutoOpen:    true,
+		GroupMinAccounts: map[string]int{"11": 99999},
+	}
+	if err := bad.Validate(); err == nil {
+		t.Fatal("越界的分组下限应报错")
+	}
+}
+
+// 分组 1 用自定义下限 3、分组 2 用公共值 1：按各自生效值补开。
+func TestPlanDynamicMonitorAppliesPerGroupMinFloor(t *testing.T) {
+	base := time.Now().UTC()
+	config := DynamicMonitorConfig{
+		Enabled:             true,
+		Groups:              []DynamicMonitorRuleGroup{ruleGroup(1, 2, 11, 12, 13, 14)},
+		AllowAutoOpen:       true,
+		MinAccountsPerGroup: 1,
+		GroupMinAccounts:    map[string]int{"1": 3},
+	}.Normalize()
+	accounts := []storage.RelayAccount{
+		// 分组 1 里只有账号 11 可用，其余都被规则关闭。
+		{ExternalID: 11, ID: 1, Name: "组1-可用", Schedulable: true, Status: "active", LatencySamplesJSON: latencyBody(t, 100, 3, base)},
+		{ExternalID: 12, ID: 2, Name: "组1-关闭早", Schedulable: false, Status: "active"},
+		{ExternalID: 13, ID: 3, Name: "组1-关闭晚", Schedulable: false, Status: "active"},
+		// 分组 2 的账号 14 被关闭，但公共下限为 1，成员数为 0，需要补开 1 个。
+		{ExternalID: 14, ID: 4, Name: "组2-关闭", Schedulable: false, Status: "active"},
+	}
+	groups := []storage.RelayGroup{{ID: 1, ExternalID: 1, Status: "active"}, {ID: 2, ExternalID: 2, Status: "active"}}
+	links := []storage.RelayAccountGroup{
+		{RelayGroupID: 1, RelayAccountID: 1},
+		{RelayGroupID: 1, RelayAccountID: 2},
+		{RelayGroupID: 1, RelayAccountID: 3},
+		{RelayGroupID: 2, RelayAccountID: 4},
+	}
+	state := DynamicMonitorState{ClosedAccounts: []DynamicMonitorClosure{
+		{AccountExternalID: 12, AccountName: "组1-关闭早", ClosedAt: base.Add(-2 * time.Hour)},
+		{AccountExternalID: 13, AccountName: "组1-关闭晚", ClosedAt: base.Add(-time.Hour)},
+		{AccountExternalID: 14, AccountName: "组2-关闭", ClosedAt: base.Add(-time.Hour)},
+	}}
+
+	plan := planDynamicMonitor(config, state, accounts, groups, links)
+	// 分组 1 需要 3 个，现有 1 个 → 补 2 个，优先关闭更早的 12、13。
+	// 分组 2 需要 1 个（公共值），现有 0 个 → 补 1 个，补 14。
+	want := map[int64]bool{12: true, 13: true, 14: true}
+	if len(plan.Reopen) != len(want) {
+		t.Fatalf("补开名单 = %v，期望 %v", plan.Reopen, want)
+	}
+	for _, id := range plan.Reopen {
+		if !want[id] {
+			t.Fatalf("补开名单含意外账号 %d：%v", id, plan.Reopen)
+		}
+	}
+}
+
+// 分组下限为 0 时该分组不补开：公共值 > 0 但被分组覆盖成 0 应跳过。
+func TestPlanDynamicMonitorSkipsGroupOverriddenToZero(t *testing.T) {
+	base := time.Now().UTC()
+	config := DynamicMonitorConfig{
+		Enabled:             true,
+		Groups:              []DynamicMonitorRuleGroup{ruleGroup(1, 2, 11, 12)},
+		AllowAutoOpen:       true,
+		MinAccountsPerGroup: 5,
+		GroupMinAccounts:    map[string]int{"1": 0},
+	}.Normalize()
+	accounts := []storage.RelayAccount{
+		{ExternalID: 11, ID: 1, Name: "可用", Schedulable: true, Status: "active", LatencySamplesJSON: latencyBody(t, 100, 3, base)},
+		{ExternalID: 12, ID: 2, Name: "关闭", Schedulable: false, Status: "active"},
+	}
+	groups := []storage.RelayGroup{{ID: 1, ExternalID: 1, Status: "active"}}
+	links := []storage.RelayAccountGroup{
+		{RelayGroupID: 1, RelayAccountID: 1},
+		{RelayGroupID: 1, RelayAccountID: 2},
+	}
+	state := DynamicMonitorState{ClosedAccounts: []DynamicMonitorClosure{
+		{AccountExternalID: 12, AccountName: "关闭", ClosedAt: base.Add(-time.Hour)},
+	}}
+
+	plan := planDynamicMonitor(config, state, accounts, groups, links)
+	if len(plan.Reopen) != 0 {
+		t.Fatalf("分组覆盖成 0 时不应补开，实际 %v", plan.Reopen)
+	}
+}

@@ -85,6 +85,16 @@ function toDrafts(config: RelayDynamicMonitorConfig): RuleGroupDraft[] {
   }))
 }
 
+/** 把配置里按销售分组设置的下限读成编辑态：只保留明确设置过的分组。 */
+function toGroupMinDrafts(config: RelayDynamicMonitorConfig): Record<string, { enabled: boolean; value: string }> {
+  const source = config.group_min_accounts ?? {}
+  const result: Record<string, { enabled: boolean; value: string }> = {}
+  for (const [externalID, value] of Object.entries(source)) {
+    result[externalID] = { enabled: true, value: String(value) }
+  }
+  return result
+}
+
 /** 单个规则组：自己的阈值、超标次数与账号勾选。 */
 function RuleGroupCard({
   draft, index, total, accounts, groups, closedByExternalID, claimed, busy, canRemove, onChange, onToggleAccount, onRemove,
@@ -233,6 +243,9 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
   const [enabled, setEnabled] = useState(config.enabled)
   const [ruleGroups, setRuleGroups] = useState<RuleGroupDraft[]>(() => toDrafts(config))
   const [minAccounts, setMinAccounts] = useState(String(config.min_accounts_per_group))
+  // 按销售分组单独设置的最少保留账号数：key 为分组 external_id 字符串。
+  // 只保留用户明确启用自定义的分组，其余分组保存时不下发，运行时沿用公共值。
+  const [groupMinAccounts, setGroupMinAccounts] = useState<Record<string, { enabled: boolean; value: string }>>({})
   const [allowAutoOpen, setAllowAutoOpen] = useState(config.allow_auto_open)
   const [autoOpenMinutes, setAutoOpenMinutes] = useState(String(config.auto_open_minutes))
   const [error, setError] = useState("")
@@ -252,6 +265,7 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
       setEnabled(next.enabled)
       setRuleGroups(toDrafts(next))
       setMinAccounts(String(next.min_accounts_per_group))
+      setGroupMinAccounts(toGroupMinDrafts(next))
       setAllowAutoOpen(next.allow_auto_open)
       setAutoOpenMinutes(String(next.auto_open_minutes))
       setError("")
@@ -313,6 +327,17 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
     if (!Number.isInteger(minAccountsValue) || minAccountsValue < 0 || minAccountsValue > 1000) return setError("分组最少保留账号数必须是 0 到 1000 的整数")
     if (!Number.isInteger(autoOpenValue) || autoOpenValue < 0 || autoOpenValue > 10080) return setError("自动开启时间必须是 0 到 10080 分钟的整数")
 
+    // 只保留仍存在的销售分组，且用户明确启用自定义的分组。
+    const overrides: Record<string, number> = {}
+    for (const group of groups) {
+      const key = String(group.external_id)
+      const draft = groupMinAccounts[key]
+      if (!draft?.enabled) continue
+      const value = Number(draft.value)
+      if (!Number.isInteger(value) || value < 0 || value > 1000) return setError(`分组“${group.name}”的最少保留账号数必须是 0 到 1000 的整数`)
+      overrides[key] = value
+    }
+
     for (const [index, draft] of ruleGroups.entries()) {
       const label = draft.name.trim() || `第 ${index + 1} 组`
       const thresholdValue = Number(draft.threshold)
@@ -324,8 +349,9 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
       if (draft.selectedIDs.length === 0) return setError(`${label}：请至少勾选一个参与账号`)
     }
 
+    const hasAnyFloor = minAccountsValue > 0 || Object.values(overrides).some((value) => value > 0)
     if (enabled && ruleGroups.length === 0) return setError("启用监测时请至少配置一个规则组")
-    if (enabled && allowAutoOpen && autoOpenValue <= 0 && minAccountsValue <= 0) return setError("允许动态开启时，请设置自动开启时间或分组最少保留账号数")
+    if (enabled && allowAutoOpen && autoOpenValue <= 0 && !hasAnyFloor) return setError("允许动态开启时，请设置自动开启时间或分组最少保留账号数")
 
     setError("")
     onSave({
@@ -338,6 +364,7 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
         account_external_ids: draft.selectedIDs,
       })),
       min_accounts_per_group: minAccountsValue,
+      group_min_accounts: Object.keys(overrides).length > 0 ? overrides : undefined,
       allow_auto_open: allowAutoOpen,
       auto_open_minutes: autoOpenValue,
     })
@@ -394,13 +421,68 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
             </div>
           </section>
 
-          <section className="space-y-1.5">
-            <div className="flex items-center gap-1.5">
-              <Label htmlFor="dm-min-accounts" className="text-xs">分组最少保留账号数</Label>
-              <Input id="dm-min-accounts" inputMode="numeric" value={minAccounts} onChange={(event) => setMinAccounts(event.target.value)} disabled={busy} className="h-9 w-24 text-xs tabular-nums" />
-              <span className="text-[11px] text-muted-foreground">个</span>
+          <section className="space-y-2.5">
+            <div className="space-y-1.5">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Label htmlFor="dm-min-accounts" className="text-xs">分组最少保留账号数</Label>
+                <Input id="dm-min-accounts" inputMode="numeric" value={minAccounts} onChange={(event) => setMinAccounts(event.target.value)} disabled={busy} className="h-9 w-24 text-xs tabular-nums" />
+                <span className="text-[11px] text-muted-foreground">个 · 公共值</span>
+              </div>
+              <p className="text-[11px] text-muted-foreground">公共值：任一分组可用账号低于该数时，会优先补开之前被规则关闭的账号；未单独设置的分组都使用这个值。0 表示不设置，只在本弹窗生效。</p>
             </div>
-            <p className="text-[11px] text-muted-foreground">对所有规则组通用：任一分组可用账号低于该数时，会优先补开之前被规则关闭的账号。0 表示不设置，只在本弹窗生效。</p>
+            <div className="space-y-2 rounded-md border border-border bg-muted/20 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs font-medium">按分组单独设置</p>
+                <span className="text-[11px] text-muted-foreground">开启后该分组使用自定义值，关闭则沿用公共值</span>
+              </div>
+              {groups.length === 0 ? (
+                <p className="rounded-md border border-dashed border-border px-3 py-4 text-center text-[11px] text-muted-foreground">当前中转站暂无销售分组</p>
+              ) : (
+                <div className="max-h-56 space-y-1.5 overflow-y-auto pr-1">
+                  {groups.map((group) => {
+                    const key = String(group.external_id)
+                    const draft = groupMinAccounts[key]
+                    const enabled = draft?.enabled ?? false
+                    return (
+                      <div key={group.external_id} className="flex flex-wrap items-center justify-between gap-2 border border-transparent px-2 py-1.5">
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          <span className="truncate text-xs font-medium" title={group.name}>{group.name}</span>
+                          <span className="font-mono text-[10px] font-normal text-muted-foreground">#{group.external_id}</span>
+                        </span>
+                        <span className="flex shrink-0 items-center gap-2">
+                          <Switch
+                            checked={enabled}
+                            disabled={busy}
+                            aria-label={`分组 ${group.name} 自定义最少保留账号数`}
+                            onCheckedChange={(checked) => {
+                              setGroupMinAccounts((current) => ({
+                                ...current,
+                                [key]: { enabled: checked, value: current[key]?.value ?? String(minAccounts || "0") },
+                              }))
+                            }}
+                          />
+                          {enabled ? (
+                            <>
+                              <Input
+                                inputMode="numeric"
+                                value={draft?.value ?? ""}
+                                disabled={busy}
+                                aria-label={`分组 ${group.name} 最少保留账号数`}
+                                onChange={(event) => setGroupMinAccounts((current) => ({ ...current, [key]: { enabled: true, value: event.target.value } }))}
+                                className="h-8 w-20 text-xs tabular-nums"
+                              />
+                              <span className="text-[11px] text-muted-foreground">个</span>
+                            </>
+                          ) : (
+                            <span className="w-24 text-right text-[11px] text-muted-foreground">公共值 {minAccounts.trim() || "0"}</span>
+                          )}
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
           </section>
 
           <section className="rounded-md border border-border bg-muted/30 px-3 py-3">
@@ -448,7 +530,7 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
         <DialogFooter className="shrink-0 items-center justify-between gap-3 border-t border-border px-4 py-3 sm:px-6">
           <p className="min-w-0 text-xs text-danger" role="alert">{error}</p>
           <div className="flex shrink-0 gap-2">
-            <Button type="button" variant="outline" disabled={busy} onClick={() => onOpenChange(false)}>取消</Button>
+            <Button type="button" variant="outline" disabled={busy} onClick={() => onOpenChange(false)}>关闭</Button>
             <Button type="button" className="gap-1.5" disabled={busy} onClick={submit}>
               {busy ? <RefreshCw className="size-3.5 animate-spin" /> : null}
               保存规则

@@ -932,8 +932,16 @@ export interface RelayDynamicMonitorConfig {
   enabled: boolean
   /** 多组规则，每组独立的阈值与超标次数。 */
   groups: RelayDynamicMonitorRuleGroup[]
-  /** 分组至少保留多少个可用账号，0 表示不设置。 */
+  /**
+   * 公共值：分组至少保留多少个可用账号，0 表示不设置。
+   * 未在 group_min_accounts 中单独设置的分组都使用这个值。
+   */
   min_accounts_per_group: number
+  /**
+   * 按销售分组（external_id 的十进制字符串）单独设置的最少保留账号数。
+   * 出现即覆盖公共值；未出现的分组沿用公共值。值为 0 表示该分组不设下限。
+   */
+  group_min_accounts?: Record<string, number>
   /** 关闭的账号是否允许被动态开启。 */
   allow_auto_open: boolean
   /** 关闭多久后自动开启，0 表示不启用。 */
