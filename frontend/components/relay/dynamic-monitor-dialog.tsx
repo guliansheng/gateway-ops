@@ -448,6 +448,7 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
                         <span className="flex min-w-0 items-center gap-1.5">
                           <span className="truncate text-xs font-medium" title={group.name}>{group.name}</span>
                           <span className="font-mono text-[10px] font-normal text-muted-foreground">#{group.external_id}</span>
+                          <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] font-medium tabular-nums text-muted-foreground" title="该分组当前关联的账号数">账号 {group.account_count}</span>
                         </span>
                         <span className="flex shrink-0 items-center gap-2">
                           <Switch
