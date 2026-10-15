@@ -1099,6 +1099,9 @@ func relayStationOverview(c *gin.Context, d *Deps) {
 
 	groupViews := make([]relayGroupView, 0, len(groups))
 	accountTypesByGroup := make(map[int64]map[string]struct{}, len(groups))
+	// 分组账号数按“账号归属”统计：用账号集合去重，避免同一账号在同组重复计数，
+	// 与 account_count 字段的“该分组下的账号总数”语义保持一致。
+	accountsByGroup := make(map[int64]map[int64]struct{}, len(groups))
 	for _, risk := range risks {
 		accountType := strings.ToLower(strings.TrimSpace(risk.Account.Type))
 		if accountType == "" {
@@ -1109,6 +1112,10 @@ func relayStationOverview(c *gin.Context, d *Deps) {
 				accountTypesByGroup[group.ExternalID] = make(map[string]struct{})
 			}
 			accountTypesByGroup[group.ExternalID][accountType] = struct{}{}
+			if accountsByGroup[group.ExternalID] == nil {
+				accountsByGroup[group.ExternalID] = make(map[int64]struct{})
+			}
+			accountsByGroup[group.ExternalID][risk.Account.ExternalID] = struct{}{}
 		}
 	}
 	for _, group := range groups {
@@ -1166,7 +1173,8 @@ func relayStationOverview(c *gin.Context, d *Deps) {
 			}
 			view.Channels = append(view.Channels, item)
 		}
-		view.AccountCount = len(view.Channels)
+		// 该分组下的账号总数（按账号去重），不是关联渠道数。
+		view.AccountCount = len(accountsByGroup[group.ExternalID])
 		groupViews = append(groupViews, view)
 	}
 
