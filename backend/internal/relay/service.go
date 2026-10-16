@@ -4033,16 +4033,21 @@ func (s *Service) fetchAccountTrafficMetrics(ctx context.Context, baseURL, apiKe
 				var stats remoteUsageStats
 				accountID := account.ID
 				if err := s.get(ctx, usageStatsURL(baseURL, &accountID, since, until), apiKey, &stats); err != nil {
+					// 取不到用量就无法判定该账号本窗口的表现，保留上一次的值。
 					continue
 				}
-				var failures int64
+				// 失败数取不到时不臆测为 0，否则成功率会被高估。
 				var page remoteRequestErrorPage
-				if err := s.get(ctx, requestErrorCountEndpoint(baseURL, account.ID, since, until), apiKey, &page); err == nil {
-					failures = page.Total
+				errorsOK := s.get(ctx, requestErrorCountEndpoint(baseURL, account.ID, since, until), apiKey, &page) == nil
+				cacheHitRate, successRate := accountTrafficRates(stats, page.Total)
+				if !errorsOK {
+					successRate = nil
 				}
-				cacheHitRate, successRate := accountTrafficRates(stats, failures)
-				if cacheHitRate == nil && successRate == nil {
-					continue
+				// 即使两项都为空也要写入：让“近 1 小时无数据”如实清空，而不是留着过期值。
+				select {
+				case results <- storage.AccountTrafficMetrics{AccountExternalID: account.ID, CacheHitRate: cacheHitRate, SuccessRate: successRate}:
+				case <-ctx.Done():
+					return
 				}
 				select {
 				case results <- storage.AccountTrafficMetrics{AccountExternalID: account.ID, CacheHitRate: cacheHitRate, SuccessRate: successRate}:
