@@ -112,6 +112,8 @@ type remoteRequestError struct {
 
 type remoteRequestErrorPage struct {
 	Items []remoteRequestError `json:"items"`
+	// Total 是该过滤条件下的失败总数（不只是当前页），用于成功率统计。
+	Total int64 `json:"total"`
 }
 
 type monitorFetchKind uint8

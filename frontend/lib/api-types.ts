@@ -359,6 +359,12 @@ export interface RelayAccountView {
   usage_total_tokens: number | null
   user_charge_amount: number | null
   account_cost_amount: number | null
+  /** 近 1 小时缓存命中率（0-1），null 表示该窗口无数据。 */
+  cache_hit_rate?: number | null
+  /** 近 1 小时成功率（0-1），null 表示该窗口无数据。 */
+  success_rate?: number | null
+  /** 上面两个指标的统计时刻（上次快照同步时间）。 */
+  metrics_observed_at?: string | null
 }
 
 export interface RelayAccountBatchActionResult {

@@ -1247,6 +1247,11 @@ type remoteUsageStats struct {
 	TotalAccountCost float64 `json:"total_account_cost"`
 	TotalRequests    int64   `json:"total_requests"`
 	RequestCount     int64   `json:"request_count"`
+	// 缓存命中率所需：Sub2API 的 input_tokens 不含缓存部分，
+	// 因此缓存命中率 = 缓存读 /（输入 + 缓存读 + 缓存写）。
+	TotalInputTokens         int64 `json:"total_input_tokens"`
+	TotalCacheReadTokens     int64 `json:"total_cache_read_tokens"`
+	TotalCacheCreationTokens int64 `json:"total_cache_creation_tokens"`
 }
 
 type RecentUsageItem struct {
@@ -3422,12 +3427,13 @@ func (s *Service) syncSnapshot(ctx context.Context, stationID uint, probeRates b
 	previousAccountByExternalID := make(map[int64]storage.RelayAccount, len(previousAccounts))
 	previousLatency := make(map[int64]string, len(previousAccounts))
 	for _, account := range previousAccounts {
-		previousAccountByExternalID[account.ExternalID] = account
 		if account.LatencySamplesJSON != "" {
 			previousLatency[account.ExternalID] = account.LatencySamplesJSON
 		}
 	}
 	latencySnapshots := s.fetchAccountLatencies(ctx, station.BaseURL, apiKey, accounts, groups)
+	// 近 1 小时的缓存命中率与成功率：与延迟抓取一并读取，落库在快照替换之后。
+	trafficMetrics := s.fetchAccountTrafficMetrics(ctx, station.BaseURL, apiKey, accounts)
 
 	now := time.Now().UTC()
 	localGroups := make([]storage.RelayGroup, 0, len(groups))
@@ -3502,6 +3508,12 @@ func (s *Service) syncSnapshot(ctx context.Context, stationID uint, probeRates b
 		return err
 	}
 	s.invalidatePublicModelPricing(station.ID)
+	// 指标属于可选遥测：写入失败只记录同步错误，不让整次同步失败。
+	if len(trafficMetrics) > 0 {
+		if err := s.stations.SetAccountTrafficMetrics(station.ID, now, trafficMetrics); err != nil {
+			_ = s.stations.SetSyncError(station.ID, fmt.Sprintf("写入账号流量指标失败: %v", err))
+		}
+	}
 	if err := s.ReconcileManualChannelLinks(); err != nil {
 		_ = s.stations.SetSyncError(station.ID, err.Error())
 		return fmt.Errorf("同步手动渠道账号关联失败: %w", err)
@@ -3955,6 +3967,110 @@ func (s *Service) fetchAccountLatencies(ctx context.Context, baseURL, apiKey str
 	s.latencyCache[cacheKey] = latencyCacheEntry{ExpiresAt: time.Now().Add(latencyCacheTTL), Samples: snapshots}
 	s.latencyMu.Unlock()
 	return snapshots
+}
+
+// accountTrafficWindow 是缓存命中率与成功率的统计窗口（近 1 小时）。
+const accountTrafficWindow = time.Hour
+
+// accountTrafficRates 由近 1 小时的用量统计与失败数计算两个指标。
+// 对应项没有可用数据时返回 nil，前端据此显示占位而不是 0%。
+//   - 缓存命中率 = 缓存读 /（输入 + 缓存读 + 缓存写）
+//   - 成功率     = 成功 /（成功 + 失败）
+func accountTrafficRates(stats remoteUsageStats, failures int64) (cacheHitRate, successRate *float64) {
+	promptTokens := stats.TotalInputTokens + stats.TotalCacheReadTokens + stats.TotalCacheCreationTokens
+	if promptTokens > 0 {
+		value := float64(stats.TotalCacheReadTokens) / float64(promptTokens)
+		cacheHitRate = &value
+	}
+	if total := stats.TotalRequests + failures; total > 0 {
+		value := float64(stats.TotalRequests) / float64(total)
+		successRate = &value
+	}
+	return cacheHitRate, successRate
+}
+
+// requestErrorCountEndpoint 构造按账号与时间窗口统计失败数的地址。
+func requestErrorCountEndpoint(baseURL string, accountID int64, since, until time.Time) string {
+	query := url.Values{}
+	query.Set("page", "1")
+	// 只需要 total，取最小页避免搬运明细。
+	query.Set("page_size", "1")
+	query.Set("account_id", strconv.FormatInt(accountID, 10))
+	query.Set("start_time", since.Format(time.RFC3339))
+	query.Set("end_time", until.Format(time.RFC3339))
+	return strings.TrimRight(baseURL, "/") + "/api/v1/admin/ops/request-errors?" + query.Encode()
+}
+
+// fetchAccountTrafficMetrics 为每个 API Key 账号读取近 1 小时的缓存命中率与成功率。
+// 每账号两次调用：usage/stats 取成功数与缓存 token，request-errors 取失败数。
+// 指标属于可选遥测：单个账号失败只跳过该账号，不影响整体同步。
+func (s *Service) fetchAccountTrafficMetrics(ctx context.Context, baseURL, apiKey string, accounts []remoteAccount) []storage.AccountTrafficMetrics {
+	targets := make([]remoteAccount, 0, len(accounts))
+	for _, account := range accounts {
+		if strings.EqualFold(strings.TrimSpace(account.Type), "apikey") &&
+			strings.EqualFold(strings.TrimSpace(account.Status), "active") && account.Schedulable && account.ID > 0 {
+			targets = append(targets, account)
+		}
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+	until := time.Now().UTC()
+	since := until.Add(-accountTrafficWindow)
+
+	workers := 6
+	if len(targets) < workers {
+		workers = len(targets)
+	}
+	jobs := make(chan remoteAccount)
+	results := make(chan storage.AccountTrafficMetrics)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for account := range jobs {
+				var stats remoteUsageStats
+				accountID := account.ID
+				if err := s.get(ctx, usageStatsURL(baseURL, &accountID, since, until), apiKey, &stats); err != nil {
+					continue
+				}
+				var failures int64
+				var page remoteRequestErrorPage
+				if err := s.get(ctx, requestErrorCountEndpoint(baseURL, account.ID, since, until), apiKey, &page); err == nil {
+					failures = page.Total
+				}
+				cacheHitRate, successRate := accountTrafficRates(stats, failures)
+				if cacheHitRate == nil && successRate == nil {
+					continue
+				}
+				select {
+				case results <- storage.AccountTrafficMetrics{AccountExternalID: account.ID, CacheHitRate: cacheHitRate, SuccessRate: successRate}:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+	go func() {
+		defer close(jobs)
+		for _, account := range targets {
+			select {
+			case jobs <- account:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+	metrics := make([]storage.AccountTrafficMetrics, 0, len(targets))
+	for item := range results {
+		metrics = append(metrics, item)
+	}
+	return metrics
 }
 
 func (s *Service) get(ctx context.Context, endpoint, apiKey string, out any) error {

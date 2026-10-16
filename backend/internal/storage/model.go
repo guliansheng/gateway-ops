@@ -569,9 +569,15 @@ type RelayAccount struct {
 	RateObservedAt *time.Time `json:"rate_observed_at,omitempty"`
 	// LatencySamplesJSON stores the latest Sub2API usage samples as a compact
 	// snapshot so the risk table never has to fan out requests per account.
-	LatencySamplesJSON string     `gorm:"type:text" json:"-"`
-	LastUsedAt         *time.Time `json:"last_used_at,omitempty"`
-	SyncedAt           time.Time  `gorm:"not null;index" json:"synced_at"`
+	LatencySamplesJSON string `gorm:"type:text" json:"-"`
+	// CacheHitRate 是近 1 小时缓存命中率 = 缓存读 /（输入 + 缓存读 + 缓存写），nil 表示无数据。
+	CacheHitRate *float64 `json:"cache_hit_rate,omitempty"`
+	// SuccessRate 是近 1 小时成功率 = 成功 /（成功 + 失败），nil 表示无数据。
+	SuccessRate *float64 `json:"success_rate,omitempty"`
+	// MetricsObservedAt 是上面两个指标的统计时刻（快照同步时间）。
+	MetricsObservedAt *time.Time `json:"metrics_observed_at,omitempty"`
+	LastUsedAt        *time.Time `json:"last_used_at,omitempty"`
+	SyncedAt          time.Time  `gorm:"not null;index" json:"synced_at"`
 }
 
 func (RelayAccount) TableName() string { return "relay_accounts" }

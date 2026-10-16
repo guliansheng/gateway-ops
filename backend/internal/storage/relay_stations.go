@@ -197,6 +197,10 @@ func (r *RelayStations) ReplaceSnapshot(
 					accounts[i].ModelType = previous.ModelType
 					// 快照同步只搬运远端字段，Hub 侧的运营标记要跨同步保留。
 					accounts[i].UserChargeExcluded = previous.UserChargeExcluded
+					// 缓存命中率与成功率由同步任务单独统计后写回，这里跨同步保留。
+					accounts[i].CacheHitRate = previous.CacheHitRate
+					accounts[i].SuccessRate = previous.SuccessRate
+					accounts[i].MetricsObservedAt = previous.MetricsObservedAt
 					if accounts[i].RateMultiplier == nil && previous.RateMultiplier != nil && previous.RateSource == "upstream_probe" {
 						value := *previous.RateMultiplier
 						accounts[i].RateMultiplier = &value
@@ -810,6 +814,36 @@ func (r *RelayStations) SetAccountModelTypes(stationID uint, accountExternalIDs 
 		return nil
 	}
 	return r.db.Model(&RelayAccount{}).Where("relay_station_id = ? AND external_id IN ?", stationID, accountExternalIDs).Update("model_type", modelType).Error
+}
+
+// AccountTrafficMetrics 是一个账号的近 1 小时流量指标。
+// CacheHitRate/SuccessRate 为 nil 表示该窗口内没有可用数据。
+type AccountTrafficMetrics struct {
+	AccountExternalID int64
+	CacheHitRate      *float64
+	SuccessRate       *float64
+}
+
+// SetAccountTrafficMetrics 批量写入账号的缓存命中率与成功率。
+// 逐条更新，避免把不同账号的不同数值合并成同一条语句。
+func (r *RelayStations) SetAccountTrafficMetrics(stationID uint, observedAt time.Time, metrics []AccountTrafficMetrics) error {
+	if len(metrics) == 0 {
+		return nil
+	}
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		for _, item := range metrics {
+			if err := tx.Model(&RelayAccount{}).
+				Where("relay_station_id = ? AND external_id = ?", stationID, item.AccountExternalID).
+				Updates(map[string]any{
+					"cache_hit_rate":      item.CacheHitRate,
+					"success_rate":        item.SuccessRate,
+					"metrics_observed_at": observedAt,
+				}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // SetAccountsUserChargeExcluded 批量设置账号是否计入用户扣费统计。该标记只属于

@@ -262,7 +262,11 @@ type relayAccountView struct {
 	AccountPlan           string                       `json:"account_plan,omitempty"`
 	ModelType             string                       `json:"model_type,omitempty"`
 	UserChargeExcluded    bool                         `json:"user_charge_excluded"`
-	LastUsedAt            *time.Time                   `json:"last_used_at,omitempty"`
+	// 近 1 小时的缓存命中率与成功率，nil 表示该窗口内无数据。
+	CacheHitRate      *float64   `json:"cache_hit_rate,omitempty"`
+	SuccessRate       *float64   `json:"success_rate,omitempty"`
+	MetricsObservedAt *time.Time `json:"metrics_observed_at,omitempty"`
+	LastUsedAt        *time.Time `json:"last_used_at,omitempty"`
 }
 
 type relayRiskSummary struct {
@@ -1183,11 +1187,11 @@ func relayStationOverview(c *gin.Context, d *Deps) {
 	for _, risk := range risks {
 		view := relayAccountView{
 			ExternalID: risk.Account.ExternalID, Name: risk.Account.Name,
-			BaseURL:  risk.Account.BaseURL,
-			Platform: risk.Account.Platform, Type: risk.Account.Type, Status: risk.Account.Status, Schedulable: risk.Account.Schedulable,
+			BaseURL:     risk.Account.BaseURL,
+			AccountPlan: risk.Account.AccountPlan, LastUsedAt: risk.Account.LastUsedAt, ModelType: risk.Account.ModelType,
+			CacheHitRate: risk.Account.CacheHitRate, SuccessRate: risk.Account.SuccessRate, MetricsObservedAt: risk.Account.MetricsObservedAt,
 			Concurrency: risk.Account.Concurrency, CurrentConcurrency: risk.Account.CurrentConcurrency, Priority: risk.Account.Priority,
 			PoolMode: risk.Account.PoolMode, PoolModeRetryCount: risk.Account.PoolModeRetryCount,
-			AccountPlan: risk.Account.AccountPlan, LastUsedAt: risk.Account.LastUsedAt, ModelType: risk.Account.ModelType,
 			UserChargeExcluded: risk.Account.UserChargeExcluded,
 			CostMultiplier:     risk.Account.RateMultiplier, CurrentGroups: groupOptions(risk.CurrentGroups),
 			CostSource: risk.Account.RateSource, CostObservedAt: risk.Account.RateObservedAt,
