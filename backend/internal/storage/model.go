@@ -430,15 +430,17 @@ func (OperationLedgerEntry) TableName() string { return "operation_ledger_entrie
 // RelayStation 是要分析的 Sub2API 中转站。管理员 API Key 仅以密文保存，
 // 不会从 API 返回给前端。
 type RelayStation struct {
-	ID                        uint   `gorm:"primaryKey" json:"id"`
-	Name                      string `gorm:"size:128;not null;uniqueIndex" json:"name"`
-	BaseURL                   string `gorm:"size:512;not null" json:"base_url"`
-	APIKeyCipher              string `gorm:"type:text;not null" json:"-"`
-	AutoAdjustEnabled         bool   `gorm:"default:false" json:"auto_adjust_enabled"`
-	AutoAdjustNoProfitEnabled bool   `gorm:"default:false" json:"auto_adjust_no_profit_enabled"`
-	AutoPriorityEnabled       bool   `gorm:"default:false" json:"auto_priority_enabled"`
-	AutoPriorityRecallEnabled bool   `gorm:"default:false" json:"auto_priority_recall_enabled"`
-	AutoPriorityRecallMinutes int    `gorm:"not null;default:180" json:"auto_priority_recall_minutes"`
+	ID                              uint   `gorm:"primaryKey" json:"id"`
+	Name                            string `gorm:"size:128;not null;uniqueIndex" json:"name"`
+	BaseURL                         string `gorm:"size:512;not null" json:"base_url"`
+	APIKeyCipher                    string `gorm:"type:text;not null" json:"-"`
+	AutoAdjustEnabled               bool   `gorm:"default:false" json:"auto_adjust_enabled"`
+	AutoAdjustNoProfitEnabled       bool   `gorm:"default:false" json:"auto_adjust_no_profit_enabled"`
+	AutoPriorityEnabled             bool   `gorm:"default:false" json:"auto_priority_enabled"`
+	AutoPriorityRecallEnabled       bool   `gorm:"default:false" json:"auto_priority_recall_enabled"`
+	AutoPriorityRecallMinutes       int    `gorm:"not null;default:180" json:"auto_priority_recall_minutes"`
+	NewAccountModelTypeMatchMode    string `gorm:"size:16;not null;default:keyword" json:"new_account_model_type_match_mode"`
+	NewAccountModelTypeMatchPattern string `gorm:"type:text;not null;default:''" json:"new_account_model_type_match_pattern"`
 	// DynamicMonitorConfig 保存“账号动态监测”的规则配置（JSON），只对当前中转站生效，
 	// 不写入分组，也不会影响其它站点的策略。
 	DynamicMonitorConfig string `gorm:"type:text" json:"-"`

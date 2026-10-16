@@ -147,14 +147,16 @@ type BatchCloneResultItem struct {
 }
 
 type UpdateInput struct {
-	Name                      *string
-	BaseURL                   *string
-	APIKey                    *string
-	AutoAdjustEnabled         *bool
-	AutoAdjustNoProfitEnabled *bool
-	AutoPriorityEnabled       *bool
-	AutoPriorityRecallEnabled *bool
-	AutoPriorityRecallMinutes *int
+	Name                            *string
+	BaseURL                         *string
+	APIKey                          *string
+	AutoAdjustEnabled               *bool
+	AutoAdjustNoProfitEnabled       *bool
+	AutoPriorityEnabled             *bool
+	AutoPriorityRecallEnabled       *bool
+	AutoPriorityRecallMinutes       *int
+	NewAccountModelTypeMatchMode    *string
+	NewAccountModelTypeMatchPattern *string
 }
 
 type GroupUpdateInput struct {
@@ -312,6 +314,7 @@ func (s *Service) Create(in CreateInput) (*storage.RelayStation, error) {
 	}
 	station := &storage.RelayStation{
 		Name: name, BaseURL: baseURL, APIKeyCipher: key,
+		NewAccountModelTypeMatchMode: "keyword",
 	}
 	if err := s.stations.Create(station); err != nil {
 		return nil, err
@@ -362,6 +365,24 @@ func (s *Service) Update(id uint, in UpdateInput) (*storage.RelayStation, error)
 			return nil, errors.New("优先级回调时间必须在 15 分钟到 7 天之间")
 		}
 		station.AutoPriorityRecallMinutes = *in.AutoPriorityRecallMinutes
+	}
+	if in.NewAccountModelTypeMatchMode != nil || in.NewAccountModelTypeMatchPattern != nil {
+		mode := station.NewAccountModelTypeMatchMode
+		pattern := station.NewAccountModelTypeMatchPattern
+		if in.NewAccountModelTypeMatchMode != nil {
+			mode = strings.ToLower(strings.TrimSpace(*in.NewAccountModelTypeMatchMode))
+		}
+		if in.NewAccountModelTypeMatchPattern != nil {
+			pattern = strings.TrimSpace(*in.NewAccountModelTypeMatchPattern)
+		}
+		if mode == "" {
+			mode = "keyword"
+		}
+		if err := storage.ValidateNewAccountModelTypeMatch(mode, pattern); err != nil {
+			return nil, err
+		}
+		station.NewAccountModelTypeMatchMode = mode
+		station.NewAccountModelTypeMatchPattern = pattern
 	}
 	if err := s.stations.Update(station); err != nil {
 		return nil, err
@@ -3503,7 +3524,7 @@ func (s *Service) syncSnapshot(ctx context.Context, stationID uint, probeRates b
 			accountLinks = append(accountLinks, storage.RelayAccountSnapshotLink{AccountExternalID: account.ID, GroupExternalID: groupID})
 		}
 	}
-	if err := s.stations.ReplaceSnapshot(station.ID, localGroups, localChannels, links, localAccounts, accountLinks, now); err != nil {
+	if err := s.stations.ReplaceSnapshot(station.ID, localGroups, localChannels, links, localAccounts, accountLinks, station.NewAccountModelTypeMatchMode, station.NewAccountModelTypeMatchPattern, now); err != nil {
 		_ = s.stations.SetSyncError(station.ID, err.Error())
 		return err
 	}

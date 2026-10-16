@@ -94,4 +94,62 @@ func TestResolveNewAccountModelTypesIgnoresUnknownGroup(t *testing.T) {
 	if got := resolveNewAccountModelTypes(groups, links); len(got) != 0 {
 		t.Fatalf("未知分组关联应被忽略，实际 %+v", got)
 	}
+
+}
+func TestNewAccountNameMatcher(t *testing.T) {
+	tests := []struct {
+		name    string
+		mode    string
+		pattern string
+		account string
+		want    bool
+	}{
+		{name: "empty keeps old inheritance behavior", mode: "keyword", account: "https://example.com", want: false},
+		{name: "keyword case insensitive", mode: "keyword", pattern: "HTTPS://", account: "https://example.com", want: true},
+		{name: "keyword no match", mode: "keyword", pattern: "https://", account: "provider-a", want: false},
+		{name: "regex match", mode: "regex", pattern: `^https?://`, account: "https://example.com", want: true},
+		{name: "regex no match", mode: "regex", pattern: `^https?://`, account: "provider-a", want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			matcher, err := newAccountNameMatcher(test.mode, test.pattern)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := matcher(test.account); got != test.want {
+				t.Fatalf("matcher(%q) = %v, want %v", test.account, got, test.want)
+			}
+		})
+	}
+}
+
+func TestValidateNewAccountModelTypeMatchRejectsInvalidRegex(t *testing.T) {
+	if err := ValidateNewAccountModelTypeMatch("regex", "["); err == nil {
+		t.Fatal("invalid regex must be rejected")
+	}
+	if err := ValidateNewAccountModelTypeMatch("unknown", "foo"); err == nil {
+		t.Fatal("unknown match mode must be rejected")
+	}
+}
+
+func TestFilterNewAccountModelTypeLinksOnlyExcludesMatchingNewNames(t *testing.T) {
+	accounts := []RelayAccount{
+		{ExternalID: 1, Name: "https://vendor.example"},
+		{ExternalID: 2, Name: "regular-account"},
+	}
+	links := []RelayAccountSnapshotLink{
+		{AccountExternalID: 1, GroupExternalID: 10},
+		{AccountExternalID: 2, GroupExternalID: 10},
+	}
+	eligible, err := filterNewAccountModelTypeLinks(accounts, links, "keyword", "https://")
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelTypes := resolveNewAccountModelTypes([]RelayGroup{{ExternalID: 10, Name: "gpt", RateMultiplier: 1, ModelTypesJSON: `["gpt"]`}}, eligible)
+	if _, ok := modelTypes[1]; ok {
+		t.Fatal("matching account must not inherit a model type")
+	}
+	if modelTypes[2] != "gpt" {
+		t.Fatalf("non-matching account model type = %q, want gpt", modelTypes[2])
+	}
 }

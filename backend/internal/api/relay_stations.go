@@ -75,14 +75,16 @@ type relayStationInput struct {
 }
 
 type relayStationUpdateInput struct {
-	Name                      *string `json:"name"`
-	BaseURL                   *string `json:"base_url"`
-	APIKey                    *string `json:"api_key"`
-	AutoAdjustEnabled         *bool   `json:"auto_adjust_enabled"`
-	AutoAdjustNoProfitEnabled *bool   `json:"auto_adjust_no_profit_enabled"`
-	AutoPriorityEnabled       *bool   `json:"auto_priority_enabled"`
-	AutoPriorityRecallEnabled *bool   `json:"auto_priority_recall_enabled"`
-	AutoPriorityRecallMinutes *int    `json:"auto_priority_recall_minutes"`
+	Name                            *string `json:"name"`
+	BaseURL                         *string `json:"base_url"`
+	APIKey                          *string `json:"api_key"`
+	AutoAdjustEnabled               *bool   `json:"auto_adjust_enabled"`
+	AutoAdjustNoProfitEnabled       *bool   `json:"auto_adjust_no_profit_enabled"`
+	AutoPriorityEnabled             *bool   `json:"auto_priority_enabled"`
+	AutoPriorityRecallEnabled       *bool   `json:"auto_priority_recall_enabled"`
+	AutoPriorityRecallMinutes       *int    `json:"auto_priority_recall_minutes"`
+	NewAccountModelTypeMatchMode    *string `json:"new_account_model_type_match_mode"`
+	NewAccountModelTypeMatchPattern *string `json:"new_account_model_type_match_pattern"`
 }
 
 type relayMappingInput struct {
@@ -172,17 +174,19 @@ type relayUserDeleteInput struct {
 }
 
 type relayStationSummary struct {
-	ID                        uint       `json:"id"`
-	Name                      string     `json:"name"`
-	BaseURL                   string     `json:"base_url"`
-	APIKeyConfigured          bool       `json:"api_key_configured"`
-	AutoAdjustEnabled         bool       `json:"auto_adjust_enabled"`
-	AutoAdjustNoProfitEnabled bool       `json:"auto_adjust_no_profit_enabled"`
-	AutoPriorityEnabled       bool       `json:"auto_priority_enabled"`
-	AutoPriorityRecallEnabled bool       `json:"auto_priority_recall_enabled"`
-	AutoPriorityRecallMinutes int        `json:"auto_priority_recall_minutes"`
-	LastSyncedAt              *time.Time `json:"last_synced_at,omitempty"`
-	LastError                 string     `json:"last_error,omitempty"`
+	ID                              uint       `json:"id"`
+	Name                            string     `json:"name"`
+	BaseURL                         string     `json:"base_url"`
+	APIKeyConfigured                bool       `json:"api_key_configured"`
+	AutoAdjustEnabled               bool       `json:"auto_adjust_enabled"`
+	AutoAdjustNoProfitEnabled       bool       `json:"auto_adjust_no_profit_enabled"`
+	AutoPriorityEnabled             bool       `json:"auto_priority_enabled"`
+	AutoPriorityRecallEnabled       bool       `json:"auto_priority_recall_enabled"`
+	AutoPriorityRecallMinutes       int        `json:"auto_priority_recall_minutes"`
+	NewAccountModelTypeMatchMode    string     `json:"new_account_model_type_match_mode"`
+	NewAccountModelTypeMatchPattern string     `json:"new_account_model_type_match_pattern"`
+	LastSyncedAt                    *time.Time `json:"last_synced_at,omitempty"`
+	LastError                       string     `json:"last_error,omitempty"`
 }
 
 type relayOverview struct {
@@ -393,7 +397,9 @@ func updateRelayStation(c *gin.Context, d *Deps) {
 		Name: in.Name, BaseURL: in.BaseURL, APIKey: in.APIKey,
 		AutoAdjustEnabled: in.AutoAdjustEnabled, AutoAdjustNoProfitEnabled: in.AutoAdjustNoProfitEnabled,
 		AutoPriorityEnabled: in.AutoPriorityEnabled, AutoPriorityRecallEnabled: in.AutoPriorityRecallEnabled,
-		AutoPriorityRecallMinutes: in.AutoPriorityRecallMinutes,
+		AutoPriorityRecallMinutes:       in.AutoPriorityRecallMinutes,
+		NewAccountModelTypeMatchMode:    in.NewAccountModelTypeMatchMode,
+		NewAccountModelTypeMatchPattern: in.NewAccountModelTypeMatchPattern,
 	})
 	if err != nil {
 		fail(c, http.StatusBadRequest, err)
@@ -1578,8 +1584,10 @@ func stationSummary(station *storage.RelayStation) relayStationSummary {
 		ID: station.ID, Name: station.Name, BaseURL: station.BaseURL, APIKeyConfigured: station.APIKeyCipher != "",
 		AutoAdjustEnabled: station.AutoAdjustEnabled, AutoAdjustNoProfitEnabled: station.AutoAdjustNoProfitEnabled,
 		AutoPriorityEnabled: station.AutoPriorityEnabled, AutoPriorityRecallEnabled: station.AutoPriorityRecallEnabled,
-		AutoPriorityRecallMinutes: station.AutoPriorityRecallMinutes,
-		LastSyncedAt:              station.LastSyncedAt, LastError: station.LastError,
+		AutoPriorityRecallMinutes:       station.AutoPriorityRecallMinutes,
+		NewAccountModelTypeMatchMode:    station.NewAccountModelTypeMatchMode,
+		NewAccountModelTypeMatchPattern: station.NewAccountModelTypeMatchPattern,
+		LastSyncedAt:                    station.LastSyncedAt, LastError: station.LastError,
 	}
 }
 

@@ -3,9 +3,11 @@ package storage
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"gorm.io/gorm"
 )
@@ -109,6 +111,8 @@ func (r *RelayStations) ReplaceSnapshot(
 	links []RelaySnapshotLink,
 	accounts []RelayAccount,
 	accountLinks []RelayAccountSnapshotLink,
+	newAccountMatchMode string,
+	newAccountMatchPattern string,
 	syncedAt time.Time,
 ) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
@@ -153,9 +157,9 @@ func (r *RelayStations) ReplaceSnapshot(
 		}
 		if len(groups) > 0 {
 			for i := range groups {
-				if previous, ok := previousGroupByExternalID[groups[i].ExternalID]; ok {
-					groups[i].ModelTypesJSON = previous.ModelTypesJSON
-					groups[i].MonitorEnabled = previous.MonitorEnabled
+				if old, ok := previousGroupByExternalID[groups[i].ExternalID]; ok {
+					groups[i].ModelTypesJSON = old.ModelTypesJSON
+					groups[i].MonitorEnabled = old.MonitorEnabled
 				}
 			}
 			if err := tx.Create(&groups).Error; err != nil {
@@ -165,21 +169,20 @@ func (r *RelayStations) ReplaceSnapshot(
 		changes := make([]RelayChannelPricingChange, 0)
 		for i := range channels {
 			channel := &channels[i]
-			previous, ok := previousByExternalID[channel.ExternalID]
+			old, ok := previousByExternalID[channel.ExternalID]
 			if !ok {
 				continue
 			}
-			channel.PricingChangedAt = previous.PricingChangedAt
-			if previous.PricingHash == "" || previous.PricingHash == channel.PricingHash {
+			channel.PricingChangedAt = old.PricingChangedAt
+			if old.PricingHash == "" || old.PricingHash == channel.PricingHash {
 				continue
 			}
-			changedAt := syncedAt
-			channel.PricingChangedAt = &changedAt
+			channel.PricingChangedAt = &syncedAt
 			changes = append(changes, RelayChannelPricingChange{
 				RelayStationID: stationID, RelayChannelExternalID: channel.ExternalID,
-				OldPricingJSON: previous.PricingJSON, NewPricingJSON: channel.PricingJSON,
-				OldModelCount: previous.PricingModelCount, NewModelCount: channel.PricingModelCount,
-				OldRuleCount: previous.PricingRuleCount, NewRuleCount: channel.PricingRuleCount,
+				OldPricingJSON: old.PricingJSON, NewPricingJSON: channel.PricingJSON,
+				OldModelCount: old.PricingModelCount, NewModelCount: channel.PricingModelCount,
+				OldRuleCount: old.PricingRuleCount, NewRuleCount: channel.PricingRuleCount,
 				ChangedAt: syncedAt,
 			})
 		}
@@ -189,31 +192,29 @@ func (r *RelayStations) ReplaceSnapshot(
 			}
 		}
 		if len(accounts) > 0 {
-			// 首次出现的新账号默认继承“所在分组”的模型类型：同属多个分组时取倍率最高者，
-			// 再取该分组 model_types 的第一个值；分组未配置模型类型时保持为空。
-			newAccountModelType := resolveNewAccountModelTypes(groups, accountLinks)
+			eligibleLinks, err := filterNewAccountModelTypeLinks(accounts, accountLinks, newAccountMatchMode, newAccountMatchPattern)
+			if err != nil {
+				return err
+			}
+			newAccountModelType := resolveNewAccountModelTypes(groups, eligibleLinks)
 			for i := range accounts {
-				if previous, ok := previousAccountByExternalID[accounts[i].ExternalID]; ok {
-					accounts[i].ModelType = previous.ModelType
-					// 快照同步只搬运远端字段，Hub 侧的运营标记要跨同步保留。
-					accounts[i].UserChargeExcluded = previous.UserChargeExcluded
-					// 缓存命中率与成功率由同步任务单独统计后写回，这里跨同步保留。
-					accounts[i].CacheHitRate = previous.CacheHitRate
-					accounts[i].SuccessRate = previous.SuccessRate
-					accounts[i].MetricsObservedAt = previous.MetricsObservedAt
-					if accounts[i].RateMultiplier == nil && previous.RateMultiplier != nil && previous.RateSource == "upstream_probe" {
-						value := *previous.RateMultiplier
+				if old, ok := previousAccountByExternalID[accounts[i].ExternalID]; ok {
+					accounts[i].ModelType = old.ModelType
+					accounts[i].UserChargeExcluded = old.UserChargeExcluded
+					accounts[i].CacheHitRate = old.CacheHitRate
+					accounts[i].SuccessRate = old.SuccessRate
+					accounts[i].MetricsObservedAt = old.MetricsObservedAt
+					if accounts[i].RateMultiplier == nil && old.RateMultiplier != nil && old.RateSource == "upstream_probe" {
+						value := *old.RateMultiplier
 						accounts[i].RateMultiplier = &value
-						accounts[i].RateSource = previous.RateSource
-						accounts[i].RateObservedAt = previous.RateObservedAt
+						accounts[i].RateSource = old.RateSource
+						accounts[i].RateObservedAt = old.RateObservedAt
 					}
 					continue
 				}
-				// 已有模型类型（理论上不会，快照不携带该字段）时保留，避免覆盖。
-				if strings.TrimSpace(accounts[i].ModelType) != "" {
-					continue
+				if strings.TrimSpace(accounts[i].ModelType) == "" {
+					accounts[i].ModelType = newAccountModelType[accounts[i].ExternalID]
 				}
-				accounts[i].ModelType = newAccountModelType[accounts[i].ExternalID]
 			}
 			if err := tx.Create(&accounts).Error; err != nil {
 				return err
@@ -291,6 +292,62 @@ func (r *RelayStations) ReplaceSnapshot(
 			"last_error":     "",
 		}).Error
 	})
+}
+
+func filterNewAccountModelTypeLinks(accounts []RelayAccount, links []RelayAccountSnapshotLink, mode, pattern string) ([]RelayAccountSnapshotLink, error) {
+	nameMatches, err := newAccountNameMatcher(mode, pattern)
+	if err != nil {
+		return nil, err
+	}
+	nameByID := make(map[int64]string, len(accounts))
+	for _, account := range accounts {
+		nameByID[account.ExternalID] = account.Name
+	}
+	eligible := make([]RelayAccountSnapshotLink, 0, len(links))
+	for _, link := range links {
+		if !nameMatches(nameByID[link.AccountExternalID]) {
+			eligible = append(eligible, link)
+		}
+	}
+	return eligible, nil
+}
+
+func ValidateNewAccountModelTypeMatch(mode, pattern string) error {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		mode = "keyword"
+	}
+	if mode != "keyword" && mode != "regex" {
+		return fmt.Errorf("名称匹配方式必须是 keyword 或 regex")
+	}
+	if utf8.RuneCountInString(pattern) > 512 {
+		return fmt.Errorf("名称匹配规则不能超过 512 个字符")
+	}
+	if mode == "regex" && strings.TrimSpace(pattern) != "" {
+		if _, err := regexp.Compile(pattern); err != nil {
+			return fmt.Errorf("账号名称正则无效: %w", err)
+		}
+	}
+	return nil
+}
+
+func newAccountNameMatcher(mode, pattern string) (func(string) bool, error) {
+	if err := ValidateNewAccountModelTypeMatch(mode, pattern); err != nil {
+		return nil, err
+	}
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return func(string) bool { return false }, nil
+	}
+	if strings.EqualFold(strings.TrimSpace(mode), "regex") {
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			return nil, err
+		}
+		return re.MatchString, nil
+	}
+	pattern = strings.ToLower(pattern)
+	return func(name string) bool { return strings.Contains(strings.ToLower(name), pattern) }, nil
 }
 
 // resolveNewAccountModelTypes 计算“首次出现的新账号”应继承的模型类型。

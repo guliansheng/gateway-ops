@@ -199,6 +199,8 @@ CREATE TABLE IF NOT EXISTS relay_stations (
     auto_priority_enabled BOOLEAN NOT NULL DEFAULT false,
     auto_priority_recall_enabled BOOLEAN NOT NULL DEFAULT false,
     auto_priority_recall_minutes INTEGER NOT NULL DEFAULT 180,
+    new_account_model_type_match_mode VARCHAR(16) NOT NULL DEFAULT 'keyword',
+    new_account_model_type_match_pattern TEXT NOT NULL DEFAULT '',
     last_synced_at    TIMESTAMPTZ,
     last_error        TEXT,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -210,6 +212,8 @@ CREATE INDEX IF NOT EXISTS idx_relay_stations_deleted_at ON relay_stations (dele
 ALTER TABLE relay_stations ADD COLUMN IF NOT EXISTS auto_priority_recall_enabled BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE relay_stations ADD COLUMN IF NOT EXISTS auto_priority_recall_minutes INTEGER NOT NULL DEFAULT 180;
 ALTER TABLE relay_stations ADD COLUMN IF NOT EXISTS dynamic_monitor_config TEXT;
+ALTER TABLE relay_stations ADD COLUMN IF NOT EXISTS new_account_model_type_match_mode VARCHAR(16) NOT NULL DEFAULT 'keyword';
+ALTER TABLE relay_stations ADD COLUMN IF NOT EXISTS new_account_model_type_match_pattern TEXT NOT NULL DEFAULT '';
 ALTER TABLE relay_stations ADD COLUMN IF NOT EXISTS dynamic_monitor_state TEXT;
 
 CREATE TABLE IF NOT EXISTS relay_groups (

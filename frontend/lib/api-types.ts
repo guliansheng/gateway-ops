@@ -301,6 +301,8 @@ export interface RelayStation {
   auto_priority_enabled: boolean
   auto_priority_recall_enabled: boolean
   auto_priority_recall_minutes: number
+  new_account_model_type_match_mode: "keyword" | "regex"
+  new_account_model_type_match_pattern: string
   last_synced_at?: string | null
   last_error?: string
 }
