@@ -1033,6 +1033,43 @@ func applyRelayAccountSuggestion(c *gin.Context, d *Deps) {
 	relayStationOverview(c, d)
 }
 
+func relayAccountViewFromRisk(risk relay.AccountRisk) relayAccountView {
+	account := risk.Account
+	view := relayAccountView{
+		ExternalID: account.ExternalID, Name: account.Name,
+		BaseURL: account.BaseURL, Platform: account.Platform, Type: account.Type,
+		Status: account.Status, Schedulable: account.Schedulable,
+		AccountPlan: account.AccountPlan, LastUsedAt: account.LastUsedAt, ModelType: account.ModelType,
+		CacheHitRate: account.CacheHitRate, SuccessRate: account.SuccessRate, MetricsObservedAt: account.MetricsObservedAt,
+		Concurrency: account.Concurrency, CurrentConcurrency: account.CurrentConcurrency, Priority: account.Priority,
+		PoolMode: account.PoolMode, PoolModeRetryCount: account.PoolModeRetryCount,
+		UserChargeExcluded: account.UserChargeExcluded,
+		CostMultiplier:     account.RateMultiplier, CurrentGroups: groupOptions(risk.CurrentGroups),
+		CostSource: account.RateSource, CostObservedAt: account.RateObservedAt,
+		UnsafeGroups: groupOptions(risk.UnsafeGroups), NoProfitGroups: groupOptions(risk.NoProfitGroups),
+		DowngradeGroups: groupOptions(risk.DowngradeGroups), SuggestedGroupIDs: risk.SuggestedGroupIDs,
+		CurrentMinMultiplier: risk.CurrentMinMultiplier, Margin: risk.Margin,
+		RiskState: risk.State, CanApply: risk.CanApply, LatencySamples: []storage.RelayLatencySample{},
+	}
+	if account.LatencySamplesJSON != "" {
+		_ = json.Unmarshal([]byte(account.LatencySamplesJSON), &view.LatencySamples)
+	}
+	if risk.CostOverride != nil {
+		view.CostOverrideMode = risk.CostOverride.Mode
+		view.CostOverrideChannelID = risk.CostOverride.MonitorChannelID
+		view.CostOverrideGroup = risk.CostOverride.UpstreamGroup
+	}
+	if risk.RecommendedGroup != nil {
+		candidate := groupOption(*risk.RecommendedGroup)
+		view.RecommendedGroup = &candidate
+	}
+	if risk.DowngradeGroup != nil {
+		candidate := groupOption(*risk.DowngradeGroup)
+		view.DowngradeGroup = &candidate
+	}
+	return view
+}
+
 func relayStationOverview(c *gin.Context, d *Deps) {
 	id, err := uintParam(c, "id")
 	if err != nil {
@@ -1185,36 +1222,7 @@ func relayStationOverview(c *gin.Context, d *Deps) {
 	accountViews := make([]relayAccountView, 0, len(risks))
 	summary := relayRiskSummary{AccountCount: len(risks)}
 	for _, risk := range risks {
-		view := relayAccountView{
-			ExternalID: risk.Account.ExternalID, Name: risk.Account.Name,
-			BaseURL:     risk.Account.BaseURL,
-			AccountPlan: risk.Account.AccountPlan, LastUsedAt: risk.Account.LastUsedAt, ModelType: risk.Account.ModelType,
-			CacheHitRate: risk.Account.CacheHitRate, SuccessRate: risk.Account.SuccessRate, MetricsObservedAt: risk.Account.MetricsObservedAt,
-			Concurrency: risk.Account.Concurrency, CurrentConcurrency: risk.Account.CurrentConcurrency, Priority: risk.Account.Priority,
-			PoolMode: risk.Account.PoolMode, PoolModeRetryCount: risk.Account.PoolModeRetryCount,
-			UserChargeExcluded: risk.Account.UserChargeExcluded,
-			CostMultiplier:     risk.Account.RateMultiplier, CurrentGroups: groupOptions(risk.CurrentGroups),
-			CostSource: risk.Account.RateSource, CostObservedAt: risk.Account.RateObservedAt,
-			UnsafeGroups: groupOptions(risk.UnsafeGroups), NoProfitGroups: groupOptions(risk.NoProfitGroups), DowngradeGroups: groupOptions(risk.DowngradeGroups), SuggestedGroupIDs: risk.SuggestedGroupIDs,
-			CurrentMinMultiplier: risk.CurrentMinMultiplier, Margin: risk.Margin,
-			RiskState: risk.State, CanApply: risk.CanApply, LatencySamples: []storage.RelayLatencySample{},
-		}
-		if risk.Account.LatencySamplesJSON != "" {
-			_ = json.Unmarshal([]byte(risk.Account.LatencySamplesJSON), &view.LatencySamples)
-		}
-		if risk.CostOverride != nil {
-			view.CostOverrideMode = risk.CostOverride.Mode
-			view.CostOverrideChannelID = risk.CostOverride.MonitorChannelID
-			view.CostOverrideGroup = risk.CostOverride.UpstreamGroup
-		}
-		if risk.RecommendedGroup != nil {
-			candidate := groupOption(*risk.RecommendedGroup)
-			view.RecommendedGroup = &candidate
-		}
-		if risk.DowngradeGroup != nil {
-			candidate := groupOption(*risk.DowngradeGroup)
-			view.DowngradeGroup = &candidate
-		}
+		view := relayAccountViewFromRisk(risk)
 		switch risk.State {
 		case relay.RiskStateRisk:
 			summary.RiskAccountCount++
