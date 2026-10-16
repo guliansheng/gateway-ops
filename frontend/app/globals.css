@@ -64,11 +64,11 @@
 
 @media (width >= 64rem) {
   .relay-account-grid {
-    min-width: 2794px;
+    min-width: 2938px;
     grid-template-columns:
       64px minmax(202px, 1.1fr) 132px 110px 96px 120px 96px 96px 120px
       152px 104px 104px 212px minmax(172px, 0.9fr) 132px minmax(280px, 1.1fr) 120px
-      96px 130px minmax(256px, 0.9fr);
+      96px 130px 144px minmax(256px, 0.9fr);
   }
 }
 

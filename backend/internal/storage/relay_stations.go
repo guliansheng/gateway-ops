@@ -204,6 +204,9 @@ func (r *RelayStations) ReplaceSnapshot(
 					accounts[i].CacheHitRate = old.CacheHitRate
 					accounts[i].SuccessRate = old.SuccessRate
 					accounts[i].MetricsObservedAt = old.MetricsObservedAt
+					if accounts[i].CreatedAt == nil {
+						accounts[i].CreatedAt = old.CreatedAt
+					}
 					if accounts[i].RateMultiplier == nil && old.RateMultiplier != nil && old.RateSource == "upstream_probe" {
 						value := *old.RateMultiplier
 						accounts[i].RateMultiplier = &value

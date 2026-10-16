@@ -1001,6 +1001,7 @@ type remoteAccount struct {
 	Concurrency        int                      `json:"concurrency"`
 	CurrentConcurrency int                      `json:"current_concurrency"`
 	Priority           int                      `json:"priority"`
+	CreatedAt          *time.Time               `json:"created_at"`
 	LastUsedAt         *time.Time               `json:"last_used_at"`
 	RateMultiplier     *float64                 `json:"rate_multiplier"`
 	GroupIDs           []int64                  `json:"group_ids"`
@@ -3512,7 +3513,7 @@ func (s *Service) syncSnapshot(ctx context.Context, stationID uint, probeRates b
 			Platform: account.Platform, Type: account.Type, Status: account.Status, Schedulable: account.Schedulable,
 			Concurrency: account.Concurrency, CurrentConcurrency: account.CurrentConcurrency, Priority: account.Priority,
 			PoolMode: account.Credentials.PoolMode, PoolModeRetryCount: accountPoolModeRetryCount(account),
-			AccountPlan: remoteAccountPlan(account), LastUsedAt: account.LastUsedAt,
+			AccountPlan: remoteAccountPlan(account), CreatedAt: account.CreatedAt, LastUsedAt: account.LastUsedAt,
 			RateMultiplier: cost, RateSource: func() string {
 				if cost != nil {
 					return "upstream_probe"

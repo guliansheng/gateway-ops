@@ -1018,3 +1018,13 @@ func TestSuspiciousEmailMatchesRegistrationPattern(t *testing.T) {
 		t.Fatal("ordinary emails must not be suspicious")
 	}
 }
+
+func TestRemoteAccountDecodesCreatedAt(t *testing.T) {
+	var account remoteAccount
+	if err := json.Unmarshal([]byte(`{"id":7,"created_at":"2024-05-06T07:08:09Z"}`), &account); err != nil {
+		t.Fatal(err)
+	}
+	if account.CreatedAt == nil || !account.CreatedAt.Equal(time.Date(2024, 5, 6, 7, 8, 9, 0, time.UTC)) {
+		t.Fatalf("created_at = %v, want 2024-05-06T07:08:09Z", account.CreatedAt)
+	}
+}

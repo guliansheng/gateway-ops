@@ -339,6 +339,8 @@ export interface RelayAccountView {
   model_type?: string
   /** Hub 侧标记：true 表示该账号的扣费不计入用户扣费汇总。 */
   user_charge_excluded: boolean
+  /** 上游账号创建时间，旧快照可能没有。 */
+  created_at?: string | null
   last_used_at?: string | null
   cost_multiplier?: number | null
   cost_source?: "upstream_probe" | "local_group" | "channel_group" | "auto_link" | "" | string

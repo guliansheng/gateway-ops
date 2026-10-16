@@ -270,6 +270,7 @@ type relayAccountView struct {
 	CacheHitRate      *float64   `json:"cache_hit_rate,omitempty"`
 	SuccessRate       *float64   `json:"success_rate,omitempty"`
 	MetricsObservedAt *time.Time `json:"metrics_observed_at,omitempty"`
+	CreatedAt         *time.Time `json:"created_at,omitempty"`
 	LastUsedAt        *time.Time `json:"last_used_at,omitempty"`
 }
 
@@ -1045,7 +1046,7 @@ func relayAccountViewFromRisk(risk relay.AccountRisk) relayAccountView {
 		ExternalID: account.ExternalID, Name: account.Name,
 		BaseURL: account.BaseURL, Platform: account.Platform, Type: account.Type,
 		Status: account.Status, Schedulable: account.Schedulable,
-		AccountPlan: account.AccountPlan, LastUsedAt: account.LastUsedAt, ModelType: account.ModelType,
+		AccountPlan: account.AccountPlan, CreatedAt: account.CreatedAt, LastUsedAt: account.LastUsedAt, ModelType: account.ModelType,
 		CacheHitRate: account.CacheHitRate, SuccessRate: account.SuccessRate, MetricsObservedAt: account.MetricsObservedAt,
 		Concurrency: account.Concurrency, CurrentConcurrency: account.CurrentConcurrency, Priority: account.Priority,
 		PoolMode: account.PoolMode, PoolModeRetryCount: account.PoolModeRetryCount,

@@ -578,6 +578,7 @@ type RelayAccount struct {
 	SuccessRate *float64 `json:"success_rate,omitempty"`
 	// MetricsObservedAt 是上面两个指标的统计时刻（快照同步时间）。
 	MetricsObservedAt *time.Time `json:"metrics_observed_at,omitempty"`
+	CreatedAt         *time.Time `json:"created_at,omitempty"`
 	LastUsedAt        *time.Time `json:"last_used_at,omitempty"`
 	SyncedAt          time.Time  `gorm:"not null;index" json:"synced_at"`
 }
