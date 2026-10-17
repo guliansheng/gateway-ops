@@ -139,6 +139,16 @@ function toGroupRuleDrafts(config: RelayDynamicMonitorConfig): Record<string, st
   return result
 }
 
+/** 把配置里“不参与规则判断”的销售分组读成编辑态：值为 true 表示不参与。 */
+function toGroupExcludedDrafts(config: RelayDynamicMonitorConfig): Record<string, boolean> {
+  const source = config.group_rule_excluded ?? {}
+  const result: Record<string, boolean> = {}
+  for (const [externalID, excluded] of Object.entries(source)) {
+    if (excluded) result[externalID] = true
+  }
+  return result
+}
+
 /** 单个规则组：自己的阈值、超标次数与账号勾选。 */
 function RuleGroupCard({
   draft, index, total, accounts, groups, closedByExternalID, claimed, busy, canRemove, onChange, onToggleAccount, onRemove,
@@ -295,6 +305,8 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
   const [groupMinAccounts, setGroupMinAccounts] = useState<Record<string, { enabled: boolean; value: string }>>({})
   // 按销售分组关联的规则组：key 为分组 external_id，值为规则组下标的字符串（空串表示不关联）。
   const [groupRuleGroups, setGroupRuleGroups] = useState<Record<string, string>>({})
+  // 不参与规则判断的销售分组：key 为分组 external_id，出现即表示该分组不参与。
+  const [groupRuleExcluded, setGroupRuleExcluded] = useState<Record<string, boolean>>({})
   const [allowAutoOpen, setAllowAutoOpen] = useState(config.allow_auto_open)
   const [autoOpenMinutes, setAutoOpenMinutes] = useState(String(config.auto_open_minutes))
   const [error, setError] = useState("")
@@ -316,6 +328,7 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
       setMinAccounts(String(next.min_accounts_per_group))
       setGroupMinAccounts(toGroupMinDrafts(next))
       setGroupRuleGroups(toGroupRuleDrafts(next))
+      setGroupRuleExcluded(toGroupExcludedDrafts(next))
       setAllowAutoOpen(next.allow_auto_open)
       setAutoOpenMinutes(String(next.auto_open_minutes))
       setError("")
@@ -413,6 +426,12 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
       }
       ruleAssignments[key] = index
     }
+    // 不参与规则判断的分组：只保留仍存在的分组。
+    const excludedGroups: Record<string, boolean> = {}
+    for (const group of groups) {
+      const key = String(group.external_id)
+      if (groupRuleExcluded[key]) excludedGroups[key] = true
+    }
 
     for (const [index, draft] of ruleGroups.entries()) {
       const label = draft.name.trim() || `第 ${index + 1} 组`
@@ -442,6 +461,7 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
       min_accounts_per_group: minAccountsValue,
       group_min_accounts: Object.keys(overrides).length > 0 ? overrides : undefined,
       group_rule_groups: Object.keys(ruleAssignments).length > 0 ? ruleAssignments : undefined,
+      group_rule_excluded: Object.keys(excludedGroups).length > 0 ? excludedGroups : undefined,
       allow_auto_open: allowAutoOpen,
       auto_open_minutes: autoOpenValue,
     })
@@ -449,7 +469,7 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
 
   return (
     <Dialog open={open} onOpenChange={(next) => { if (!next && !busy) onOpenChange(false) }}>
-      <DialogContent className="flex w-[calc(100vw-2rem)] max-h-[calc(100dvh-2rem)] sm:max-w-3xl flex-col overflow-hidden p-0">
+      <DialogContent className="flex w-[calc(100vw-2rem)] max-h-[calc(100dvh-2rem)] sm:max-w-[868px] flex-col overflow-hidden p-0">
         <DialogHeader className="shrink-0 border-b border-border px-4 py-4 sm:px-6">
           <DialogTitle>账号动态监测</DialogTitle>
           <DialogDescription>
@@ -498,7 +518,7 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
           <ModuleSection
             icon={SlidersHorizontal}
             title="分组规则"
-            description="关联规则组与最少保留账号数：关联后分组新增账号自动加入该规则组；可用账号低于下限时优先补开。"
+            description="关联规则组、最少保留账号数与是否参与规则判断：关联后分组新增账号自动加入该规则组；参与判断且可用账号低于下限时优先补开，设为不参与则该分组不占下限、也不会被补开。"
             action={<>
               <Label htmlFor="dm-min-accounts" className="text-[11px] text-muted-foreground">公共值</Label>
               <Input id="dm-min-accounts" inputMode="numeric" value={minAccounts} onChange={(event) => setMinAccounts(event.target.value)} disabled={busy} className="h-8 w-20 text-xs tabular-nums" />
@@ -508,7 +528,7 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
             <div className="space-y-2 rounded-md border border-border bg-muted/20 p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-xs font-semibold text-foreground">按分组单独设置</p>
-                <span className="text-[11px] text-muted-foreground">每个分组可关联一个规则组（新增账号自动加入），并可单独设置最少保留账号数</span>
+                <span className="text-[11px] text-muted-foreground">每个分组可关联一个规则组（新增账号自动加入）、单独设置最少保留账号数，并选择是否参与规则判断</span>
               </div>
               {groups.length === 0 ? (
                 <p className="rounded-md border border-dashed border-border px-3 py-4 text-center text-[11px] text-muted-foreground">当前中转站暂无销售分组</p>
@@ -518,6 +538,8 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
                     const key = String(group.external_id)
                     const draft = groupMinAccounts[key]
                     const enabled = draft?.enabled ?? false
+                    // 不参与规则判断的分组：不计入“最少保留账号数”，也不会被补开。
+                    const participates = !groupRuleExcluded[key]
                     return (
                       <div key={group.external_id} className="flex flex-wrap items-center justify-between gap-2 border border-transparent px-2 py-1.5">
                         <span className="flex min-w-0 items-center gap-1.5">
@@ -526,6 +548,23 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
                           <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] font-medium tabular-nums text-muted-foreground" title="该分组当前关联的账号数">账号 {group.account_count}</span>
                         </span>
                         <span className="flex shrink-0 flex-wrap items-center gap-2">
+                          <span className="flex items-center gap-1.5">
+                            <Label htmlFor={`${key}-participates`} className={`cursor-pointer whitespace-nowrap text-[11px] ${participates ? "text-muted-foreground" : "text-warning"}`}>
+                              {participates ? "参与判断" : "不参与判断"}
+                            </Label>
+                            <Switch
+                              id={`${key}-participates`}
+                              checked={participates}
+                              disabled={busy}
+                              aria-label={`分组 ${group.name} 参与规则判断`}
+                              onCheckedChange={(checked) => setGroupRuleExcluded((current) => {
+                                const next = { ...current }
+                                if (checked) delete next[key]
+                                else next[key] = true
+                                return next
+                              })}
+                            />
+                          </span>
                           <span className="flex items-center gap-1.5">
                             <span className="text-[11px] text-muted-foreground">关联规则组</span>
                             <Select
@@ -553,7 +592,7 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
                             <span className="text-[11px] text-muted-foreground">最少保留</span>
                             <Switch
                               checked={enabled}
-                              disabled={busy}
+                              disabled={busy || !participates}
                               aria-label={`分组 ${group.name} 自定义最少保留账号数`}
                               onCheckedChange={(checked) => {
                                 setGroupMinAccounts((current) => ({
@@ -567,7 +606,7 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
                                 <Input
                                   inputMode="numeric"
                                   value={draft?.value ?? ""}
-                                  disabled={busy}
+                                  disabled={busy || !participates}
                                   aria-label={`分组 ${group.name} 最少保留账号数`}
                                   onChange={(event) => setGroupMinAccounts((current) => ({ ...current, [key]: { enabled: true, value: event.target.value } }))}
                                   className="h-8 w-16 text-xs tabular-nums"
@@ -575,7 +614,7 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
                                 <span className="text-[11px] text-muted-foreground">个</span>
                               </>
                             ) : (
-                              <span className="w-20 text-right text-[11px] text-muted-foreground">公共值 {minAccounts.trim() || "0"}</span>
+                              <span className="w-20 text-right text-[11px] text-muted-foreground">{participates ? `公共值 ${minAccounts.trim() || "0"}` : "不参与判断"}</span>
                             )}
                           </span>
                         </span>

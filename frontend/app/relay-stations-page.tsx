@@ -1460,8 +1460,23 @@ function BatchGroupEditor({ groups, count, open, busy, onOpenChange, onSave }: {
   return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="max-w-xl"><DialogHeader><DialogTitle>批量调整销售分组</DialogTitle><DialogDescription>将为已选的 {count} 个账号设置相同的销售分组，提交后逐个同步到 Sub2API。</DialogDescription></DialogHeader><div className="max-h-[min(52vh,460px)] space-y-2 overflow-y-auto pr-1">{orderedGroups.map((group) => { const checked = ids.includes(group.external_id); return <label key={group.external_id} className={cn("flex cursor-pointer items-center justify-between gap-3 border px-3 py-2.5 transition-colors", checked ? "border-brand/50 bg-brand/5" : "border-border hover:bg-muted/40")}><span className="flex min-w-0 items-center gap-3"><Checkbox checked={checked} onCheckedChange={(value) => setIDs((current) => value === true ? [...new Set([...current, group.external_id])] : current.filter((id) => id !== group.external_id))} /><span className="min-w-0"><span className="flex flex-wrap items-center gap-1.5"><span className="block truncate text-sm font-medium">{group.name}</span><span className={cn("rounded px-1.5 py-0.5 text-[10px] font-medium", group.is_exclusive ? "bg-warning/10 text-warning" : "bg-blue-500/10 text-blue-700 dark:text-blue-400")}>{group.is_exclusive ? "专属" : "公开"}</span></span><span className="mt-1 block text-[11px] text-muted-foreground">{group.platform || "-"} · {group.require_oauth_only ? "OAuth 类型" : "通用类型"} · 倍率 {multiplier(group.rate_multiplier)}</span></span></span><span className={cn("size-2 rounded-full", group.status === "active" ? "bg-success" : "bg-muted-foreground")} /></label> })}</div><DialogFooter><Button type="button" variant="outline" onClick={() => onOpenChange(false)}>取消</Button><Button type="button" disabled={busy} onClick={() => onSave(ids)}>保存分组</Button></DialogFooter></DialogContent></Dialog>
 }
 
+// cloneRowModelType 按“新增账号模型类型规则”推导复制账号的默认模型类型，与后端
+// resolveNewAccountModelTypes 一致：取账号所属分组中倍率最高的分组（倍率相同取名称靠前），
+// 再取该分组 model_types 的第一个值。取不到时返回空串，由后端按同一规则继承。
+function cloneRowModelType(source: RelayAccountView): string {
+  const groups = [...(source.current_groups ?? [])].sort((a, b) => {
+    if (b.rate_multiplier !== a.rate_multiplier) return b.rate_multiplier - a.rate_multiplier
+    return a.name < b.name ? -1 : a.name > b.name ? 1 : 0
+  })
+  const best = groups[0]
+  if (!best) return ""
+  return (best.model_types ?? []).map((value) => value.trim().toLowerCase()).find(Boolean) ?? ""
+}
+
 function newBatchCloneRow(source: RelayAccountView): BatchCloneFormRow {
-  return { id: `${Date.now()}-${Math.random()}`, name: source.name, api_key: "", base_url: source.base_url?.trim() || "", model_type: source.model_type?.trim() || "" }
+  // 不复制源账号的模型类型：源账号的绑定可能与所在分组的模型类型规则不同，
+  // 直接沿用会让新账号偏离规则，且后端会把这个值当作显式指定写库。
+  return { id: `${Date.now()}-${Math.random()}`, name: source.name, api_key: "", base_url: source.base_url?.trim() || "", model_type: cloneRowModelType(source) }
 }
 
 function cloneBatchCloneRow(row: BatchCloneFormRow): BatchCloneFormRow {
@@ -1688,7 +1703,7 @@ function BatchCloneDialog({ accounts, availableModelTypes, open, busy, result, o
                     <div className="space-y-1"><Label htmlFor={`${row.id}-name`} className="text-[11px] text-muted-foreground">账号名称 {index + 1}</Label><Input id={`${row.id}-name`} value={row.name} disabled={busy} onChange={(event) => updateRow(group.source_account_external_id, row.id, { name: event.target.value })} placeholder={source.name} maxLength={255} /></div>
                     <div className="space-y-1"><Label htmlFor={`${row.id}-key`} className="text-[11px] text-muted-foreground">API Key</Label><Input id={`${row.id}-key`} type="password" autoComplete="new-password" value={row.api_key} disabled={busy} onChange={(event) => updateRow(group.source_account_external_id, row.id, { api_key: event.target.value })} placeholder="粘贴新账号 API Key" /></div>
                     <div className="space-y-1"><Label htmlFor={`${row.id}-base-url`} className="text-[11px] text-muted-foreground">Base URL</Label><Input id={`${row.id}-base-url`} type="url" value={row.base_url} disabled={busy} onChange={(event) => updateRow(group.source_account_external_id, row.id, { base_url: event.target.value })} placeholder="沿用源账号地址" maxLength={1024} /></div>
-                    <div className="space-y-1"><Label htmlFor={`${row.id}-model-type`} className="text-[11px] text-muted-foreground">模型类型</Label><Select value={row.model_type || "__empty"} onValueChange={(value) => updateRow(group.source_account_external_id, row.id, { model_type: value === "__empty" ? "" : value })} disabled={busy}><SelectTrigger id={`${row.id}-model-type`} className="h-10 w-full text-sm" aria-label={`设置第 ${index + 1} 个新账号模型类型`}><SelectValue placeholder="未绑定模型类型" /></SelectTrigger><SelectContent><SelectItem value="__empty">未绑定模型类型</SelectItem>{modelTypeOptions.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select></div>
+                    <div className="space-y-1"><Label htmlFor={`${row.id}-model-type`} className="text-[11px] text-muted-foreground">模型类型</Label><Select value={row.model_type || "__empty"} onValueChange={(value) => updateRow(group.source_account_external_id, row.id, { model_type: value === "__empty" ? "" : value })} disabled={busy}><SelectTrigger id={`${row.id}-model-type`} className="h-10 w-full text-sm" aria-label={`设置第 ${index + 1} 个新账号模型类型`}><SelectValue placeholder="按分组规则继承" /></SelectTrigger><SelectContent><SelectItem value="__empty">按分组规则继承</SelectItem>{modelTypeOptions.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select></div>
                     <div className="flex items-end justify-end gap-1"><Tooltip delayDuration={250}><TooltipTrigger asChild><Button type="button" variant="ghost" size="icon" className="size-10" aria-label={`复制第 ${index + 1} 个新账号到本组`} title="复制到本组" disabled={busy || group.rows.length >= 100 || total >= 300} onClick={() => copyRow(group.source_account_external_id, row.id)}><Copy className="size-4 text-brand" /></Button></TooltipTrigger><TooltipContent side="top">复制到本组</TooltipContent></Tooltip><Tooltip delayDuration={250}><TooltipTrigger asChild><Button type="button" variant="ghost" size="icon" className="size-10" aria-label={`删除第 ${index + 1} 个新账号`} title="删除新账号" disabled={busy || group.rows.length <= 1} onClick={() => removeRow(group.source_account_external_id, row.id)}><Trash2 className="size-4 text-danger" /></Button></TooltipTrigger><TooltipContent side="top">删除新账号</TooltipContent></Tooltip></div>
                   </div>)}
                 </div>

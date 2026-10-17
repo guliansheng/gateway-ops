@@ -454,6 +454,8 @@ func (s *Service) BatchCloneAccounts(ctx context.Context, stationID uint, in Bat
 	localNames := make(map[int64]string, len(localAccounts))
 	localIDs := make(map[int64]struct{}, len(localAccounts))
 	modelTypeUpdates := make(map[string][]int64)
+	// clonedIDs 记录本次真正克隆成功的账号，用于同步后补做模型类型与规则组绑定。
+	clonedIDs := make([]int64, 0, countBatchCloneAccounts(in))
 	for _, account := range localAccounts {
 		localNames[account.ExternalID] = account.Name
 		localIDs[account.ExternalID] = struct{}{}
@@ -541,6 +543,7 @@ func (s *Service) BatchCloneAccounts(ctx context.Context, stationID uint, in Bat
 				continue
 			}
 			item.Success = true
+			clonedIDs = append(clonedIDs, item.ExternalID)
 			if modelType := strings.ToLower(strings.TrimSpace(requested.ModelType)); modelType != "" {
 				modelTypeUpdates[modelType] = append(modelTypeUpdates[modelType], item.ExternalID)
 			}
@@ -552,10 +555,20 @@ func (s *Service) BatchCloneAccounts(ctx context.Context, stationID uint, in Bat
 	var syncErrors []string
 	if err := s.SyncSnapshot(ctx, stationID); err != nil {
 		syncErrors = append(syncErrors, sanitizeBatchCloneError(err, apiKey))
-	}
-	for modelType, accountIDs := range modelTypeUpdates {
-		if err := s.stations.SetAccountModelTypes(stationID, accountIDs, modelType); err != nil {
-			syncErrors = append(syncErrors, fmt.Sprintf("保存新增账号模型类型失败: %v", err))
+		if len(modelTypeUpdates) > 0 {
+			// 新账号还没进入本地快照，这时写模型类型不会命中任何行，必须如实告知调用方。
+			syncErrors = append(syncErrors, "本地快照刷新失败，新增账号的模型类型未保存")
+		}
+	} else {
+		for modelType, accountIDs := range modelTypeUpdates {
+			if err := s.stations.SetAccountModelTypes(stationID, accountIDs, modelType); err != nil {
+				syncErrors = append(syncErrors, fmt.Sprintf("保存新增账号模型类型失败: %v", err))
+			}
+		}
+		// 动态监测的分组关联靠 SeenAccounts 判断“首次出现”，而同步已把本批账号记为已见过；
+		// 这里用明确的克隆结果补一次入组，避免冷启动或分组关联缺失时永久漏掉。
+		if err := s.AssignNewAccountsToRuleGroups(stationID, clonedIDs); err != nil {
+			syncErrors = append(syncErrors, fmt.Sprintf("新增账号加入动态监测规则组失败: %v", err))
 		}
 	}
 	if len(syncErrors) > 0 {

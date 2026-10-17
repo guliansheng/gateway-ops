@@ -957,6 +957,12 @@ export interface RelayDynamicMonitorConfig {
    * 同步时该分组下首次出现的新账号会自动加入对应规则组；未出现的分组不自动关联。
    */
   group_rule_groups?: Record<string, number>
+  /**
+   * 销售分组（external_id 的十进制字符串）是否不参与规则判断，值为 true 表示不参与。
+   * 不参与的分组不占用“分组最少保留账号数”，也不会因为下限不足被补开；
+   * 未出现的分组（或值为 false）一律视为参与。
+   */
+  group_rule_excluded?: Record<string, boolean>
   /** 关闭的账号是否允许被动态开启。 */
   allow_auto_open: boolean
   /** 关闭多久后自动开启，0 表示不启用。 */

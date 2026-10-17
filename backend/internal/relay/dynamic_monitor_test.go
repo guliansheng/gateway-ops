@@ -680,6 +680,69 @@ func TestPlanDynamicMonitorSkipsGroupOverriddenToZero(t *testing.T) {
 	}
 }
 
+// 分组设为“不参与规则判断”时，即使可用账号低于下限也不会补开组内被关闭的账号；
+// 参与判断的分组照旧补开，互不影响。
+func TestPlanDynamicMonitorSkipsExcludedGroup(t *testing.T) {
+	base := time.Now().UTC()
+	config := DynamicMonitorConfig{
+		Enabled:             true,
+		Groups:              []DynamicMonitorRuleGroup{ruleGroup(1, 2, 11, 12, 13, 14)},
+		AllowAutoOpen:       true,
+		MinAccountsPerGroup: 3,
+		// 分组 1 不参与规则判断：它的下限不生效，也不补开。
+		GroupRuleExcluded: map[string]bool{"1": true},
+	}.Normalize()
+	accounts := []storage.RelayAccount{
+		{ExternalID: 11, ID: 1, Name: "组1-可用", Schedulable: true, Status: "active", LatencySamplesJSON: latencyBody(t, 100, 3, base)},
+		{ExternalID: 12, ID: 2, Name: "组1-关闭", Schedulable: false, Status: "active"},
+		// 分组 2 参与判断：下限 3，现有 0 个 → 补开 14。
+		{ExternalID: 14, ID: 4, Name: "组2-关闭", Schedulable: false, Status: "active"},
+	}
+	groups := []storage.RelayGroup{{ID: 1, ExternalID: 1, Status: "active"}, {ID: 2, ExternalID: 2, Status: "active"}}
+	links := []storage.RelayAccountGroup{
+		{RelayGroupID: 1, RelayAccountID: 1},
+		{RelayGroupID: 1, RelayAccountID: 2},
+		{RelayGroupID: 2, RelayAccountID: 4},
+	}
+	state := DynamicMonitorState{ClosedAccounts: []DynamicMonitorClosure{
+		{AccountExternalID: 12, AccountName: "组1-关闭", ClosedAt: base.Add(-time.Hour)},
+		{AccountExternalID: 14, AccountName: "组2-关闭", ClosedAt: base.Add(-time.Hour)},
+	}}
+
+	plan := planDynamicMonitor(config, state, accounts, groups, links)
+	if len(plan.Reopen) != 1 || plan.Reopen[0] != 14 {
+		t.Fatalf("补开名单 = %v，期望只补开参与判断的 14", plan.Reopen)
+	}
+}
+
+// 不参与规则判断的配置里 false 不落库；非法分组 ID 交给 Validate 拒绝。
+func TestConfigNormalizeDropsFalseGroupRuleExcluded(t *testing.T) {
+	config := DynamicMonitorConfig{
+		Groups:            []DynamicMonitorRuleGroup{ruleGroup(1, 2, 11)},
+		GroupRuleExcluded: map[string]bool{"1": false, "2": true},
+	}.Normalize()
+	if _, ok := config.GroupRuleExcluded["1"]; ok {
+		t.Fatalf("false 不应保留：%v", config.GroupRuleExcluded)
+	}
+	if !config.GroupRuleExcluded["2"] {
+		t.Fatalf("true 应保留：%v", config.GroupRuleExcluded)
+	}
+	if config.GroupParticipates(2) {
+		t.Fatal("分组 2 应判定为不参与规则判断")
+	}
+	if !config.GroupParticipates(3) {
+		t.Fatal("未设置的分组应默认参与规则判断")
+	}
+
+	bad := DynamicMonitorConfig{
+		Groups:            []DynamicMonitorRuleGroup{ruleGroup(1, 2, 11)},
+		GroupRuleExcluded: map[string]bool{"abc": true},
+	}.Normalize()
+	if err := bad.Validate(); err == nil {
+		t.Fatal("非法的分组 ID 应报错")
+	}
+}
+
 // 关联分组里“首次出现”的新账号应自动加入对应规则组，并立即参与监测。
 func TestAutoAssignNewAccountJoinsLinkedRuleGroup(t *testing.T) {
 	config := DynamicMonitorConfig{
@@ -872,5 +935,97 @@ func TestValidateGroupRuleGroupRangeRejectsOutOfRange(t *testing.T) {
 	}
 	if err := validateGroupRuleGroupRange(map[string]int{"24": 2, "66": 0}, 3); err != nil {
 		t.Fatalf("合法下标不应报错: %v", err)
+	}
+}
+
+// 复制新增的账号由调用方明确给出，不依赖 SeenAccounts：站点处于冷启动时也应入组。
+func TestPlanRuleGroupAssignmentsIgnoresSeenBaseline(t *testing.T) {
+	config := DynamicMonitorConfig{
+		Enabled:         true,
+		Groups:          []DynamicMonitorRuleGroup{ruleGroup(30, 5, 11)},
+		GroupRuleGroups: map[string]int{"1": 0},
+	}.Normalize()
+	accounts := []storage.RelayAccount{
+		{ExternalID: 11, ID: 1, Name: "老账号"},
+		{ExternalID: 21, ID: 2, Name: "复制新增"},
+	}
+	groups := []storage.RelayGroup{{ID: 1, ExternalID: 1, Status: "active", RateMultiplier: 2}}
+	links := []storage.RelayAccountGroup{
+		{RelayGroupID: 1, RelayAccountID: 1},
+		{RelayGroupID: 1, RelayAccountID: 2},
+	}
+
+	got := planRuleGroupAssignments(config, []int64{21}, accounts, groups, links)
+	if ids := got[0]; len(ids) != 1 || ids[0] != 21 {
+		t.Fatalf("新增账号 21 应加入规则组 0：%v", got)
+	}
+}
+
+// 已在规则组的账号不重复加入；分组未关联规则组时不入组。
+func TestPlanRuleGroupAssignmentsSkipsMemberAndUnlinkedGroup(t *testing.T) {
+	config := DynamicMonitorConfig{
+		Enabled: true,
+		Groups: []DynamicMonitorRuleGroup{
+			ruleGroup(30, 5, 11),
+			ruleGroup(30, 5, 12),
+		},
+		GroupRuleGroups: map[string]int{"1": 0},
+	}.Normalize()
+	accounts := []storage.RelayAccount{
+		{ExternalID: 11, ID: 1, Name: "已在组"},
+		{ExternalID: 21, ID: 2, Name: "未关联分组"},
+	}
+	groups := []storage.RelayGroup{
+		{ID: 1, ExternalID: 1, Status: "active", RateMultiplier: 2},
+		{ID: 2, ExternalID: 2, Status: "active", RateMultiplier: 2},
+	}
+	links := []storage.RelayAccountGroup{
+		{RelayGroupID: 1, RelayAccountID: 1},
+		{RelayGroupID: 2, RelayAccountID: 2},
+	}
+
+	if got := planRuleGroupAssignments(config, []int64{11, 21}, accounts, groups, links); len(got) != 0 {
+		t.Fatalf("已入组账号与未关联分组的账号都不应入组：%v", got)
+	}
+}
+
+// 同时属于多个已关联分组时，取倍率最高的分组对应的规则组。
+func TestPlanRuleGroupAssignmentsPrefersHighestMultiplier(t *testing.T) {
+	config := DynamicMonitorConfig{
+		Enabled: true,
+		Groups: []DynamicMonitorRuleGroup{
+			ruleGroup(30, 5, 11),
+			ruleGroup(30, 5, 12),
+		},
+		GroupRuleGroups: map[string]int{"1": 0, "2": 1},
+	}.Normalize()
+	accounts := []storage.RelayAccount{{ExternalID: 31, ID: 3, Name: "多分组账号"}}
+	groups := []storage.RelayGroup{
+		{ID: 1, ExternalID: 1, Status: "active", RateMultiplier: 1},
+		{ID: 2, ExternalID: 2, Status: "active", RateMultiplier: 3},
+	}
+	links := []storage.RelayAccountGroup{
+		{RelayGroupID: 1, RelayAccountID: 3},
+		{RelayGroupID: 2, RelayAccountID: 3},
+	}
+
+	got := planRuleGroupAssignments(config, []int64{31}, accounts, groups, links)
+	if ids := got[1]; len(ids) != 1 || ids[0] != 31 {
+		t.Fatalf("应按倍率更高的分组 2 进入规则组 1：%v", got)
+	}
+	if _, ok := got[0]; ok {
+		t.Fatalf("不应同时进入规则组 0：%v", got)
+	}
+}
+
+// 没有分组关联时不做任何入组。
+func TestPlanRuleGroupAssignmentsWithoutRuleGroups(t *testing.T) {
+	config := DynamicMonitorConfig{Enabled: true, Groups: []DynamicMonitorRuleGroup{ruleGroup(30, 5, 11)}}.Normalize()
+	accounts := []storage.RelayAccount{{ExternalID: 21, ID: 2, Name: "新增"}}
+	groups := []storage.RelayGroup{{ID: 1, ExternalID: 1, Status: "active", RateMultiplier: 2}}
+	links := []storage.RelayAccountGroup{{RelayGroupID: 1, RelayAccountID: 2}}
+
+	if got := planRuleGroupAssignments(config, []int64{21}, accounts, groups, links); len(got) != 0 {
+		t.Fatalf("没有分组关联时不应入组：%v", got)
 	}
 }
