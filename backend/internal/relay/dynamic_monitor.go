@@ -479,6 +479,7 @@ func relayAccountSchedulable(account storage.RelayAccount) bool {
 //   - 账号按其所属销售分组找关联规则组；同时属于多个已关联分组时，取分组倍率（rate_multiplier）最高的那个。
 //   - 已属于任一规则组的账号不重复处理；一个账号只归属一个规则组。
 //   - SeenAccounts 为空（旧状态或首次启用）时只建立基线，不自动加入，避免把存量账号一次性塞进规则组。
+//   - 本轮快照里还没有任何销售分组的账号不记为“已见过”，留到下次快照再判定。
 //
 // 传入的 state 是 retainedDynamicMonitorState 的结果，函数就地更新它的 SeenAccounts。
 func autoAssignNewAccounts(
@@ -501,20 +502,24 @@ func autoAssignNewAccounts(
 		}
 	}
 
+	groupByLocalID := make(map[uint]storage.RelayGroup, len(groups))
+	for _, group := range groups {
+		groupByLocalID[group.ID] = group
+	}
+	// 账号 local id → 其所属的（已关联规则组的）销售分组，用于挑选倍率最高的关联。
+	linkedGroupsByAccount := make(map[uint][]storage.RelayGroup)
+	// hasGroupLink 记录本轮快照里已经同步到销售分组的账号，见文末“已见过”基线的说明。
+	hasGroupLink := make(map[uint]struct{}, len(links))
+	for _, link := range links {
+		hasGroupLink[link.RelayAccountID] = struct{}{}
+		group, ok := groupByLocalID[link.RelayGroupID]
+		if !ok {
+			continue
+		}
+		linkedGroupsByAccount[link.RelayAccountID] = append(linkedGroupsByAccount[link.RelayAccountID], group)
+	}
+
 	if hasRuleGroups && !coldStart {
-		groupByLocalID := make(map[uint]storage.RelayGroup, len(groups))
-		for _, group := range groups {
-			groupByLocalID[group.ID] = group
-		}
-		// 账号 local id → 其所属的（已关联规则组的）销售分组，用于挑选倍率最高的关联。
-		linkedGroupsByAccount := make(map[uint][]storage.RelayGroup)
-		for _, link := range links {
-			group, ok := groupByLocalID[link.RelayGroupID]
-			if !ok {
-				continue
-			}
-			linkedGroupsByAccount[link.RelayAccountID] = append(linkedGroupsByAccount[link.RelayAccountID], group)
-		}
 
 		// 收集本轮要加入各规则组的账号；按外部 ID 升序保证结果稳定。
 		pending := make(map[int][]int64)
@@ -559,18 +564,28 @@ func autoAssignNewAccounts(
 			assigned = true
 		}
 
-		// 建立/更新“已见过”基线：本轮快照里出现的所有账号都记下来。
-		for _, account := range accounts {
-			state.markSeen(account.ExternalID)
-		}
+		// 建立/更新“已见过”基线，见 markSeenAccounts 的说明。
+		markSeenAccounts(accounts, hasGroupLink, state)
 		return config, assigned
 	}
 
 	// 未配置分组关联或处于冷启动：只维护“已见过”基线。
+	markSeenAccounts(accounts, hasGroupLink, state)
+	return config, false
+}
+
+// markSeenAccounts 更新“已见过”基线。
+//
+// 本轮快照里没有任何销售分组的账号不记：它通常是刚在 Sub2API 建好、分组还没同步过来的
+// 账号，这一轮无法判断归属；若照旧记为已见过，就会永久失去自动加入规则组的机会
+// （快照间隔 1 分钟，创建到设置分组之间的窗口足以撞上一次同步）。留到下次快照重试。
+func markSeenAccounts(accounts []storage.RelayAccount, hasGroupLink map[uint]struct{}, state *DynamicMonitorState) {
 	for _, account := range accounts {
+		if _, linked := hasGroupLink[account.ID]; !linked {
+			continue
+		}
 		state.markSeen(account.ExternalID)
 	}
-	return config, false
 }
 
 // planRuleGroupAssignments 计算“明确新增”的账号应加入的规则组。

@@ -1029,3 +1029,39 @@ func TestPlanRuleGroupAssignmentsWithoutRuleGroups(t *testing.T) {
 		t.Fatalf("没有分组关联时不应入组：%v", got)
 	}
 }
+
+// 账号还没有任何销售分组（刚在 Sub2API 建好、分组未同步）时不能记为已见过，
+// 否则它会永久失去自动加入规则组的机会；下次快照有分组后再判定。
+func TestAutoAssignKeepsUngroupedAccountPending(t *testing.T) {
+	config := DynamicMonitorConfig{
+		Enabled:         true,
+		Groups:          []DynamicMonitorRuleGroup{ruleGroup(30, 5, 11)},
+		GroupRuleGroups: map[string]int{"1": 0},
+	}.Normalize()
+	accounts := []storage.RelayAccount{
+		{ExternalID: 11, ID: 1, Name: "老账号", Schedulable: true, Status: "active"},
+		{ExternalID: 13, ID: 3, Name: "刚创建未分组", Schedulable: true, Status: "active"},
+	}
+	groups := []storage.RelayGroup{{ID: 1, ExternalID: 1, Status: "active", RateMultiplier: 3}}
+	// 13 还没有任何分组关联。
+	links := []storage.RelayAccountGroup{{RelayGroupID: 1, RelayAccountID: 1}}
+	state := DynamicMonitorState{SeenAccounts: map[int64]struct{}{11: {}}}
+
+	plan := planDynamicMonitor(config, state, accounts, groups, links)
+	if _, seen := plan.State.SeenAccounts[13]; seen {
+		t.Fatal("无分组关联的新账号不应被记为已见过，否则再也不会自动入组")
+	}
+	if containsID(plan.Config.Groups[0].AccountExternalIDs, 13) {
+		t.Fatalf("本轮无法判定归属，不应入组：%v", plan.Config.Groups[0].AccountExternalIDs)
+	}
+
+	// 下一次快照补齐分组关联后，它应被自动加入规则组。
+	links = append(links, storage.RelayAccountGroup{RelayGroupID: 1, RelayAccountID: 3})
+	plan = planDynamicMonitor(plan.Config, plan.State, accounts, groups, links)
+	if !containsID(plan.Config.Groups[0].AccountExternalIDs, 13) {
+		t.Fatalf("补齐分组关联后应自动入组：%v", plan.Config.Groups[0].AccountExternalIDs)
+	}
+	if _, seen := plan.State.SeenAccounts[13]; !seen {
+		t.Fatal("入组后应记为已见过")
+	}
+}
