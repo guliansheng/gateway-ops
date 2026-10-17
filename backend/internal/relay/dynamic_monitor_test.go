@@ -1065,3 +1065,36 @@ func TestAutoAssignKeepsUngroupedAccountPending(t *testing.T) {
 		t.Fatal("入组后应记为已见过")
 	}
 }
+
+// 已经“见过”的账号即使被手动移出规则组、并且本轮没有销售分组关联，也不会被重新
+// 当作新账号自动加回；它的“已见过”记录同样不会被这次改动清掉。
+func TestAutoAssignNeverReAddsSeenAccountWithoutGroupLink(t *testing.T) {
+	config := DynamicMonitorConfig{
+		Enabled:         true,
+		Groups:          []DynamicMonitorRuleGroup{ruleGroup(30, 5, 11)},
+		GroupRuleGroups: map[string]int{"1": 0},
+	}.Normalize()
+	accounts := []storage.RelayAccount{
+		{ExternalID: 11, ID: 1, Name: "老账号", Schedulable: true, Status: "active"},
+		// 13 曾被手动移出规则组，且当前没有任何销售分组关联。
+		{ExternalID: 13, ID: 3, Name: "被手动移出", Schedulable: true, Status: "active"},
+	}
+	groups := []storage.RelayGroup{{ID: 1, ExternalID: 1, Status: "active", RateMultiplier: 3}}
+	links := []storage.RelayAccountGroup{{RelayGroupID: 1, RelayAccountID: 1}}
+	state := DynamicMonitorState{SeenAccounts: map[int64]struct{}{11: {}, 13: {}}}
+
+	plan := planDynamicMonitor(config, state, accounts, groups, links)
+	if containsID(plan.Config.Groups[0].AccountExternalIDs, 13) {
+		t.Fatalf("已见过的账号不应被自动加回：%v", plan.Config.Groups[0].AccountExternalIDs)
+	}
+	if _, seen := plan.State.SeenAccounts[13]; !seen {
+		t.Fatal("已见过账号的基线不应被清掉，否则分组关联恢复后会被当作新账号加回")
+	}
+
+	// 分组关联恢复后仍然不能加回。
+	links = append(links, storage.RelayAccountGroup{RelayGroupID: 1, RelayAccountID: 3})
+	plan = planDynamicMonitor(plan.Config, plan.State, accounts, groups, links)
+	if containsID(plan.Config.Groups[0].AccountExternalIDs, 13) {
+		t.Fatalf("分组关联恢复后也不应自动加回：%v", plan.Config.Groups[0].AccountExternalIDs)
+	}
+}
