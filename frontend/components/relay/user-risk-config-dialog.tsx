@@ -232,7 +232,7 @@ export function UserRiskConfigDialog({ open, stationID, onOpenChange, onSaved }:
 		    <div className="grid gap-2.5 sm:grid-cols-2"><NumberField id="risk-lookback" label="风险观察窗口" value={draft.lookback_minutes} suffix="分钟" description="1–60 分钟" help="用于读取注册审计和调用记录的回看范围。例如设置 15 分钟，风险评估只使用最近 15 分钟内的数据；它决定评估覆盖多久，不表示一次调用必须持续这么久。窗口越大，越容易捕获较早的注册/调用行为，也会增加数据量和历史行为影响。" disabled={disabled} onChange={(v) => update("lookback_minutes", v)} /><NumberField id="risk-window" label="并发重叠窗口" value={draft.concurrency_window_seconds} suffix="秒" description="5–300 秒" help="用于判断两个调用是否算“同时发生”。如果两个请求的执行区间重叠，直接视为并发；如果上游没有可靠持续时间，则只要开始时间相差不超过该窗口也视为并发。例如设置 60 秒，两个账号在 60 秒内先后发起请求，会触发同 IP 多账号并发判断。它不是限流时长，也不是风险观察总时长。" disabled={disabled} onChange={(v) => update("concurrency_window_seconds", v)} /></div>
 		  </Section>
 	          <Section icon={Gauge} title="基础分与递增步长" description="达到命中阈值计基础分；之后每增加一个账号或 IP 按步长加分。步长 0 表示不递增。">
-	            <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">{weightFields.map((field) => <NumberField key={field.key} id={`risk-${field.key}`} label={field.label} value={draft[field.key]} suffix={field.suffix} description={field.description} disabled={disabled} onChange={(v) => update(field.key, v)} />)}</div>
+	            <div className="grid gap-2.5 sm:grid-cols-2">{weightFields.map((field) => <NumberField key={field.key} id={`risk-${field.key}`} label={field.label} value={draft[field.key]} suffix={field.suffix} description={field.description} disabled={disabled} onChange={(v) => update(field.key, v)} />)}</div>
 	          </Section>
 	          <Section icon={ListChecks} title="命中阈值" description="数量达到该值时开始计基础分，超过后按递增步长加分。">
 	            <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">{thresholdFields.map((field) => <NumberField key={field.key} id={`risk-${field.key}`} label={field.label} value={draft[field.key]} suffix={field.suffix} description="范围：2–20" disabled={disabled} onChange={(v) => update(field.key, v)} />)}</div>
@@ -241,7 +241,7 @@ export function UserRiskConfigDialog({ open, stationID, onOpenChange, onSaved }:
 	            <div className="rounded-md border border-warning/25 bg-warning/5 px-3 py-2.5"><p className="text-xs font-medium text-warning">自动禁用默认关闭 / 数据不完整时跳过</p><p className="mt-1 text-[11px] leading-4 text-muted-foreground">开启后，普通活跃用户分数达到设定值才会被禁用。</p></div>
 	            <NumberField id="risk-disable-threshold" label="自动禁用风险阈值" value={draft.auto_disable_threshold} suffix="分" description="范围：1–100" disabled={disabled || !draft.auto_disable_enabled} onChange={(v) => update("auto_disable_threshold", v)} />
 	          </Section>
-	          <Section icon={ListChecks} title="场景分数示例" description="示例使用当前基础分、递增步长和命中阈值计算。">
+	          <Section icon={ListChecks} title="场景分数示例" description="示例使用当前基础分、递增步长、命中阈值和自动禁用风险阈值计算；达到阈值的数量取最小值。">
 	            <ExamplesTable examples={response?.examples ?? []} />
 	          </Section>
 	        </> : null}

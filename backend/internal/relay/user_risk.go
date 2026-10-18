@@ -181,6 +181,19 @@ func UserRiskExamples(config UserRiskConfig) []UserRiskExample {
 		}
 		return UserRiskExample{Name: name, Scenario: scenario, Score: score, Recommendation: recommendationForScore(score, config.AutoDisableThreshold)}
 	}
+	thresholdExample := func(name, scenarioPrefix, scenarioSuffix string, baseWeight, incrementWeight, hitThreshold int) UserRiskExample {
+		count, score, reached := minimumObservedForRiskThreshold(baseWeight, incrementWeight, hitThreshold, config.AutoDisableThreshold)
+		if reached {
+			return makeExample(name, fmt.Sprintf("%s %d %s（达到自动禁用风险阈值 %d 分）", scenarioPrefix, count, scenarioSuffix, config.AutoDisableThreshold), score)
+		}
+		maxScore := progressiveRiskScore(baseWeight, incrementWeight, hitThreshold, hitThreshold+userRiskMaxWeight)
+		return UserRiskExample{
+			Name:           name,
+			Scenario:       fmt.Sprintf("%s无法单独达到自动禁用风险阈值 %d 分（单项最高 %d 分）", scenarioPrefix, config.AutoDisableThreshold, maxScore),
+			Score:          maxScore,
+			Recommendation: "需叠加其他风险信号或调整权重",
+		}
+	}
 	registration := func(count int) int {
 		return progressiveRiskScore(config.RegistrationIPWeight, config.RegistrationIPIncrementWeight, config.RegistrationIPMinAccounts, count)
 	}
@@ -194,12 +207,29 @@ func UserRiskExamples(config UserRiskConfig) []UserRiskExample {
 	return []UserRiskExample{
 		makeExample("同 IP 注册", fmt.Sprintf("同一 IP 注册 %d 个账号（命中阈值）", config.RegistrationIPMinAccounts), registration(config.RegistrationIPMinAccounts)),
 		makeExample("同 IP 注册", "同一 IP 注册 5 个账号", registration(5)),
-		makeExample("同 IP 注册", "同一 IP 注册 100 个账号", registration(100)),
+		thresholdExample("同 IP 注册", "同一 IP 注册", "个账号", config.RegistrationIPWeight, config.RegistrationIPIncrementWeight, config.RegistrationIPMinAccounts),
 		makeExample("同 IP 多账号并发", fmt.Sprintf("%d 个账号在 %d 秒窗口同时调用", config.SameIPConcurrentMinUsers, config.ConcurrencyWindowSeconds), concurrentUsers(config.SameIPConcurrentMinUsers)),
-		makeExample("同 IP 多账号并发", "同 IP 20 个账号同时调用", concurrentUsers(20)),
+		thresholdExample("同 IP 多账号并发", "同 IP", "个账号同时调用", config.SameIPConcurrentWeight, config.SameIPConcurrentIncrementWeight, config.SameIPConcurrentMinUsers),
 		makeExample("同账号多 IP 并发", fmt.Sprintf("同账号在 %d 个 IP 上同时调用", config.SameUserMultiIPMinIPs), concurrentIPs(config.SameUserMultiIPMinIPs)),
 		makeExample("并发风险合计", "同 IP 多账号并发 + 同账号多 IP 并发（仅两个信号都命中）", combined),
 	}
+}
+
+func minimumObservedForRiskThreshold(baseWeight, incrementWeight, hitThreshold, riskThreshold int) (int, int, bool) {
+	if hitThreshold < 1 || riskThreshold < 1 || baseWeight <= 0 {
+		return 0, 0, false
+	}
+	if baseWeight >= riskThreshold {
+		score := progressiveRiskScore(baseWeight, incrementWeight, hitThreshold, hitThreshold)
+		return hitThreshold, score, score >= riskThreshold
+	}
+	if incrementWeight <= 0 {
+		return 0, progressiveRiskScore(baseWeight, incrementWeight, hitThreshold, hitThreshold), false
+	}
+	extra := (riskThreshold - baseWeight + incrementWeight - 1) / incrementWeight
+	observed := hitThreshold + extra
+	score := progressiveRiskScore(baseWeight, incrementWeight, hitThreshold, observed)
+	return observed, score, score >= riskThreshold
 }
 
 func progressiveRiskScore(baseWeight, incrementWeight, threshold, observed int) int {

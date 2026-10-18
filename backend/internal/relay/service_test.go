@@ -1083,8 +1083,22 @@ func TestUserRiskConfigValidationAndExamples(t *testing.T) {
 		t.Fatalf("4 concurrent IPs score = %d, want 50", got)
 	}
 	examples := UserRiskExamples(config)
-	if len(examples) < 3 || examples[2].Score != 100 {
-		t.Fatalf("examples should include 100 accounts at 100 points: %#v", examples)
+	if len(examples) < 5 {
+		t.Fatalf("risk examples are incomplete: %#v", examples)
+	}
+	if examples[2].Scenario != "同一 IP 注册 30 个账号（达到自动禁用风险阈值 80 分）" || examples[2].Score != 81 {
+		t.Fatalf("registration threshold example = %#v, want 30 accounts at 81 points", examples[2])
+	}
+	if examples[4].Scenario != "同 IP 11 个账号同时调用（达到自动禁用风险阈值 80 分）" || examples[4].Score != 80 {
+		t.Fatalf("concurrency threshold example = %#v, want 11 accounts at 80 points", examples[4])
+	}
+	config.AutoDisableThreshold = 90
+	examples = UserRiskExamples(config)
+	if examples[2].Scenario != "同一 IP 注册 35 个账号（达到自动禁用风险阈值 90 分）" || examples[2].Score != 91 {
+		t.Fatalf("custom registration threshold example = %#v, want 35 accounts at 91 points", examples[2])
+	}
+	if examples[4].Scenario != "同 IP 13 个账号同时调用（达到自动禁用风险阈值 90 分）" || examples[4].Score != 90 {
+		t.Fatalf("custom concurrency threshold example = %#v, want 13 accounts at 90 points", examples[4])
 	}
 	config.AutoDisableThreshold = 0
 	config = config.Normalize()
