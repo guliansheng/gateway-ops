@@ -90,6 +90,20 @@ func (r *RelayStations) SetDynamicMonitorState(id uint, state string) error {
 	return r.db.Model(&RelayStation{}).Where("id = ?", id).Update("dynamic_monitor_state", state).Error
 }
 
+// SetUserRiskConfig 只写当前中转站的用户风险配置，不影响其它站点策略。
+func (r *RelayStations) SetUserRiskConfig(id uint, config string) error {
+	return r.db.Model(&RelayStation{}).Where("id = ?", id).Update("user_risk_config_json", config).Error
+}
+
+// UserRiskConfigRaw 返回当前中转站保存的用户风险配置 JSON。
+func (r *RelayStations) UserRiskConfigRaw(id uint) (string, error) {
+	var station RelayStation
+	if err := r.db.Select("user_risk_config_json").First(&station, id).Error; err != nil {
+		return "", err
+	}
+	return station.UserRiskConfigJSON, nil
+}
+
 // ReplaceSnapshot 用一次成功同步的完整结果替换站点镜像。映射不随同步删除，
 // 这样分组/渠道临时缺失后恢复时仍保留用户的显式配置。
 // RelaySnapshotLink is intentionally keyed by remote IDs. RelayChannel and RelayGroup

@@ -25,6 +25,8 @@ func registerRelayStations(g *gin.RouterGroup, d *Deps) {
 	gp.GET("/:id/usage/recent", func(c *gin.Context) { relayStationRecentUsage(c, d) })
 	gp.GET("/:id/users", func(c *gin.Context) { relayStationUsers(c, d) })
 	gp.PUT("/:id/users/:user_id/status", func(c *gin.Context) { updateRelayStationUserStatus(c, d) })
+	gp.GET("/:id/user-risk-config", func(c *gin.Context) { relayStationUserRiskConfig(c, d) })
+	gp.PUT("/:id/user-risk-config", func(c *gin.Context) { updateRelayStationUserRiskConfig(c, d) })
 	gp.POST("/:id/users/batch-limits", func(c *gin.Context) { updateRelayStationUserLimits(c, d) })
 	gp.POST("/:id/users/batch-delete", func(c *gin.Context) { deleteRelayStationUsers(c, d) })
 	gp.POST("/:id/accounts/batch-clone", func(c *gin.Context) { batchCloneRelayAccounts(c, d) })
@@ -409,8 +411,39 @@ func updateRelayStation(c *gin.Context, d *Deps) {
 	c.JSON(http.StatusOK, gin.H{"data": stationSummary(station)})
 }
 
-// updateRelayDynamicMonitor 保存“账号动态监测”弹窗里的规则。
-// 规则只对当前中转站的这个功能生效，不写分组字段，也不改动自动调组策略。
+func relayStationUserRiskConfig(c *gin.Context, d *Deps) {
+	id, err := uintParam(c, "id")
+	if err != nil {
+		fail(c, http.StatusBadRequest, err)
+		return
+	}
+	config, err := d.Relay.UserRiskConfig(id)
+	if err != nil {
+		fail(c, http.StatusNotFound, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"config": config, "examples": relay.UserRiskExamples(config)}})
+}
+
+func updateRelayStationUserRiskConfig(c *gin.Context, d *Deps) {
+	id, err := uintParam(c, "id")
+	if err != nil {
+		fail(c, http.StatusBadRequest, err)
+		return
+	}
+	var input relay.UserRiskConfig
+	if err := c.ShouldBindJSON(&input); err != nil {
+		fail(c, http.StatusBadRequest, err)
+		return
+	}
+	config, err := d.Relay.SaveUserRiskConfig(id, input)
+	if err != nil {
+		fail(c, http.StatusBadRequest, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"config": config, "examples": relay.UserRiskExamples(config)}})
+}
+
 func updateRelayDynamicMonitor(c *gin.Context, d *Deps) {
 	id, err := uintParam(c, "id")
 	if err != nil {

@@ -33,6 +33,7 @@ type Scheduler struct {
 	relayRateSyncID       cron.EntryID
 	relaySnapshotSyncID   cron.EntryID
 	dynamicMonitorID      cron.EntryID
+	userRiskID            cron.EntryID
 	dailyBalanceID        cron.EntryID
 	jobsMu                sync.Mutex
 	channelSyncMu         sync.Mutex
@@ -97,6 +98,11 @@ func (s *Scheduler) Start() error {
 		if _, err := s.cron.AddFunc(s.cfg.Retention.Cron, s.runRetention); err != nil {
 			return err
 		}
+	}
+	if entryID, err := s.cron.AddFunc("@every 1m", s.runUserRiskEvaluation); err != nil {
+		return err
+	} else {
+		s.userRiskID = entryID
 	}
 	// 账号动态监测的“超时自动开启”走独立短间隔任务：关闭判断仍由快照同步触发，
 	// 这里只负责把到达设定时间的账号开回来。
@@ -276,6 +282,16 @@ func (s *Scheduler) runRelaySnapshotSync() {
 	defer cancel()
 	if _, _, err := s.relay.SyncAllSnapshots(ctx); err != nil {
 		s.log.Warn("sync relay station snapshots failed", "err", err)
+	}
+}
+
+func (s *Scheduler) runUserRiskEvaluation() {
+	s.relaySyncMu.Lock()
+	defer s.relaySyncMu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	if processed, err := s.relay.EvaluateUserRisksAll(ctx); err != nil {
+		s.log.Warn("relay user risk evaluation failed", "processed", processed, "err", err)
 	}
 }
 

@@ -441,6 +441,8 @@ type RelayStation struct {
 	AutoPriorityRecallMinutes       int    `gorm:"not null;default:180" json:"auto_priority_recall_minutes"`
 	NewAccountModelTypeMatchMode    string `gorm:"size:16;not null;default:keyword" json:"new_account_model_type_match_mode"`
 	NewAccountModelTypeMatchPattern string `gorm:"type:text;not null;default:''" json:"new_account_model_type_match_pattern"`
+	// UserRiskConfigJSON 保存用户风险评分与自动禁用策略，仅作用于当前中转站用户管理。
+	UserRiskConfigJSON string `gorm:"type:text" json:"-"`
 	// DynamicMonitorConfig 保存“账号动态监测”的规则配置（JSON），只对当前中转站生效，
 	// 不写入分组，也不会影响其它站点的策略。
 	DynamicMonitorConfig string `gorm:"type:text" json:"-"`

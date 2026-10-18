@@ -488,6 +488,37 @@ export interface RelayUserManagementPage {
   risk_data_complete: boolean
 }
 
+export interface UserRiskConfig {
+  enabled: boolean
+  lookback_minutes: number
+  concurrency_window_seconds: number
+  registration_ip_weight: number
+  registration_ip_increment_weight: number
+  same_ip_concurrent_weight: number
+  same_ip_concurrent_increment_weight: number
+  same_user_multi_ip_weight: number
+  same_user_multi_ip_increment_weight: number
+  suspicious_email_weight: number
+  new_account_no_usage_weight: number
+  registration_ip_min_accounts: number
+  same_ip_concurrent_min_users: number
+  same_user_multi_ip_min_ips: number
+  auto_disable_enabled: boolean
+  auto_disable_threshold: number
+}
+
+export interface UserRiskExample {
+  name: string
+  scenario: string
+  score: number
+  recommendation: string
+}
+
+export interface RelayUserRiskConfigResponse {
+  config: UserRiskConfig
+  examples: UserRiskExample[]
+}
+
 export interface RelayUserBalanceHistoryItem {
   id: number
   type: string

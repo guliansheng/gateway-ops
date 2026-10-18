@@ -14,6 +14,10 @@ func TestRegisterExposesUserChargeRoutes(t *testing.T) {
 	Register(engine, &Deps{})
 
 	want := map[string]bool{
+		"GET /api/relay-stations/:id/users":                         false,
+		"PUT /api/relay-stations/:id/users/:user_id/status":         false,
+		"GET /api/relay-stations/:id/user-risk-config":              false,
+		"PUT /api/relay-stations/:id/user-risk-config":              false,
 		"PUT /api/relay-stations/:id/accounts/user-charge-excluded": false,
 		"GET /api/dashboard/unlinked-accounts":                      false,
 		"PUT /api/relay-stations/:id/dynamic-monitor":               false,

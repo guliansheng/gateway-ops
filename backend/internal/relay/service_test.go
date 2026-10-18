@@ -1028,3 +1028,93 @@ func TestRemoteAccountDecodesCreatedAt(t *testing.T) {
 		t.Fatalf("created_at = %v, want 2024-05-06T07:08:09Z", account.CreatedAt)
 	}
 }
+func TestAuditRegistrationEmailParsesJSONObject(t *testing.T) {
+	if got := auditRegistrationEmail(json.RawMessage(`{"email":" Example@Gmail.com "}`)); got != "example@gmail.com" {
+		t.Fatalf("email = %q", got)
+	}
+}
+
+func TestUserRiskSignalsDetectSharedIPAndMultiIPConcurrency(t *testing.T) {
+	start := time.Date(2026, 10, 18, 3, 0, 0, 0, time.UTC)
+	events := []riskUsageEvent{
+		{UserID: 1, IPAddress: "203.0.113.1", StartedAt: start, EndedAt: start.Add(10 * time.Second)},
+		{UserID: 2, IPAddress: "203.0.113.1", StartedAt: start.Add(2 * time.Second), EndedAt: start.Add(12 * time.Second)},
+		{UserID: 1, IPAddress: "203.0.113.2", StartedAt: start.Add(3 * time.Second), EndedAt: start.Add(8 * time.Second)},
+	}
+	signals := userRiskSignalsFromUsage(events, 5*time.Second)
+	if signals.SameIPConcurrentUsers[1] != 2 || signals.SameIPConcurrentUsers[2] != 2 {
+		t.Fatalf("same-ip users = %#v", signals.SameIPConcurrentUsers)
+	}
+	if signals.SameUserConcurrentIPs[1] != 2 {
+		t.Fatalf("same-user IPs = %#v", signals.SameUserConcurrentIPs)
+	}
+}
+func TestUserRiskConcurrentCountUsesPeakNotOverlapChain(t *testing.T) {
+	start := time.Date(2026, 10, 18, 3, 0, 0, 0, time.UTC)
+	events := []riskUsageEvent{
+		{UserID: 1, IPAddress: "203.0.113.10", StartedAt: start, EndedAt: start.Add(3 * time.Second)},
+		{UserID: 2, IPAddress: "203.0.113.10", StartedAt: start.Add(2 * time.Second), EndedAt: start.Add(5 * time.Second)},
+		{UserID: 3, IPAddress: "203.0.113.10", StartedAt: start.Add(4 * time.Second), EndedAt: start.Add(7 * time.Second)},
+	}
+	signals := userRiskSignalsFromUsage(events, 0)
+	for userID, count := range signals.SameIPConcurrentUsers {
+		if count != 2 {
+			t.Fatalf("user %d concurrent peak = %d, want 2 for chained overlaps", userID, count)
+		}
+	}
+}
+
+func TestUserRiskConfigValidationAndExamples(t *testing.T) {
+	config := DefaultUserRiskConfig()
+	if err := config.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct{ observed, want int }{{2, 25}, {5, 31}, {100, 100}}
+	for _, test := range tests {
+		got := progressiveRiskScore(config.RegistrationIPWeight, config.RegistrationIPIncrementWeight, config.RegistrationIPMinAccounts, test.observed)
+		if got != test.want {
+			t.Errorf("same-IP registrations=%d score=%d, want %d", test.observed, got, test.want)
+		}
+	}
+	if got := progressiveRiskScore(config.SameIPConcurrentWeight, config.SameIPConcurrentIncrementWeight, config.SameIPConcurrentMinUsers, 4); got != 45 {
+		t.Fatalf("4 concurrent users score = %d, want 45", got)
+	}
+	if got := progressiveRiskScore(config.SameUserMultiIPWeight, config.SameUserMultiIPIncrementWeight, config.SameUserMultiIPMinIPs, 4); got != 50 {
+		t.Fatalf("4 concurrent IPs score = %d, want 50", got)
+	}
+	examples := UserRiskExamples(config)
+	if len(examples) < 3 || examples[2].Score != 100 {
+		t.Fatalf("examples should include 100 accounts at 100 points: %#v", examples)
+	}
+	config.AutoDisableThreshold = 0
+	config = config.Normalize()
+	if err := config.Validate(); err != nil {
+		t.Fatal("normalized default should validate: ", err)
+	}
+	config.LookbackMinutes = 61
+	if err := config.Validate(); err == nil {
+		t.Fatal("out-of-range lookback was accepted")
+	}
+}
+
+func TestScoreUserRiskEscalatesWithSameIPAccountCount(t *testing.T) {
+	config := DefaultUserRiskConfig()
+	user := remoteUser{ID: 42, Email: "person@example.com", CreatedAt: time.Now().Add(-48 * time.Hour)}
+	signals := userRiskSignals{SameIPConcurrentUsers: map[int64]int{}, SameUserConcurrentIPs: map[int64]int{}}
+	score, level, _ := scoreUserRisk(user, registrationIPInfo{IP: "203.0.113.10", Count: 100}, UserUsageStats{}, signals, config)
+	if score != 100 || level != "high" {
+		t.Fatalf("100 same-IP registrations score = %d/%s, want 100/high", score, level)
+	}
+}
+func TestNewAccountNoUsageSignalRespectsLastUsedAt(t *testing.T) {
+	config := DefaultUserRiskConfig()
+	config.NewAccountNoUsageWeight = 12
+	created := time.Now().Add(-time.Hour)
+	lastUsed := created.Add(30 * time.Minute)
+	user := remoteUser{ID: 8, Email: "fresh@example.com", CreatedAt: created, LastUsedAt: &lastUsed}
+	signals := userRiskSignals{SameIPConcurrentUsers: map[int64]int{}, SameUserConcurrentIPs: map[int64]int{}}
+	score, _, reasons := scoreUserRisk(user, registrationIPInfo{}, UserUsageStats{}, signals, config)
+	if score != 0 || len(reasons) != 0 {
+		t.Fatalf("last-used account got false no-usage risk: score=%d reasons=%v", score, reasons)
+	}
+}

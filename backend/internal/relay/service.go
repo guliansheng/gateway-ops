@@ -72,6 +72,8 @@ type Service struct {
 	publicPricingCache map[uint]publicModelPricingCacheEntry
 	userEmailMu        sync.Mutex
 	userEmailCache     map[string]userEmailCacheEntry
+	userRiskMu         sync.Mutex
+	userRiskCache      map[string]userRiskCacheEntry
 }
 
 func NewService(stations *storage.RelayStations, cipher *crypto.Cipher, deps ...any) *Service {
@@ -96,6 +98,7 @@ func NewService(stations *storage.RelayStations, cipher *crypto.Cipher, deps ...
 		publicMonitorCache: make(map[uint]publicMonitorCacheEntry),
 		publicPricingCache: make(map[uint]publicModelPricingCacheEntry),
 		userEmailCache:     make(map[string]userEmailCacheEntry),
+		userRiskCache:      make(map[string]userRiskCacheEntry),
 	}
 }
 
@@ -1210,10 +1213,12 @@ type remoteUserPage struct {
 }
 
 type remoteAuditLog struct {
-	CreatedAt  time.Time `json:"created_at"`
-	Action     string    `json:"action"`
-	ClientIP   string    `json:"client_ip"`
-	StatusCode int       `json:"status_code"`
+	ID          int64           `json:"id"`
+	CreatedAt   time.Time       `json:"created_at"`
+	Action      string          `json:"action"`
+	ClientIP    string          `json:"client_ip"`
+	StatusCode  int             `json:"status_code"`
+	RequestBody json.RawMessage `json:"request_body"`
 }
 
 type remoteAuditLogPage struct {
@@ -1272,7 +1277,11 @@ type remoteUsage struct {
 }
 
 type remoteUsagePage struct {
-	Items []remoteUsage `json:"items"`
+	Items    []remoteUsage `json:"items"`
+	Total    int           `json:"total"`
+	Page     int           `json:"page"`
+	Pages    int           `json:"pages"`
+	PageSize int           `json:"page_size"`
 }
 
 type remoteUsageStats struct {
@@ -2285,6 +2294,11 @@ func (s *Service) Users(ctx context.Context, stationID uint, query UserListQuery
 	query.RangeName = strings.TrimSpace(query.RangeName)
 	query.RiskLevel = strings.ToLower(strings.TrimSpace(query.RiskLevel))
 	query.RegistrationIP = strings.TrimSpace(query.RegistrationIP)
+	if query.RegistrationIP != "" {
+		if normalized, _ := normalizeUsageIPAddress(query.RegistrationIP); normalized != "" {
+			query.RegistrationIP = normalized
+		}
+	}
 	if query.RangeName == "" {
 		query.RangeName = "today"
 	}
@@ -2310,27 +2324,26 @@ func (s *Service) Users(ctx context.Context, stationID uint, query UserListQuery
 	}
 	users := filterUsersBySearch(allUsers, query.Search)
 	usage, failedUsers := s.userUsage(ctx, stationID, station.BaseURL, apiKey, users, query.RangeName, query.Since)
-	registrationIPs, riskDataComplete := s.registrationIPs(ctx, station.BaseURL, apiKey, allUsers)
+	registrationIPs, auditComplete := s.registrationIPs(ctx, station.BaseURL, apiKey, allUsers)
+	riskConfig := ParseUserRiskConfig(station.UserRiskConfigJSON)
+	riskSignals, usageRiskComplete := s.userRiskSignals(ctx, stationID, station.BaseURL, apiKey, riskConfig)
+	riskDataComplete := auditComplete && usageRiskComplete && failedUsers == 0
 
 	items := make([]UserManagementItem, 0, len(users))
 	for _, user := range users {
 		userUsage := usage[user.ID]
-		items = append(items, UserManagementItem{
+		item := UserManagementItem{
 			ID: user.ID, Email: user.Email, Username: user.Username, Role: user.Role,
 			Balance: user.Balance, Usage: userUsage.UserCharge, UsageTotalTokens: userUsage.TotalTokens, Concurrency: user.Concurrency,
 			CurrentConcurrency: user.CurrentConcurrency, RPMLimit: user.RPMLimit, Status: user.Status,
 			LastUsedAt: user.LastUsedAt, CreatedAt: user.CreatedAt,
-		})
-		if info, ok := registrationIPs[user.ID]; ok {
-			item := &items[len(items)-1]
-			item.RegistrationIP = info.IP
-			item.RegistrationIPCount = info.Count
-			item.RegistrationBurstCount = info.BurstCount
-			item.RiskScore, item.RiskLevel, item.RiskReasons = userRiskScore(user, info, usage[user.ID])
-		} else {
-			item := &items[len(items)-1]
-			item.RiskScore, item.RiskLevel, item.RiskReasons = userRiskScore(user, registrationIPInfo{}, usage[user.ID])
 		}
+		info := registrationIPs[user.ID]
+		item.RegistrationIP = info.IP
+		item.RegistrationIPCount = info.Count
+		item.RegistrationBurstCount = info.BurstCount
+		item.RiskScore, item.RiskLevel, item.RiskReasons = scoreUserRisk(user, info, userUsage, riskSignals, riskConfig)
+		items = append(items, item)
 	}
 	if query.RegistrationIP != "" {
 		filtered := items[:0]
@@ -2380,9 +2393,8 @@ type registrationIPInfo struct {
 	BurstCount int
 }
 
-// registrationIPs joins successful auth.register audit events to users by the
-// same short creation-time window used by sub2api-risk-monitor. The endpoint
-// supports action filtering, so this remains small even on busy deployments.
+// registrationIPs 优先用注册审计 request_body 中的邮箱精确绑定用户；
+// 只有旧审计没有邮箱时才使用创建时间近邻回退，避免高并发注册被错误串号。
 func (s *Service) registrationIPs(ctx context.Context, baseURL, apiKey string, users []remoteUser) (map[int64]registrationIPInfo, bool) {
 	logs := make([]remoteAuditLog, 0, 500)
 	complete := true
@@ -2400,15 +2412,58 @@ func (s *Service) registrationIPs(ctx context.Context, baseURL, apiKey string, u
 			complete = false
 		}
 	}
-	counts := make(map[string]int)
-	burst := make(map[string]map[int64]int)
-	matched := make(map[int64]string)
+
+	userByEmail := make(map[string]remoteUser, len(users))
 	for _, user := range users {
+		if email := normalizeRiskEmail(user.Email); email != "" {
+			userByEmail[email] = user
+		}
+	}
+	matched := make(map[int64]remoteAuditLog)
+	matchedDistance := make(map[int64]time.Duration)
+	for _, log := range logs {
+		if log.StatusCode < 200 || log.StatusCode >= 300 || strings.TrimSpace(log.ClientIP) == "" {
+			continue
+		}
+		email := auditRegistrationEmail(log.RequestBody)
+		if email == "" {
+			continue
+		}
+		user, ok := userByEmail[email]
+		if !ok {
+			continue
+		}
+		distance := absDuration(log.CreatedAt.Sub(user.CreatedAt))
+		_, exists := matched[user.ID]
+		if exists && distance >= matchedDistance[user.ID] {
+			continue
+		}
+		matched[user.ID] = log
+		matchedDistance[user.ID] = distance
+	}
+
+	// 兼容没有 request_body 的旧审计：只为尚未精确匹配的用户做近邻回退，
+	// 每条审计日志最多归属一个用户。
+	usedFallbackLogs := make(map[int64]struct{})
+	for _, log := range matched {
+		if log.ID > 0 {
+			usedFallbackLogs[log.ID] = struct{}{}
+		}
+	}
+	for _, user := range users {
+		if _, exists := matched[user.ID]; exists {
+			continue
+		}
 		var best remoteAuditLog
 		bestDistance := time.Duration(1<<63 - 1)
 		for _, log := range logs {
-			if log.StatusCode < 200 || log.StatusCode >= 300 || strings.TrimSpace(log.ClientIP) == "" {
+			if log.StatusCode < 200 || log.StatusCode >= 300 || strings.TrimSpace(log.ClientIP) == "" || auditRegistrationEmail(log.RequestBody) != "" {
 				continue
+			}
+			if log.ID > 0 {
+				if _, exists := usedFallbackLogs[log.ID]; exists {
+					continue
+				}
 			}
 			delta := log.CreatedAt.Sub(user.CreatedAt)
 			if delta < -3*time.Second || delta > 15*time.Second {
@@ -2418,19 +2473,31 @@ func (s *Service) registrationIPs(ctx context.Context, baseURL, apiKey string, u
 				best, bestDistance = log, distance
 			}
 		}
-		if best.ClientIP == "" {
+		if best.ClientIP != "" {
+			matched[user.ID] = best
+			if best.ID > 0 {
+				usedFallbackLogs[best.ID] = struct{}{}
+			}
+		}
+	}
+
+	counts := make(map[string]int)
+	burst := make(map[string]map[int64]int)
+	for _, log := range matched {
+		ip, _ := normalizeUsageIPAddress(log.ClientIP)
+		if ip == "" {
 			continue
 		}
-		matched[user.ID] = best.ClientIP
-		counts[best.ClientIP]++
-		minute := best.CreatedAt.Truncate(time.Minute).Unix()
-		if burst[best.ClientIP] == nil {
-			burst[best.ClientIP] = make(map[int64]int)
+		counts[ip]++
+		minute := log.CreatedAt.Truncate(time.Minute).Unix()
+		if burst[ip] == nil {
+			burst[ip] = make(map[int64]int)
 		}
-		burst[best.ClientIP][minute]++
+		burst[ip][minute]++
 	}
 	result := make(map[int64]registrationIPInfo, len(matched))
-	for userID, ip := range matched {
+	for userID, log := range matched {
+		ip, _ := normalizeUsageIPAddress(log.ClientIP)
 		peak := 0
 		for _, count := range burst[ip] {
 			if count > peak {
@@ -2442,6 +2509,27 @@ func (s *Service) registrationIPs(ctx context.Context, baseURL, apiKey string, u
 	return result, complete
 }
 
+func normalizeRiskEmail(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func auditRegistrationEmail(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var body struct {
+		Email string `json:"email"`
+	}
+	if json.Unmarshal(raw, &body) == nil && strings.TrimSpace(body.Email) != "" {
+		return normalizeRiskEmail(body.Email)
+	}
+	var encoded string
+	if json.Unmarshal(raw, &encoded) == nil && strings.TrimSpace(encoded) != "" {
+		return auditRegistrationEmail(json.RawMessage(encoded))
+	}
+	return ""
+}
+
 func absDuration(value time.Duration) time.Duration {
 	if value < 0 {
 		return -value
@@ -2449,6 +2537,7 @@ func absDuration(value time.Duration) time.Duration {
 	return value
 }
 
+// userRiskScore 保留旧签名供历史测试和外部调用兼容；新用户列表使用 scoreUserRisk。
 func userRiskScore(user remoteUser, info registrationIPInfo, usage UserUsageStats) (int, string, []string) {
 	score := 0
 	reasons := make([]string, 0, 3)
