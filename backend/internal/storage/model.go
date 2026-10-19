@@ -458,6 +458,22 @@ type RelayStation struct {
 
 func (RelayStation) TableName() string { return "relay_stations" }
 
+// RelayUserAutoDisableLog 保存一次成功的自动禁用结果，原因字段是当时计算出的风险信号快照。
+type RelayUserAutoDisableLog struct {
+	ID             uint      `gorm:"primaryKey" json:"id"`
+	RelayStationID uint      `gorm:"not null;index" json:"relay_station_id"`
+	UserID         int64     `gorm:"not null;index" json:"user_id"`
+	Email          string    `gorm:"size:256;not null" json:"email"`
+	Username       string    `gorm:"size:256" json:"username,omitempty"`
+	RiskScore      int       `gorm:"not null" json:"risk_score"`
+	Threshold      int       `gorm:"not null" json:"threshold"`
+	ReasonsJSON    string    `gorm:"type:text;not null" json:"-"`
+	TriggeredAt    time.Time `gorm:"not null;index" json:"triggered_at"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+func (RelayUserAutoDisableLog) TableName() string { return "relay_user_auto_disable_logs" }
+
 // RelayGroup 是从中转站管理端同步的销售分组快照。
 type RelayGroup struct {
 	ID                   uint      `gorm:"primaryKey" json:"id"`

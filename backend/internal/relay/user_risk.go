@@ -447,37 +447,71 @@ func (s *Service) userRiskSignals(ctx context.Context, stationID uint, baseURL, 
 	return signals, complete
 }
 
-func scoreUserRisk(user remoteUser, info registrationIPInfo, usage UserUsageStats, signals userRiskSignals, config UserRiskConfig) (int, string, []string) {
+// UserRiskReason 是一次风险命中的可解释快照，记录触发条件、观察值和具体算式。
+type UserRiskReason struct {
+	Key            string `json:"key"`
+	Label          string `json:"label"`
+	Condition      string `json:"condition"`
+	Observed       int    `json:"observed,omitempty"`
+	ObservedValue  string `json:"observed_value,omitempty"`
+	Threshold      int    `json:"threshold,omitempty"`
+	BaseScore      int    `json:"base_score,omitempty"`
+	IncrementScore int    `json:"increment_score,omitempty"`
+	Score          int    `json:"score"`
+	Calculation    string `json:"calculation"`
+}
+
+type userRiskEvaluation struct {
+	Score   int
+	Level   string
+	Reasons []string
+	Details []UserRiskReason
+}
+
+func evaluateUserRisk(user remoteUser, info registrationIPInfo, usage UserUsageStats, signals userRiskSignals, config UserRiskConfig) userRiskEvaluation {
 	config = config.Normalize()
 	if !config.Enabled {
-		return 0, "normal", nil
+		return userRiskEvaluation{Score: 0, Level: "normal"}
 	}
 	score := 0
 	reasons := make([]string, 0, 5)
-	add := func(weight int, reason string) {
+	details := make([]UserRiskReason, 0, 5)
+	addQuantity := func(key, label string, observed, threshold, base, increment int, unit, condition string) {
+		itemScore := progressiveRiskScore(base, increment, threshold, observed)
+		if itemScore <= 0 {
+			return
+		}
+		score += itemScore
+		reasons = append(reasons, fmt.Sprintf("%s：%d %s，基础 %d 分，递增 %d 分/%s（+%d）", label, observed, unit, base, increment, unit, itemScore))
+		details = append(details, UserRiskReason{
+			Key: key, Label: label, Condition: condition, Observed: observed, Threshold: threshold,
+			BaseScore: base, IncrementScore: increment, Score: itemScore,
+			Calculation: fmt.Sprintf("min(100, %d + max(%d - %d, 0) × %d) = %d 分", base, observed, threshold, increment, itemScore),
+		})
+	}
+	addBinary := func(key, label, condition, observedValue string, weight int) {
 		if weight <= 0 {
 			return
 		}
 		score += weight
-		reasons = append(reasons, fmt.Sprintf("%s（+%d）", reason, weight))
+		reasons = append(reasons, fmt.Sprintf("%s（+%d）", label, weight))
+		details = append(details, UserRiskReason{Key: key, Label: label, Condition: condition, Observed: 1, ObservedValue: observedValue, Threshold: 1, BaseScore: weight, Score: weight, Calculation: fmt.Sprintf("命中 + %d 分", weight)})
 	}
 	if count := info.Count; count >= config.RegistrationIPMinAccounts {
-		riskScore := progressiveRiskScore(config.RegistrationIPWeight, config.RegistrationIPIncrementWeight, config.RegistrationIPMinAccounts, count)
-		add(riskScore, fmt.Sprintf("同注册 IP：%d 个账号，基础 %d 分，递增 %d 分/个", count, config.RegistrationIPWeight, config.RegistrationIPIncrementWeight))
+		addQuantity("registration_ip", "同注册 IP", count, config.RegistrationIPMinAccounts, config.RegistrationIPWeight, config.RegistrationIPIncrementWeight, "个账号", fmt.Sprintf("同一注册 IP 的账号数 ≥ %d", config.RegistrationIPMinAccounts))
 	}
 	if users := signals.SameIPConcurrentUsers[user.ID]; users >= config.SameIPConcurrentMinUsers {
-		riskScore := progressiveRiskScore(config.SameIPConcurrentWeight, config.SameIPConcurrentIncrementWeight, config.SameIPConcurrentMinUsers, users)
-		add(riskScore, fmt.Sprintf("同 IP 同时调用：%d 个账号，基础 %d 分，递增 %d 分/个", users, config.SameIPConcurrentWeight, config.SameIPConcurrentIncrementWeight))
+		addQuantity("same_ip_concurrent", "同 IP 同时调用", users, config.SameIPConcurrentMinUsers, config.SameIPConcurrentWeight, config.SameIPConcurrentIncrementWeight, "个账号", fmt.Sprintf("同一 IP 在 %d 秒并发窗口内的账号数 ≥ %d", config.ConcurrencyWindowSeconds, config.SameIPConcurrentMinUsers))
 	}
 	if ips := signals.SameUserConcurrentIPs[user.ID]; ips >= config.SameUserMultiIPMinIPs {
-		riskScore := progressiveRiskScore(config.SameUserMultiIPWeight, config.SameUserMultiIPIncrementWeight, config.SameUserMultiIPMinIPs, ips)
-		add(riskScore, fmt.Sprintf("同账号同时使用：%d 个 IP，基础 %d 分，递增 %d 分/IP", ips, config.SameUserMultiIPWeight, config.SameUserMultiIPIncrementWeight))
+		addQuantity("same_user_multi_ip", "同账号同时使用", ips, config.SameUserMultiIPMinIPs, config.SameUserMultiIPWeight, config.SameUserMultiIPIncrementWeight, "个 IP", fmt.Sprintf("同一账号在 %d 秒并发窗口内使用的 IP 数 ≥ %d", config.ConcurrencyWindowSeconds, config.SameUserMultiIPMinIPs))
 	}
 	if suspiciousEmail(user.Email) {
-		add(config.SuspiciousEmailWeight, "疑似机器注册邮箱")
+		addBinary("suspicious_email", "疑似机器注册邮箱", "邮箱为 Gmail，且本地部分按 . 或 _ 分成两段、每段至少 2 个字符，第二段长度至少 5 且包含数字", "命中（1）", config.SuspiciousEmailWeight)
 	}
 	if time.Since(user.CreatedAt) <= 24*time.Hour && user.LastUsedAt == nil && usage.TotalTokens == 0 {
-		add(config.NewAccountNoUsageWeight, "新账号暂无 API 请求")
+		observed := fmt.Sprintf("创建时间 %s；last_used_at 为空；观察窗口 Token = %d", user.CreatedAt.Format(time.RFC3339), usage.TotalTokens)
+		addBinary("new_account_no_usage", "新账号暂无 API 请求", "账号创建不超过 24 小时、没有最后使用时间记录，且风险观察窗口内 Token 总数为 0", observed, config.NewAccountNoUsageWeight)
 	}
 	if score > userRiskMaxWeight {
 		score = userRiskMaxWeight
@@ -491,12 +525,17 @@ func scoreUserRisk(user remoteUser, info registrationIPInfo, usage UserUsageStat
 	case score >= 25:
 		level = "low"
 	}
-	return score, level, reasons
+	return userRiskEvaluation{Score: score, Level: level, Reasons: reasons, Details: details}
+}
+
+func scoreUserRisk(user remoteUser, info registrationIPInfo, usage UserUsageStats, signals userRiskSignals, config UserRiskConfig) (int, string, []string) {
+	evaluation := evaluateUserRisk(user, info, usage, signals, config)
+	return evaluation.Score, evaluation.Level, evaluation.Reasons
 }
 
 var errRiskDataIncomplete = errors.New("用户风险数据不完整，跳过自动禁用")
 
-func (s *Service) autoDisableRiskUsers(ctx context.Context, stationID uint, station *storage.RelayStation, users []remoteUser, scores map[int64]int, config UserRiskConfig, complete bool) error {
+func (s *Service) autoDisableRiskUsers(ctx context.Context, stationID uint, station *storage.RelayStation, users []remoteUser, evaluations map[int64]userRiskEvaluation, config UserRiskConfig, complete bool) error {
 	if !config.AutoDisableEnabled {
 		return nil
 	}
@@ -511,12 +550,23 @@ func (s *Service) autoDisableRiskUsers(ctx context.Context, stationID uint, stat
 		if strings.EqualFold(strings.TrimSpace(user.Role), "admin") || !strings.EqualFold(strings.TrimSpace(user.Status), "active") {
 			continue
 		}
-		if scores[user.ID] < config.AutoDisableThreshold {
+		evaluation := evaluations[user.ID]
+		if evaluation.Score < config.AutoDisableThreshold {
 			continue
 		}
 		endpoint := fmt.Sprintf("%s/api/v1/admin/users/%d", strings.TrimRight(station.BaseURL, "/"), user.ID)
 		if err := s.put(ctx, endpoint, apiKey, map[string]any{"status": "disabled"}); err != nil {
 			return fmt.Errorf("自动禁用用户 %d 失败: %w", user.ID, err)
+		}
+		reasonsJSON, err := json.Marshal(evaluation.Details)
+		if err != nil {
+			return fmt.Errorf("编码自动禁用用户 %d 的风险原因失败: %w", user.ID, err)
+		}
+		if err := s.stations.RecordUserAutoDisableLog(&storage.RelayUserAutoDisableLog{
+			RelayStationID: stationID, UserID: user.ID, Email: user.Email, Username: user.Username,
+			RiskScore: evaluation.Score, Threshold: config.AutoDisableThreshold, ReasonsJSON: string(reasonsJSON), TriggeredAt: time.Now().UTC(),
+		}); err != nil {
+			return fmt.Errorf("用户 %d 已自动禁用，但写入自动禁用记录失败: %w", user.ID, err)
 		}
 	}
 	return nil
@@ -541,16 +591,26 @@ func (s *Service) EvaluateUserRisks(ctx context.Context, stationID uint) error {
 	}
 	registrationIPs, auditComplete := s.registrationIPs(ctx, station.BaseURL, apiKey, users)
 	signals, usageComplete := s.userRiskSignals(ctx, stationID, station.BaseURL, apiKey, config)
-	complete := auditComplete && usageComplete
-	emptyUsage := UserUsageStats{}
-	scores := make(map[int64]int, len(users))
+	usageSince := time.Now().Add(-time.Duration(config.LookbackMinutes) * time.Minute)
+	usageUntil := time.Now()
+	usageIDs := make(map[int64]struct{})
+	for _, user := range users {
+		isAdmin := strings.EqualFold(strings.TrimSpace(user.Role), "admin")
+		isActive := strings.EqualFold(strings.TrimSpace(user.Status), "active")
+		isNew := time.Since(user.CreatedAt) <= 24*time.Hour
+		if !isAdmin && isActive && isNew && user.LastUsedAt == nil {
+			usageIDs[user.ID] = struct{}{}
+		}
+	}
+	userUsage := make(map[int64]UserUsageStats, len(users))
+	failedUsers := s.fetchUserUsageStats(ctx, station.BaseURL, apiKey, usageSince, usageUntil, usageIDs, userUsage)
+	complete := auditComplete && usageComplete && failedUsers == 0
+	evaluations := make(map[int64]userRiskEvaluation, len(users))
 	for _, user := range users {
 		info := registrationIPs[user.ID]
-		score, _, _ := scoreUserRisk(user, info, emptyUsage, signals, config)
-		scores[user.ID] = score
+		evaluations[user.ID] = evaluateUserRisk(user, info, userUsage[user.ID], signals, config)
 	}
-	return s.autoDisableRiskUsers(ctx, stationID, station, users, scores, config, complete)
-	return s.autoDisableRiskUsers(ctx, stationID, station, users, scores, config, complete)
+	return s.autoDisableRiskUsers(ctx, stationID, station, users, evaluations, config, complete)
 }
 
 func (s *Service) EvaluateUserRisksAll(ctx context.Context) (int, error) {

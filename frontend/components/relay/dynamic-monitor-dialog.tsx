@@ -1,13 +1,14 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react"
-import { Activity, Layers3, Power, Plus, RefreshCw, Search, SlidersHorizontal, Trash2, Zap } from "lucide-react"
+import { Activity, ChevronDown, Layers3, Power, Plus, RefreshCw, Search, SlidersHorizontal, Trash2, Zap } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Switch } from "@/components/ui/switch"
 import type { RelayAccountView, RelayDynamicMonitorConfig, RelayDynamicMonitorState, RelayGroupView } from "@/lib/api-types"
 import { relativeTime } from "@/lib/format"
@@ -167,19 +168,20 @@ function RuleGroupCard({
   onRemove: () => void
 }) {
   const [query, setQuery] = useState("")
-  const [groupFilter, setGroupFilter] = useState("all")
+  const [groupFilterIDs, setGroupFilterIDs] = useState<number[]>([])
   const [onlySelected, setOnlySelected] = useState(false)
   const selectedAccountIDs = useMemo(() => new Set(draft.selectedIDs), [draft.selectedIDs])
+  const selectedGroups = useMemo(() => groups.filter((group) => groupFilterIDs.includes(group.external_id)), [groupFilterIDs, groups])
 
   const visibleAccounts = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase()
     return accounts.filter((account) => {
       if (onlySelected && !selectedAccountIDs.has(account.external_id)) return false
-      if (groupFilter !== "all" && !account.current_groups.some((group) => String(group.external_id) === groupFilter)) return false
+      if (groupFilterIDs.length > 0 && !account.current_groups.some((group) => groupFilterIDs.includes(group.external_id))) return false
       if (needle !== "" && !account.name.toLocaleLowerCase().includes(needle)) return false
       return true
     })
-  }, [accounts, groupFilter, query, onlySelected, selectedAccountIDs])
+  }, [accounts, groupFilterIDs, query, onlySelected, selectedAccountIDs])
 
   function toggleAllVisible() {
     const visibleIDs = visibleAccounts.filter((account) => !claimed.has(account.external_id)).map((account) => account.external_id)
@@ -247,13 +249,36 @@ function RuleGroupCard({
           <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
           <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="筛选账号名称" aria-label={`规则组 ${index + 1} 按账号名称筛选`} className="h-8 w-40 pl-8 text-xs" />
         </div>
-        <Select value={groupFilter} onValueChange={setGroupFilter}>
-          <SelectTrigger className="h-8 w-44 text-xs" aria-label={`规则组 ${index + 1} 按销售分组筛选`}><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">全部分组</SelectItem>
-            {groups.map((group) => <SelectItem key={group.external_id} value={String(group.external_id)}>{group.name}</SelectItem>)}
-          </SelectContent>
-        </Select>
+        {/* modal 让浮层自建滚动锁（与 Select 一致）；否则外层 Dialog 的 RemoveScroll 会吃掉列表里的滚轮事件。 */}
+        <Popover modal>
+          <PopoverTrigger asChild>
+            <Button type="button" variant="outline" size="sm" className="h-8 w-44 justify-between gap-2 px-2.5 text-xs font-normal" aria-label={`规则组 ${index + 1} 按销售分组筛选`}>
+              <span className="truncate">{selectedGroups.length === 0 ? "全部分组" : selectedGroups.length === 1 ? selectedGroups[0].name : `已选 ${selectedGroups.length} 个分组`}</span>
+              <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-64 p-2" align="start">
+            <div className="flex items-center justify-between gap-2 px-1 pb-1.5">
+              <span className="text-xs font-medium text-foreground">按销售分组筛选</span>
+              {selectedGroups.length > 0 ? <button type="button" className="text-[11px] text-muted-foreground hover:text-foreground" onClick={() => setGroupFilterIDs([])}>清除</button> : null}
+            </div>
+            <p className="px-1 pb-1.5 text-[11px] leading-4 text-muted-foreground">可多选，账号命中任一分组即可显示</p>
+            <div className="max-h-52 space-y-1 overflow-y-auto pr-1">
+              {groups.length === 0 ? <p className="px-1 py-4 text-center text-xs text-muted-foreground">暂无销售分组</p> : groups.map((group) => {
+                const checked = groupFilterIDs.includes(group.external_id)
+                return (
+                  <label key={group.external_id} className={cn("flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs transition-colors hover:bg-muted/50", checked && "bg-brand/5 text-foreground")}>
+                    <Checkbox checked={checked} onCheckedChange={(value) => setGroupFilterIDs((current) => {
+                      if (value === true) return current.includes(group.external_id) ? current : [...current, group.external_id]
+                      return current.filter((id) => id !== group.external_id)
+                    })} />
+                    <span className="min-w-0 truncate" title={group.name}>{group.name}</span>
+                  </label>
+                )
+              })}
+            </div>
+          </PopoverContent>
+        </Popover>
         <div className="flex h-8 items-center gap-1.5">
           <Switch id={`${draft.key}-only-selected`} checked={onlySelected} onCheckedChange={setOnlySelected} aria-label={`规则组 ${index + 1} 仅显示本组已选账号`} />
           <Label htmlFor={`${draft.key}-only-selected`} className="cursor-pointer whitespace-nowrap text-xs">仅显示本组已选</Label>

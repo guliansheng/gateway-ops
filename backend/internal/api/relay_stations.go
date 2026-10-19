@@ -27,6 +27,7 @@ func registerRelayStations(g *gin.RouterGroup, d *Deps) {
 	gp.PUT("/:id/users/:user_id/status", func(c *gin.Context) { updateRelayStationUserStatus(c, d) })
 	gp.GET("/:id/user-risk-config", func(c *gin.Context) { relayStationUserRiskConfig(c, d) })
 	gp.PUT("/:id/user-risk-config", func(c *gin.Context) { updateRelayStationUserRiskConfig(c, d) })
+	gp.GET("/:id/user-risk-auto-disable-logs", func(c *gin.Context) { relayStationUserRiskAutoDisableLogs(c, d) })
 	gp.POST("/:id/users/batch-limits", func(c *gin.Context) { updateRelayStationUserLimits(c, d) })
 	gp.POST("/:id/users/batch-delete", func(c *gin.Context) { deleteRelayStationUsers(c, d) })
 	gp.POST("/:id/accounts/batch-clone", func(c *gin.Context) { batchCloneRelayAccounts(c, d) })
@@ -442,6 +443,60 @@ func updateRelayStationUserRiskConfig(c *gin.Context, d *Deps) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{"config": config, "examples": relay.UserRiskExamples(config)}})
+}
+
+type relayUserAutoDisableLogView struct {
+	ID          uint                   `json:"id"`
+	UserID      int64                  `json:"user_id"`
+	Email       string                 `json:"email"`
+	Username    string                 `json:"username,omitempty"`
+	RiskScore   int                    `json:"risk_score"`
+	Threshold   int                    `json:"threshold"`
+	Reasons     []relay.UserRiskReason `json:"reasons"`
+	TriggeredAt time.Time              `json:"triggered_at"`
+}
+
+func relayStationUserRiskAutoDisableLogs(c *gin.Context, d *Deps) {
+	id, err := uintParam(c, "id")
+	if err != nil {
+		fail(c, http.StatusBadRequest, err)
+		return
+	}
+	limit := 100
+	if raw := c.Query("limit"); raw != "" {
+		limit, err = strconv.Atoi(raw)
+		if err != nil || limit < 1 {
+			fail(c, http.StatusBadRequest, errors.New("limit 必须是正整数"))
+			return
+		}
+	}
+	config, err := d.Relay.UserRiskConfig(id)
+	if err != nil {
+		fail(c, http.StatusNotFound, err)
+		return
+	}
+	logs, err := d.RelayStations.ListUserAutoDisableLogs(id, limit)
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err)
+		return
+	}
+	items := make([]relayUserAutoDisableLogView, 0, len(logs))
+	for _, item := range logs {
+		reasons := make([]relay.UserRiskReason, 0)
+		if strings.TrimSpace(item.ReasonsJSON) != "" {
+			if err := json.Unmarshal([]byte(item.ReasonsJSON), &reasons); err != nil {
+				fail(c, http.StatusInternalServerError, fmt.Errorf("解码用户 %d 的自动禁用原因失败: %w", item.UserID, err))
+				return
+			}
+		}
+		items = append(items, relayUserAutoDisableLogView{
+			ID: item.ID, UserID: item.UserID, Email: item.Email, Username: item.Username,
+			RiskScore: item.RiskScore, Threshold: item.Threshold, Reasons: reasons, TriggeredAt: item.TriggeredAt,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"logs": items, "config": config, "examples": relay.UserRiskExamples(config),
+	}})
 }
 
 func updateRelayDynamicMonitor(c *gin.Context, d *Deps) {

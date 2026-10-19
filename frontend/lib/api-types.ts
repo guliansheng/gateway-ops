@@ -519,6 +519,36 @@ export interface RelayUserRiskConfigResponse {
   examples: UserRiskExample[]
 }
 
+export interface UserRiskReason {
+  key: string
+  label: string
+  condition: string
+  observed?: number
+  observed_value?: string
+  threshold?: number
+  base_score?: number
+  increment_score?: number
+  score: number
+  calculation: string
+}
+
+export interface RelayUserAutoDisableLog {
+  id: number
+  user_id: number
+  email: string
+  username?: string
+  risk_score: number
+  threshold: number
+  reasons: UserRiskReason[]
+  triggered_at: string
+}
+
+export interface RelayUserAutoDisableLogResponse {
+  logs: RelayUserAutoDisableLog[]
+  config: UserRiskConfig
+  examples: UserRiskExample[]
+}
+
 export interface RelayUserBalanceHistoryItem {
   id: number
   type: string

@@ -7,7 +7,7 @@ import (
 )
 
 // 注册阶段就要能发现路由冲突（静态段与 :external_id 参数段同级），否则线上
-// 启动会直接 panic。这里同时锁住两个新增入口。
+// 启动会直接 panic。这里锁住用户管理与风险配置相关入口。
 func TestRegisterExposesUserChargeRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
@@ -18,6 +18,7 @@ func TestRegisterExposesUserChargeRoutes(t *testing.T) {
 		"PUT /api/relay-stations/:id/users/:user_id/status":         false,
 		"GET /api/relay-stations/:id/user-risk-config":              false,
 		"PUT /api/relay-stations/:id/user-risk-config":              false,
+		"GET /api/relay-stations/:id/user-risk-auto-disable-logs":   false,
 		"PUT /api/relay-stations/:id/accounts/user-charge-excluded": false,
 		"GET /api/dashboard/unlinked-accounts":                      false,
 		"PUT /api/relay-stations/:id/dynamic-monitor":               false,

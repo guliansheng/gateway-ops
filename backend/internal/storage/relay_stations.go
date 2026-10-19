@@ -47,6 +47,9 @@ func (r *RelayStations) Delete(id uint) error {
 		if err := tx.Where("relay_station_id = ?", id).Delete(&RelayAccountAdjustmentLog{}).Error; err != nil {
 			return err
 		}
+		if err := tx.Where("relay_station_id = ?", id).Delete(&RelayUserAutoDisableLog{}).Error; err != nil {
+			return err
+		}
 		if err := tx.Where("relay_account_id IN (?)", tx.Model(&RelayAccount{}).Select("id").Where("relay_station_id = ?", id)).Delete(&RelayAccountGroup{}).Error; err != nil {
 			return err
 		}
@@ -102,6 +105,21 @@ func (r *RelayStations) UserRiskConfigRaw(id uint) (string, error) {
 		return "", err
 	}
 	return station.UserRiskConfigJSON, nil
+}
+
+// RecordUserAutoDisableLog 写入一次成功自动禁用的风险快照。
+func (r *RelayStations) RecordUserAutoDisableLog(log *RelayUserAutoDisableLog) error {
+	return r.db.Create(log).Error
+}
+
+// ListUserAutoDisableLogs 返回当前站点最近的自动禁用记录。
+func (r *RelayStations) ListUserAutoDisableLogs(stationID uint, limit int) ([]RelayUserAutoDisableLog, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	var list []RelayUserAutoDisableLog
+	err := r.db.Where("relay_station_id = ?", stationID).Order("triggered_at DESC, id DESC").Limit(limit).Find(&list).Error
+	return list, err
 }
 
 // ReplaceSnapshot 用一次成功同步的完整结果替换站点镜像。映射不随同步删除，

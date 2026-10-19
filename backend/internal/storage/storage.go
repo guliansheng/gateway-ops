@@ -113,6 +113,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&OperationLedgerEntry{},
 		&RelayStation{},
 		&RelayGroup{},
+		&RelayUserAutoDisableLog{},
 		&RelayChannel{},
 		&RelayChannelGroup{},
 		&RelayChannelMapping{},
