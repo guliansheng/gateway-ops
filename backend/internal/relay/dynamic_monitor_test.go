@@ -1098,3 +1098,39 @@ func TestAutoAssignNeverReAddsSeenAccountWithoutGroupLink(t *testing.T) {
 		t.Fatalf("分组关联恢复后也不应自动加回：%v", plan.Config.Groups[0].AccountExternalIDs)
 	}
 }
+
+// 销售分组暂未关联规则组时，新账号应保持待处理；后续配置映射后再自动加入。
+func TestAutoAssignKeepsAccountPendingUntilGroupMapped(t *testing.T) {
+	config := DynamicMonitorConfig{
+		Enabled:         true,
+		Groups:          []DynamicMonitorRuleGroup{ruleGroup(30, 5, 11)},
+		GroupRuleGroups: map[string]int{"1": 0},
+	}.Normalize()
+	accounts := []storage.RelayAccount{
+		{ExternalID: 11, ID: 1, Name: "老账号", Schedulable: true, Status: "active"},
+		{ExternalID: 13, ID: 3, Name: "新账号", Schedulable: true, Status: "active"},
+	}
+	groups := []storage.RelayGroup{
+		{ID: 1, ExternalID: 1, Status: "active", RateMultiplier: 3},
+		{ID: 2, ExternalID: 2, Status: "active", RateMultiplier: 2},
+	}
+	links := []storage.RelayAccountGroup{
+		{RelayGroupID: 1, RelayAccountID: 1},
+		{RelayGroupID: 2, RelayAccountID: 3},
+	}
+	state := DynamicMonitorState{SeenAccounts: map[int64]struct{}{11: {}}}
+
+	plan := planDynamicMonitor(config, state, accounts, groups, links)
+	if _, seen := plan.State.SeenAccounts[13]; seen {
+		t.Fatal("尚未关联规则组的新账号不应被标记为已见过")
+	}
+	if containsID(plan.Config.Groups[0].AccountExternalIDs, 13) {
+		t.Fatalf("销售分组尚未关联时不应入组：%v", plan.Config.Groups[0].AccountExternalIDs)
+	}
+
+	plan.Config.GroupRuleGroups["2"] = 0
+	plan = planDynamicMonitor(plan.Config, plan.State, accounts, groups, links)
+	if !containsID(plan.Config.Groups[0].AccountExternalIDs, 13) {
+		t.Fatalf("销售分组关联规则组后应自动入组：%v", plan.Config.Groups[0].AccountExternalIDs)
+	}
+}

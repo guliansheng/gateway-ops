@@ -506,17 +506,35 @@ func autoAssignNewAccounts(
 	for _, group := range groups {
 		groupByLocalID[group.ID] = group
 	}
-	// 账号 local id → 其所属的（已关联规则组的）销售分组，用于挑选倍率最高的关联。
+	// 冷启动按所有已同步分组建立存量基线；日常同步只追踪已映射规则组的账号。
 	linkedGroupsByAccount := make(map[uint][]storage.RelayGroup)
-	// hasGroupLink 记录本轮快照里已经同步到销售分组的账号，见文末“已见过”基线的说明。
-	hasGroupLink := make(map[uint]struct{}, len(links))
+	knownGroupLink := make(map[uint]struct{}, len(links))
+	ruleGroupLink := make(map[uint]struct{}, len(links))
 	for _, link := range links {
-		hasGroupLink[link.RelayAccountID] = struct{}{}
 		group, ok := groupByLocalID[link.RelayGroupID]
 		if !ok {
 			continue
 		}
+		knownGroupLink[link.RelayAccountID] = struct{}{}
+		if config.GroupRuleGroup(group.ExternalID) < 0 {
+			continue
+		}
+		ruleGroupLink[link.RelayAccountID] = struct{}{}
 		linkedGroupsByAccount[link.RelayAccountID] = append(linkedGroupsByAccount[link.RelayAccountID], group)
+	}
+
+	seenThisPass := make(map[int64]struct{}, len(accounts))
+	for externalID := range memberOfRuleGroup {
+		seenThisPass[externalID] = struct{}{}
+	}
+	for _, account := range accounts {
+		if coldStart {
+			if _, linked := knownGroupLink[account.ID]; linked {
+				seenThisPass[account.ExternalID] = struct{}{}
+			}
+		} else if _, linked := ruleGroupLink[account.ID]; linked {
+			seenThisPass[account.ExternalID] = struct{}{}
+		}
 	}
 
 	if hasRuleGroups && !coldStart {
@@ -563,28 +581,19 @@ func autoAssignNewAccounts(
 			config.Groups[index].AccountExternalIDs = merged
 			assigned = true
 		}
-
-		// 建立/更新“已见过”基线，见 markSeenAccounts 的说明。
-		markSeenAccounts(accounts, hasGroupLink, state)
+		// 只提交本轮判定完成的账号，未映射账号保留待处理状态。
+		markSeenAccounts(seenThisPass, state)
 		return config, assigned
 	}
 
-	// 未配置分组关联或处于冷启动：只维护“已见过”基线。
-	markSeenAccounts(accounts, hasGroupLink, state)
+	// 未配置分组关联或处于冷启动：建立安全基线，不批量加入存量账号。
+	markSeenAccounts(seenThisPass, state)
 	return config, false
 }
 
-// markSeenAccounts 更新“已见过”基线。
-//
-// 本轮快照里没有任何销售分组的账号不记：它通常是刚在 Sub2API 建好、分组还没同步过来的
-// 账号，这一轮无法判断归属；若照旧记为已见过，就会永久失去自动加入规则组的机会
-// （快照间隔 1 分钟，创建到设置分组之间的窗口足以撞上一次同步）。留到下次快照重试。
-func markSeenAccounts(accounts []storage.RelayAccount, hasGroupLink map[uint]struct{}, state *DynamicMonitorState) {
-	for _, account := range accounts {
-		if _, linked := hasGroupLink[account.ID]; !linked {
-			continue
-		}
-		state.markSeen(account.ExternalID)
+func markSeenAccounts(accountIDs map[int64]struct{}, state *DynamicMonitorState) {
+	for externalID := range accountIDs {
+		state.markSeen(externalID)
 	}
 }
 
