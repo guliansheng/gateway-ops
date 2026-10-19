@@ -779,6 +779,44 @@ func TestAutoAssignNewAccountJoinsLinkedRuleGroup(t *testing.T) {
 	}
 }
 
+// 自动分配必须保留调用方的旧配置，否则持久化比较会看不到任何变化。
+func TestAutoAssignNewAccountPreservesPreviousConfig(t *testing.T) {
+	config := DynamicMonitorConfig{
+		Enabled:         true,
+		Groups:          []DynamicMonitorRuleGroup{ruleGroup(30, 5, 11)},
+		GroupRuleGroups: map[string]int{"1": 0},
+	}.Normalize()
+	accounts := []storage.RelayAccount{
+		{ExternalID: 11, ID: 1, Name: "老账号", Schedulable: true, Status: "active"},
+		{ExternalID: 13, ID: 3, Name: "新账号", Schedulable: true, Status: "active"},
+	}
+	groups := []storage.RelayGroup{{ID: 1, ExternalID: 1, Status: "active", RateMultiplier: 3}}
+	links := []storage.RelayAccountGroup{
+		{RelayGroupID: 1, RelayAccountID: 1},
+		{RelayGroupID: 1, RelayAccountID: 3},
+	}
+	state := DynamicMonitorState{SeenAccounts: map[int64]struct{}{11: {}}}
+	previousJSON, err := json.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plan := planDynamicMonitor(config, state, accounts, groups, links)
+	if !containsID(plan.Config.Groups[0].AccountExternalIDs, 13) {
+		t.Fatalf("新账号 13 应加入规则组：%v", plan.Config.Groups[0].AccountExternalIDs)
+	}
+	if containsID(config.Groups[0].AccountExternalIDs, 13) {
+		t.Fatalf("自动分配改写了旧配置：%v", config.Groups[0].AccountExternalIDs)
+	}
+	nextJSON, err := json.Marshal(plan.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(previousJSON) == string(nextJSON) {
+		t.Fatal("新账号加入规则组后配置应发生变化，以便持久化")
+	}
+}
+
 // 冷启动（SeenAccounts 为空）只建立基线，不把存量账号一次性塞进规则组。
 func TestAutoAssignColdStartOnlyBuildsBaseline(t *testing.T) {
 	config := DynamicMonitorConfig{

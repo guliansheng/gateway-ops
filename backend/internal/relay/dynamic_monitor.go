@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -490,6 +491,10 @@ func autoAssignNewAccounts(
 	links []storage.RelayAccountGroup,
 	state *DynamicMonitorState,
 ) (DynamicMonitorConfig, bool) {
+	// 结构体按值传递仍会共享 Groups 的底层数组，必须先复制外层切片。
+	// 否则写入新账号会同时改写调用方的旧配置，导致持久化比较误判为没有变化。
+	// 组内账号名单在合并时另建切片，其余配置只读。
+	config.Groups = slices.Clone(config.Groups)
 	// 没有配置任何分组关联时，只需维护“已见过”基线。
 	hasRuleGroups := len(config.GroupRuleGroups) > 0
 	coldStart := len(previous.SeenAccounts) == 0
