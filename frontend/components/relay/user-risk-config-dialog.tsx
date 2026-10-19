@@ -122,8 +122,8 @@ function NumberField({ id, label, value, suffix, description, help, disabled, on
 const weightFields: Array<{ key: NumericRiskField; label: string; suffix: string; description: string }> = [
   { key: "registration_ip_weight", label: "同 IP 注册基础分", suffix: "分", description: "达到注册账号阈值时的起始分" },
   { key: "registration_ip_increment_weight", label: "同 IP 注册递增步长", suffix: "分/账号", description: "超过阈值后，每多注册 1 个账号增加的分数" },
-  { key: "same_ip_concurrent_weight", label: "同 IP 并发基础分", suffix: "分", description: "达到并发账号阈值时的起始分" },
-  { key: "same_ip_concurrent_increment_weight", label: "同 IP 并发递增步长", suffix: "分/账号", description: "超过阈值后，每多 1 个并发账号增加的分数" },
+  { key: "same_ip_concurrent_weight", label: "同 IP 不同账号并发基础分", suffix: "分", description: "达到同 IP 不同账号并发数阈值时的起始分" },
+  { key: "same_ip_concurrent_increment_weight", label: "同 IP 不同账号并发递增步长", suffix: "分/账号", description: "超过阈值后，每增加 1 个同 IP 下同时调用的不同账号增加的分数" },
   { key: "same_user_multi_ip_weight", label: "同账号多 IP 基础分", suffix: "分", description: "达到并发 IP 阈值时的起始分" },
   { key: "same_user_multi_ip_increment_weight", label: "同账号多 IP 递增步长", suffix: "分/IP", description: "超过阈值后，每多 1 个并发 IP 增加的分数" },
   { key: "suspicious_email_weight", label: "疑似机器邮箱权重", suffix: "分", description: "该二元信号命中时一次性加分" },
@@ -132,7 +132,7 @@ const weightFields: Array<{ key: NumericRiskField; label: string; suffix: string
 
 const thresholdFields: Array<{ key: NumericRiskField; label: string; suffix: string }> = [
   { key: "registration_ip_min_accounts", label: "同 IP 注册命中阈值", suffix: "个账号" },
-  { key: "same_ip_concurrent_min_users", label: "同 IP 并发命中阈值", suffix: "个账号" },
+  { key: "same_ip_concurrent_min_users", label: "同 IP 不同账号并发数阈值", suffix: "个账号" },
   { key: "same_user_multi_ip_min_ips", label: "同账号多 IP 命中阈值", suffix: "个 IP" },
 ]
 
@@ -141,13 +141,13 @@ function validateConfig(config: UserRiskConfig) {
   if (!Number.isInteger(config.concurrency_window_seconds) || config.concurrency_window_seconds < 5 || config.concurrency_window_seconds > 300) return "并发重叠窗口必须是 5 到 300 秒"
   const weights: Array<[string, number]> = [
     ["同 IP 注册基础分", config.registration_ip_weight], ["同 IP 注册递增步长", config.registration_ip_increment_weight],
-    ["同 IP 并发基础分", config.same_ip_concurrent_weight], ["同 IP 并发递增步长", config.same_ip_concurrent_increment_weight],
+    ["同 IP 不同账号并发基础分", config.same_ip_concurrent_weight], ["同 IP 不同账号并发递增步长", config.same_ip_concurrent_increment_weight],
     ["同账号多 IP 基础分", config.same_user_multi_ip_weight], ["同账号多 IP 递增步长", config.same_user_multi_ip_increment_weight],
     ["疑似机器邮箱权重", config.suspicious_email_weight], ["新账号无请求权重", config.new_account_no_usage_weight],
   ]
   for (const [label, value] of weights) if (!Number.isInteger(value) || value < 0 || value > 100) return `${label}必须是 0 到 100 的整数`
   const thresholds: Array<[string, number]> = [
-    ["同 IP 注册账号数阈值", config.registration_ip_min_accounts], ["同 IP 并发账号数阈值", config.same_ip_concurrent_min_users], ["同账号并发 IP 数阈值", config.same_user_multi_ip_min_ips],
+    ["同 IP 注册账号数阈值", config.registration_ip_min_accounts], ["同 IP 不同账号并发数阈值", config.same_ip_concurrent_min_users], ["同账号并发 IP 数阈值", config.same_user_multi_ip_min_ips],
   ]
   for (const [label, value] of thresholds) if (!Number.isInteger(value) || value < 2 || value > 20) return `${label}必须是 2 到 20 的整数`
   if (!Number.isInteger(config.auto_disable_threshold) || config.auto_disable_threshold < 1 || config.auto_disable_threshold > 100) return "自动禁用风险阈值必须是 1 到 100 的整数"
@@ -229,7 +229,7 @@ export function UserRiskConfigDialog({ open, stationID, onOpenChange, onSaved }:
 		{draft ? <>
 		  <Section icon={Power} title="启用风险评估" description="关闭后列表仍可管理用户，但不根据规则计算风险分数。" action={<Switch checked={draft.enabled} onCheckedChange={(value) => update("enabled", value)} disabled={disabled} aria-label="启用风险评估" />}><p className="text-[11px] text-muted-foreground">自动禁用独立控制，风险分数不会因关闭自动禁用而停止计算。</p></Section>
 		  <Section icon={Timer} title="观察窗口" description="风险观察窗口决定读取多长时间的注册与调用记录；并发重叠窗口决定两个调用是否算作同时发生。">
-		    <div className="grid gap-2.5 sm:grid-cols-2"><NumberField id="risk-lookback" label="风险观察窗口" value={draft.lookback_minutes} suffix="分钟" description="1–60 分钟" help="用于读取注册审计和调用记录的回看范围。例如设置 15 分钟，风险评估只使用最近 15 分钟内的数据；它决定评估覆盖多久，不表示一次调用必须持续这么久。窗口越大，越容易捕获较早的注册/调用行为，也会增加数据量和历史行为影响。" disabled={disabled} onChange={(v) => update("lookback_minutes", v)} /><NumberField id="risk-window" label="并发重叠窗口" value={draft.concurrency_window_seconds} suffix="秒" description="5–300 秒" help="用于判断两个调用是否算“同时发生”。如果两个请求的执行区间重叠，直接视为并发；如果上游没有可靠持续时间，则只要开始时间相差不超过该窗口也视为并发。例如设置 60 秒，两个账号在 60 秒内先后发起请求，会触发同 IP 多账号并发判断。它不是限流时长，也不是风险观察总时长。" disabled={disabled} onChange={(v) => update("concurrency_window_seconds", v)} /></div>
+		    <div className="grid gap-2.5 sm:grid-cols-2"><NumberField id="risk-lookback" label="风险观察窗口" value={draft.lookback_minutes} suffix="分钟" description="1–60 分钟" help="用于读取注册审计和调用记录的回看范围。例如设置 15 分钟，风险评估只使用最近 15 分钟内的数据；它决定评估覆盖多久，不表示一次调用必须持续这么久。窗口越大，越容易捕获较早的注册/调用行为，也会增加数据量和历史行为影响。" disabled={disabled} onChange={(v) => update("lookback_minutes", v)} /><NumberField id="risk-window" label="并发重叠窗口" value={draft.concurrency_window_seconds} suffix="秒" description="5–300 秒" help="用于判断两个调用是否算“同时发生”。如果两个请求的执行区间重叠，直接视为并发；如果上游没有可靠持续时间，则只要开始时间相差不超过该窗口也视为并发。例如设置 60 秒，两个不同账号通过同一 IP 在 60 秒内先后发起请求，会触发同 IP 不同账号并发判断。它不是限流时长，也不是风险观察总时长。" disabled={disabled} onChange={(v) => update("concurrency_window_seconds", v)} /></div>
 		  </Section>
 	          <Section icon={Gauge} title="基础分与递增步长" description="达到命中阈值计基础分；之后每增加一个账号或 IP 按步长加分。步长 0 表示不递增。">
 	            <div className="grid gap-2.5 sm:grid-cols-2">{weightFields.map((field) => <NumberField key={field.key} id={`risk-${field.key}`} label={field.label} value={draft[field.key]} suffix={field.suffix} description={field.description} disabled={disabled} onChange={(v) => update(field.key, v)} />)}</div>

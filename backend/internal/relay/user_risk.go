@@ -115,14 +115,14 @@ func (c UserRiskConfig) Validate() error {
 		return fmt.Errorf("并发重叠窗口必须是 5 到 %d 秒", userRiskMaxConcurrencyWindow)
 	}
 	for name, value := range map[string]int{
-		"同 IP 注册基础权重":  c.RegistrationIPWeight,
-		"同 IP 注册递增步长":  c.RegistrationIPIncrementWeight,
-		"同 IP 并发基础权重":  c.SameIPConcurrentWeight,
-		"同 IP 并发递增步长":  c.SameIPConcurrentIncrementWeight,
-		"同账号多 IP 基础权重": c.SameUserMultiIPWeight,
-		"同账号多 IP 递增步长": c.SameUserMultiIPIncrementWeight,
-		"机器邮箱权重":       c.SuspiciousEmailWeight,
-		"新账号无请求权重":     c.NewAccountNoUsageWeight,
+		"同 IP 注册基础权重":     c.RegistrationIPWeight,
+		"同 IP 注册递增步长":     c.RegistrationIPIncrementWeight,
+		"同 IP 不同账号并发基础权重": c.SameIPConcurrentWeight,
+		"同 IP 不同账号并发递增步长": c.SameIPConcurrentIncrementWeight,
+		"同账号多 IP 基础权重":    c.SameUserMultiIPWeight,
+		"同账号多 IP 递增步长":    c.SameUserMultiIPIncrementWeight,
+		"机器邮箱权重":          c.SuspiciousEmailWeight,
+		"新账号无请求权重":        c.NewAccountNoUsageWeight,
 	} {
 		if value < 0 || value > userRiskMaxWeight {
 			return fmt.Errorf("%s必须是 0 到 %d", name, userRiskMaxWeight)
@@ -132,7 +132,7 @@ func (c UserRiskConfig) Validate() error {
 		return fmt.Errorf("同 IP 注册账号数阈值必须是 2 到 %d", userRiskMaxConcurrentMinimum)
 	}
 	if c.SameIPConcurrentMinUsers < 2 || c.SameIPConcurrentMinUsers > userRiskMaxConcurrentMinimum {
-		return fmt.Errorf("同 IP 并发账号数阈值必须是 2 到 %d", userRiskMaxConcurrentMinimum)
+		return fmt.Errorf("同 IP 不同账号并发数阈值必须是 2 到 %d", userRiskMaxConcurrentMinimum)
 	}
 	if c.SameUserMultiIPMinIPs < 2 || c.SameUserMultiIPMinIPs > userRiskMaxConcurrentMinimum {
 		return fmt.Errorf("同账号并发 IP 数阈值必须是 2 到 %d", userRiskMaxConcurrentMinimum)
@@ -208,10 +208,10 @@ func UserRiskExamples(config UserRiskConfig) []UserRiskExample {
 		makeExample("同 IP 注册", fmt.Sprintf("同一 IP 注册 %d 个账号（命中阈值）", config.RegistrationIPMinAccounts), registration(config.RegistrationIPMinAccounts)),
 		makeExample("同 IP 注册", "同一 IP 注册 5 个账号", registration(5)),
 		thresholdExample("同 IP 注册", "同一 IP 注册", "个账号", config.RegistrationIPWeight, config.RegistrationIPIncrementWeight, config.RegistrationIPMinAccounts),
-		makeExample("同 IP 多账号并发", fmt.Sprintf("%d 个账号在 %d 秒窗口同时调用", config.SameIPConcurrentMinUsers, config.ConcurrencyWindowSeconds), concurrentUsers(config.SameIPConcurrentMinUsers)),
-		thresholdExample("同 IP 多账号并发", "同 IP", "个账号同时调用", config.SameIPConcurrentWeight, config.SameIPConcurrentIncrementWeight, config.SameIPConcurrentMinUsers),
+		makeExample("同 IP 不同账号并发", fmt.Sprintf("%d 个不同账号在同一 IP 的 %d 秒窗口内同时调用", config.SameIPConcurrentMinUsers, config.ConcurrencyWindowSeconds), concurrentUsers(config.SameIPConcurrentMinUsers)),
+		thresholdExample("同 IP 不同账号并发", "同 IP 下不同账号", "个账号同时调用", config.SameIPConcurrentWeight, config.SameIPConcurrentIncrementWeight, config.SameIPConcurrentMinUsers),
 		makeExample("同账号多 IP 并发", fmt.Sprintf("同账号在 %d 个 IP 上同时调用", config.SameUserMultiIPMinIPs), concurrentIPs(config.SameUserMultiIPMinIPs)),
-		makeExample("并发风险合计", "同 IP 多账号并发 + 同账号多 IP 并发（仅两个信号都命中）", combined),
+		makeExample("并发风险合计", "同 IP 不同账号并发 + 同账号多 IP 并发（仅两个信号都命中）", combined),
 	}
 }
 
@@ -501,7 +501,7 @@ func evaluateUserRisk(user remoteUser, info registrationIPInfo, usage UserUsageS
 		addQuantity("registration_ip", "同注册 IP", count, config.RegistrationIPMinAccounts, config.RegistrationIPWeight, config.RegistrationIPIncrementWeight, "个账号", fmt.Sprintf("同一注册 IP 的账号数 ≥ %d", config.RegistrationIPMinAccounts))
 	}
 	if users := signals.SameIPConcurrentUsers[user.ID]; users >= config.SameIPConcurrentMinUsers {
-		addQuantity("same_ip_concurrent", "同 IP 同时调用", users, config.SameIPConcurrentMinUsers, config.SameIPConcurrentWeight, config.SameIPConcurrentIncrementWeight, "个账号", fmt.Sprintf("同一 IP 在 %d 秒并发窗口内的账号数 ≥ %d", config.ConcurrencyWindowSeconds, config.SameIPConcurrentMinUsers))
+		addQuantity("same_ip_concurrent", "同 IP 不同账号并发", users, config.SameIPConcurrentMinUsers, config.SameIPConcurrentWeight, config.SameIPConcurrentIncrementWeight, "个账号", fmt.Sprintf("同一 IP 在 %d 秒并发窗口内同时调用的不同账号数 ≥ %d", config.ConcurrencyWindowSeconds, config.SameIPConcurrentMinUsers))
 	}
 	if ips := signals.SameUserConcurrentIPs[user.ID]; ips >= config.SameUserMultiIPMinIPs {
 		addQuantity("same_user_multi_ip", "同账号同时使用", ips, config.SameUserMultiIPMinIPs, config.SameUserMultiIPWeight, config.SameUserMultiIPIncrementWeight, "个 IP", fmt.Sprintf("同一账号在 %d 秒并发窗口内使用的 IP 数 ≥ %d", config.ConcurrencyWindowSeconds, config.SameUserMultiIPMinIPs))
