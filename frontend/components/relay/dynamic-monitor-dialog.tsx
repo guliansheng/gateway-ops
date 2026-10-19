@@ -565,12 +565,14 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
                     const enabled = draft?.enabled ?? false
                     // 不参与规则判断的分组：不计入“最少保留账号数”，也不会被补开。
                     const participates = !groupRuleExcluded[key]
+                    const normalAccountCount = accounts.filter((account) => account.current_groups.some((currentGroup) => currentGroup.external_id === group.external_id) && account.schedulable && account.status?.trim().toLowerCase() === "active").length
                     return (
                       <div key={group.external_id} className="flex flex-wrap items-center justify-between gap-2 border border-transparent px-2 py-1.5">
                         <span className="flex min-w-0 items-center gap-1.5">
                           <span className="truncate text-xs font-medium" title={group.name}>{group.name}</span>
                           <span className="font-mono text-[10px] font-normal text-muted-foreground">#{group.external_id}</span>
-                          <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] font-medium tabular-nums text-muted-foreground" title="该分组当前关联的账号数">账号 {group.account_count}</span>
+                          <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] font-medium tabular-nums text-muted-foreground" title="该分组当前关联的账号总数">账号 {group.account_count}</span>
+                          <span className="shrink-0 rounded bg-success/10 px-1.5 py-0.5 font-mono text-[10px] font-medium tabular-nums text-success" title="账号已启用且调度已开启">正常 {normalAccountCount}</span>
                         </span>
                         <span className="flex shrink-0 flex-wrap items-center gap-2">
                           <span className="flex items-center gap-1.5">
