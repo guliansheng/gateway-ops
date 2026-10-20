@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"slices"
 	"sort"
 	"strconv"
@@ -31,15 +32,32 @@ const dynamicMonitorReasonFirstToken = "first_token"
 // dynamicMonitorReasonSingleFirstToken 是关闭原因：单次首字延迟超过设定阈值。
 const dynamicMonitorReasonSingleFirstToken = "first_token_single"
 
+// dynamicMonitorRuleCategoryMonitor / dynamicMonitorRuleCategoryError 标记关闭记录的规则类别。
+const (
+	dynamicMonitorRuleCategoryMonitor = "monitor"
+	dynamicMonitorRuleCategoryError   = "error"
+)
+
+// dynamicMonitorReasonError 是关闭原因：命中全局报错规则组。
+const dynamicMonitorReasonError = "error_rule"
+
 const (
 	// 阈值按秒配置（比毫秒更贴近实际调参直觉），内部仍换算成毫秒与样本比对。
-	dynamicMonitorMinThresholdSeconds = 0.1
-	dynamicMonitorMaxThresholdSeconds = 600 // 10 分钟
-	dynamicMonitorMaxConsecutive      = 100
-	dynamicMonitorMaxMinAccounts      = 1000
-	dynamicMonitorMaxAutoOpen         = 10080 // 7 天
-	dynamicMonitorMaxAccounts         = 1000
-	dynamicMonitorMaxGroups           = 20
+	dynamicMonitorMinThresholdSeconds     = 0.1
+	dynamicMonitorMaxThresholdSeconds     = 600 // 10 分钟
+	dynamicMonitorMaxConsecutive          = 100
+	dynamicMonitorMaxMinAccounts          = 1000
+	dynamicMonitorMaxAutoOpen             = 10080 // 7 天
+	dynamicMonitorMaxAccounts             = 1000
+	dynamicMonitorMaxGroups               = 20
+	dynamicMonitorMaxErrorGroups          = 20
+	dynamicMonitorMaxErrorThreshold       = 1000
+	dynamicMonitorMaxErrorLookbackMinutes = 10080 // 7 天
+	dynamicMonitorErrorPageSize           = 500
+	dynamicMonitorMaxErrorPages           = 20
+
+	dynamicMonitorDefaultErrorThreshold = 3
+	dynamicMonitorDefaultErrorLookback  = 10
 
 	dynamicMonitorDefaultThresholdSeconds = 10
 	dynamicMonitorDefaultConsecutive      = 3
@@ -61,12 +79,31 @@ type DynamicMonitorRuleGroup struct {
 	AccountExternalIDs []int64 `json:"account_external_ids"`
 }
 
+// DynamicMonitorErrorRuleGroup 是全局报错规则组：不选择账号，按具体 HTTP
+// 状态码统计所有账号的上游最终失败请求，达到阈值即关闭账号。
+type DynamicMonitorErrorRuleGroup struct {
+	// Name 规则组名称，仅用于界面展示。
+	Name string `json:"name"`
+	// StatusCodes 具体 HTTP 状态码，例如 401、429、502；不使用 4xx/5xx 范围。
+	StatusCodes []int `json:"status_codes"`
+	// Threshold 统计窗口内达到该错误次数后关闭账号。
+	Threshold int `json:"threshold"`
+	// LookbackMinutes 统计时间窗口（分钟）。
+	LookbackMinutes int `json:"lookback_minutes"`
+	// AllowAutoOpen 该组关闭的账号是否允许超时自动开启。
+	AllowAutoOpen bool `json:"allow_auto_open"`
+	// AutoOpenMinutes 关闭多久后自动开启，0 表示不启用。
+	AutoOpenMinutes int `json:"auto_open_minutes"`
+}
+
 // DynamicMonitorConfig 是弹窗里保存的完整规则。所有字段只属于该中转站的这个功能。
 // 阈值与超标次数按规则组各自设置；补开相关的三项是整个中转站通用设置。
 type DynamicMonitorConfig struct {
 	Enabled bool `json:"enabled"`
 	// Groups 多组规则，每组独立的阈值与超标次数。
 	Groups []DynamicMonitorRuleGroup `json:"groups"`
+	// ErrorGroups 全局报错规则组：不选择账号，按具体状态码统计所有账号。
+	ErrorGroups []DynamicMonitorErrorRuleGroup `json:"error_groups,omitempty"`
 	// MinAccountsPerGroup 通用规则：分组至少保留多少个可用账号，0 表示不设置。
 	// 未在 GroupMinAccounts 中单独设置的分组都使用这个公共值。
 	MinAccountsPerGroup int `json:"min_accounts_per_group"`
@@ -126,10 +163,20 @@ func (c DynamicMonitorConfig) anyGroupMinFloor() bool {
 
 // DynamicMonitorClosure 记录一个被规则关闭、等待按规则开启的账号。
 type DynamicMonitorClosure struct {
-	AccountExternalID int64     `json:"account_external_id"`
-	AccountName       string    `json:"account_name"`
-	Reason            string    `json:"reason"`
-	ClosedAt          time.Time `json:"closed_at"`
+	AccountExternalID int64  `json:"account_external_id"`
+	AccountName       string `json:"account_name"`
+	Reason            string `json:"reason"`
+	// RuleCategory 标记关闭来源：monitor 为监测规则组，error 为报错规则组。
+	RuleCategory string `json:"rule_category,omitempty"`
+	// RuleGroupName 是命中规则组的名称，便于界面直接展示。
+	RuleGroupName string `json:"rule_group_name,omitempty"`
+	// ErrorStatusCodes/ErrorCount/ErrorWindowMinutes 说明报错组命中的状态码、次数与统计窗口。
+	ErrorStatusCodes   []int     `json:"error_status_codes,omitempty"`
+	ErrorCount         int64     `json:"error_count,omitempty"`
+	ErrorWindowMinutes int       `json:"error_window_minutes,omitempty"`
+	ClosedAt           time.Time `json:"closed_at"`
+	// AutoOpenAt 是本条记录允许自动开启的时间，nil 表示只能靠分组保底开启。
+	AutoOpenAt *time.Time `json:"auto_open_at,omitempty"`
 }
 
 // DynamicMonitorState 是运行状态：只有这里记录的账号才会被自动开启。
@@ -266,6 +313,16 @@ func (c DynamicMonitorConfig) Normalize() DynamicMonitorConfig {
 		}
 		c.GroupRuleExcluded = excluded
 	}
+	// 报错规则组：没有有效状态码的空壳组直接丢弃，避免界面出现无法命中的规则。
+	errorGroups := make([]DynamicMonitorErrorRuleGroup, 0, len(c.ErrorGroups))
+	for _, group := range c.ErrorGroups {
+		normalized := group.Normalize()
+		if len(normalized.StatusCodes) == 0 {
+			continue
+		}
+		errorGroups = append(errorGroups, normalized)
+	}
+	c.ErrorGroups = errorGroups
 	claimed := make(map[int64]struct{})
 	groups := make([]DynamicMonitorRuleGroup, 0, len(c.Groups))
 	// 规则组下标会被“丢弃空组”改变，这里记录旧下标 → 新下标，用于重映射分组关联。
@@ -359,6 +416,43 @@ func (g DynamicMonitorRuleGroup) singleTimeoutMS() int64 {
 	return int64(g.SingleTimeoutSeconds * 1000)
 }
 
+// Normalize 补齐报错组的默认值，并按升序去重状态码。
+func (g DynamicMonitorErrorRuleGroup) Normalize() DynamicMonitorErrorRuleGroup {
+	g.Name = strings.TrimSpace(g.Name)
+	if g.Threshold <= 0 {
+		g.Threshold = dynamicMonitorDefaultErrorThreshold
+	}
+	if g.LookbackMinutes <= 0 {
+		g.LookbackMinutes = dynamicMonitorDefaultErrorLookback
+	}
+	if g.AutoOpenMinutes < 0 {
+		g.AutoOpenMinutes = 0
+	}
+	seen := make(map[int]struct{}, len(g.StatusCodes))
+	codes := make([]int, 0, len(g.StatusCodes))
+	for _, code := range g.StatusCodes {
+		if code < 400 || code > 599 {
+			continue
+		}
+		if _, ok := seen[code]; ok {
+			continue
+		}
+		seen[code] = struct{}{}
+		codes = append(codes, code)
+	}
+	sort.Ints(codes)
+	g.StatusCodes = codes
+	return g
+}
+
+// Label 返回报错组在提示与关闭记录里用的称呼。
+func (g DynamicMonitorErrorRuleGroup) Label(index int) string {
+	if g.Name != "" {
+		return g.Name
+	}
+	return fmt.Sprintf("报错组 %d", index+1)
+}
+
 // Validate 校验弹窗提交的规则。
 func (c DynamicMonitorConfig) Validate() error {
 	if len(c.Groups) > dynamicMonitorMaxGroups {
@@ -412,11 +506,34 @@ func (c DynamicMonitorConfig) Validate() error {
 			return fmt.Errorf("分组是否参与规则判断的分组 ID %q 不合法", externalID)
 		}
 	}
+	if len(c.ErrorGroups) > dynamicMonitorMaxErrorGroups {
+		return fmt.Errorf("报错规则组不能超过 %d 个", dynamicMonitorMaxErrorGroups)
+	}
+	for index, group := range c.ErrorGroups {
+		label := group.Label(index)
+		if len(group.StatusCodes) == 0 {
+			return fmt.Errorf("%s 请至少填写一个 HTTP 状态码", label)
+		}
+		for _, code := range group.StatusCodes {
+			if code < 400 || code > 599 {
+				return fmt.Errorf("%s 状态码 %d 不合法，请填写 400 到 599 之间的具体状态码", label, code)
+			}
+		}
+		if group.Threshold < 1 || group.Threshold > dynamicMonitorMaxErrorThreshold {
+			return fmt.Errorf("%s 错误次数阈值必须在 1 到 %d 之间", label, dynamicMonitorMaxErrorThreshold)
+		}
+		if group.LookbackMinutes < 1 || group.LookbackMinutes > dynamicMonitorMaxErrorLookbackMinutes {
+			return fmt.Errorf("%s 统计时间窗口必须在 1 到 %d 分钟之间", label, dynamicMonitorMaxErrorLookbackMinutes)
+		}
+		if group.AutoOpenMinutes < 0 || group.AutoOpenMinutes > dynamicMonitorMaxAutoOpen {
+			return fmt.Errorf("%s 自动开启时间必须在 0 到 %d 分钟之间", label, dynamicMonitorMaxAutoOpen)
+		}
+	}
 	if c.AutoOpenMinutes < 0 || c.AutoOpenMinutes > dynamicMonitorMaxAutoOpen {
 		return fmt.Errorf("自动开启时间必须在 0 到 %d 分钟之间", dynamicMonitorMaxAutoOpen)
 	}
-	if c.Enabled && len(c.Groups) == 0 {
-		return errors.New("启用监测时请至少配置一个规则组")
+	if c.Enabled && len(c.Groups) == 0 && len(c.ErrorGroups) == 0 {
+		return errors.New("启用监测时请至少配置一个规则组或报错规则组")
 	}
 	if c.Enabled && c.AllowAutoOpen && c.AutoOpenMinutes <= 0 && !c.anyGroupMinFloor() {
 		return errors.New("允许动态开启时，请设置自动开启时间或分组最少保留账号数")
@@ -727,11 +844,26 @@ func (s *Service) AssignNewAccountsToRuleGroups(stationID uint, accountExternalI
 }
 
 // dynamicMonitorPlan 是一次纯计算结果，便于单独测试。
+// dynamicMonitorErrorHit 是一个账号命中的报错规则组信息，用于写入关闭记录。
+type dynamicMonitorErrorHit struct {
+	RuleGroupName   string
+	StatusCodes     []int
+	Count           int64
+	WindowMinutes   int
+	AllowAutoOpen   bool
+	AutoOpenMinutes int
+}
+
+// dynamicMonitorPlan 是一次纯计算结果，便于单独测试。
 type dynamicMonitorPlan struct {
 	// Close 本轮应关闭的账号（external id）。
 	Close []int64
 	// CloseReasons 记录每个待关闭账号命中的原因，写入关闭记录用于界面区分。
 	CloseReasons map[int64]string
+	// CloseRuleGroups 记录普通规则组关闭时命中的规则组名称。
+	CloseRuleGroups map[int64]string
+	// CloseErrorHits 记录报错规则组关闭时命中的错误信息。
+	CloseErrorHits map[int64]dynamicMonitorErrorHit
 	// Reopen 本轮应开启的账号（external id），只来自之前被规则关闭的账号。
 	Reopen []int64
 	// State 是清理过期关闭记录后的状态，执行成功后再补上本轮关闭记录。
@@ -748,9 +880,23 @@ func planDynamicMonitor(
 	groups []storage.RelayGroup,
 	links []storage.RelayAccountGroup,
 ) dynamicMonitorPlan {
+	return planDynamicMonitorWithErrors(config, state, accounts, groups, links, nil)
+}
+
+// planDynamicMonitorWithErrors 在普通规则组之外叠加全局报错规则组的命中结果。
+func planDynamicMonitorWithErrors(
+	config DynamicMonitorConfig,
+	state DynamicMonitorState,
+	accounts []storage.RelayAccount,
+	groups []storage.RelayGroup,
+	links []storage.RelayAccountGroup,
+	errorHits map[int64]dynamicMonitorErrorHit,
+) dynamicMonitorPlan {
 	plan := dynamicMonitorPlan{
-		State:        retainedDynamicMonitorState(state, accounts),
-		CloseReasons: make(map[int64]string),
+		State:           retainedDynamicMonitorState(state, accounts),
+		CloseReasons:    make(map[int64]string),
+		CloseRuleGroups: make(map[int64]string),
+		CloseErrorHits:  make(map[int64]dynamicMonitorErrorHit),
 	}
 	// 0) 分组关联：把关联销售分组下“首次出现”的新账号自动加入对应规则组。
 	// 这一步会改写 config.Groups 的账号名单，必须在关闭判定之前执行，加入即参与监测。
@@ -788,50 +934,59 @@ func planDynamicMonitor(
 		return plan
 	}
 
-	// 2) 关闭参与监测的账号：连续超标或单次超时，命中任意一条即关闭。
-	// 每个账号只按它所属规则组的两条规则判定；账号归属在 Normalize 时已保证唯一。
+	// 2) 关闭账号：普通规则组按首字延迟判定，报错规则组对所有账号生效。
 	ruleByAccount := make(map[int64]DynamicMonitorRuleGroup)
-	for _, group := range config.Groups {
+	ruleNameByAccount := make(map[int64]string)
+	for index, group := range config.Groups {
+		name := group.Label(index)
 		for _, externalID := range group.AccountExternalIDs {
 			ruleByAccount[externalID] = group
+			ruleNameByAccount[externalID] = name
 		}
+	}
+	markClose := func(externalID int64, reason string) bool {
+		if _, done := plan.CloseReasons[externalID]; done {
+			return false
+		}
+		plan.Close = append(plan.Close, externalID)
+		plan.CloseReasons[externalID] = reason
+		return true
 	}
 
 	for _, account := range accounts {
-		rule, ok := ruleByAccount[account.ExternalID]
-		if !ok {
-			continue
-		}
 		if !relayAccountSchedulable(account) {
 			continue
 		}
 		if _, alreadyClosed := closed[account.ExternalID]; alreadyClosed {
 			continue
 		}
-		samples := dynamicMonitorSamplesAfter(account.LatencySamplesJSON, plan.State.Judged[account.ExternalID])
-		// 单次超时优先级更高：只要有一条新样本超过它就直接关闭。
-		if anyFirstTokenOver(samples, rule.singleTimeoutMS()) {
-			plan.Close = append(plan.Close, account.ExternalID)
-			plan.CloseReasons[account.ExternalID] = dynamicMonitorReasonSingleFirstToken
-			continue
+		closedNow := false
+		if rule, ok := ruleByAccount[account.ExternalID]; ok {
+			samples := dynamicMonitorSamplesAfter(account.LatencySamplesJSON, plan.State.Judged[account.ExternalID])
+			switch {
+			case anyFirstTokenOver(samples, rule.singleTimeoutMS()):
+				closedNow = markClose(account.ExternalID, dynamicMonitorReasonSingleFirstToken)
+			case consecutiveFirstTokenOver(samples, rule.thresholdMS()) >= rule.ConsecutiveCount:
+				closedNow = markClose(account.ExternalID, dynamicMonitorReasonFirstToken)
+			}
+			if closedNow {
+				plan.CloseRuleGroups[account.ExternalID] = ruleNameByAccount[account.ExternalID]
+				continue
+			}
 		}
-		if consecutiveFirstTokenOver(samples, rule.thresholdMS()) >= rule.ConsecutiveCount {
-			plan.Close = append(plan.Close, account.ExternalID)
-			plan.CloseReasons[account.ExternalID] = dynamicMonitorReasonFirstToken
+		if hit, ok := errorHits[account.ExternalID]; ok && hit.Count > 0 {
+			if markClose(account.ExternalID, dynamicMonitorReasonError) {
+				plan.CloseErrorHits[account.ExternalID] = hit
+			}
 		}
 	}
 	sort.Slice(plan.Close, func(i, j int) bool { return plan.Close[i] < plan.Close[j] })
 
-	if !config.AllowAutoOpen || !config.anyGroupMinFloor() || len(closed) == 0 {
+	// 3) 分组最少保留账号数：无论自动开启如何设置，最终都要保住分组实际可用账号数。
+	if !config.anyGroupMinFloor() {
 		return plan
 	}
-
-	// 3) 分组最少保留账号数不足 → 开启之前被规则关闭的账号（关闭时间早的优先）。
-	groupsByLocalID := make(map[uint]storage.RelayGroup, len(groups))
 	membersByGroupID := make(map[uint][]storage.RelayAccount, len(groups))
-	for _, group := range groups {
-		groupsByLocalID[group.ID] = group
-	}
 	for _, link := range links {
 		account, ok := accountByLocalID[link.RelayAccountID]
 		if !ok {
@@ -843,22 +998,17 @@ func planDynamicMonitor(
 	for _, externalID := range plan.Close {
 		plannedClose[externalID] = struct{}{}
 	}
+	// 分组保底保持现有逻辑：先按规则关闭，再在可用账号低于下限时补开之前被规则关闭的账号。
 	plannedReopen := make(map[int64]struct{})
-
 	for _, group := range groups {
-		if !isActive(group.Status) {
+		if !isActive(group.Status) || !config.GroupParticipates(group.ExternalID) {
 			continue
 		}
-		// 不参与规则判断的分组：既不占用下限，也不会因为下限不足被补开。
-		if !config.GroupParticipates(group.ExternalID) {
-			continue
-		}
-		// 该销售分组实际生效的下限：单独设置过就用设置值，否则用公共值。
 		floor := config.GroupMinFloor(group.ExternalID)
 		if floor <= 0 {
 			continue
 		}
-		count := 0
+		available := 0
 		for _, account := range membersByGroupID[group.ID] {
 			if !relayAccountSchedulable(account) {
 				continue
@@ -866,9 +1016,9 @@ func planDynamicMonitor(
 			if _, closing := plannedClose[account.ExternalID]; closing {
 				continue
 			}
-			count++
+			available++
 		}
-		if count >= floor {
+		if available >= floor {
 			continue
 		}
 		candidates := make([]DynamicMonitorClosure, 0)
@@ -884,7 +1034,7 @@ func planDynamicMonitor(
 			return candidates[i].AccountExternalID < candidates[j].AccountExternalID
 		})
 		for _, candidate := range candidates {
-			if count >= floor {
+			if available >= floor {
 				break
 			}
 			if _, done := plannedReopen[candidate.AccountExternalID]; done {
@@ -892,7 +1042,7 @@ func planDynamicMonitor(
 			}
 			plannedReopen[candidate.AccountExternalID] = struct{}{}
 			plan.Reopen = append(plan.Reopen, candidate.AccountExternalID)
-			count++
+			available++
 		}
 	}
 	sort.Slice(plan.Reopen, func(i, j int) bool { return plan.Reopen[i] < plan.Reopen[j] })
@@ -964,7 +1114,9 @@ func (s *Service) applyDynamicMonitor(ctx context.Context, station *storage.Rela
 	if err != nil {
 		return fmt.Errorf("读取账号分组关联失败: %w", err)
 	}
-	plan := planDynamicMonitor(config, state, accounts, groups, links)
+	// 报错规则组按具体状态码统计所有账号，统计不完整时本轮不关闭，避免误判。
+	errorHits := s.dynamicMonitorErrorHits(ctx, station, config, state, accounts)
+	plan := planDynamicMonitorWithErrors(config, state, accounts, groups, links, errorHits)
 	// 自动加入改写了账号名单：先落库，保证下次同步与关闭判定都用最新名单。
 	if err := s.persistDynamicMonitorConfigIfChanged(station.ID, config, plan.Config); err != nil {
 		return err
@@ -1004,25 +1156,27 @@ func (s *Service) applyDynamicMonitor(ctx context.Context, station *storage.Rela
 		if reason == "" {
 			reason = dynamicMonitorReasonFirstToken
 		}
-		nextState.ClosedAccounts = append(nextState.ClosedAccounts, DynamicMonitorClosure{
+		closure := DynamicMonitorClosure{
 			AccountExternalID: account.ExternalID,
 			AccountName:       account.Name,
 			Reason:            reason,
 			ClosedAt:          now,
-		})
+		}
+		if reason == dynamicMonitorReasonError {
+			hit := plan.CloseErrorHits[externalID]
+			closure.RuleCategory = dynamicMonitorRuleCategoryError
+			closure.RuleGroupName = hit.RuleGroupName
+			closure.ErrorStatusCodes = hit.StatusCodes
+			closure.ErrorCount = hit.Count
+			closure.ErrorWindowMinutes = hit.WindowMinutes
+			closure.AutoOpenAt = autoOpenDeadline(now, hit.AllowAutoOpen, hit.AutoOpenMinutes)
+		} else {
+			closure.RuleCategory = dynamicMonitorRuleCategoryMonitor
+			closure.RuleGroupName = plan.CloseRuleGroups[externalID]
+			closure.AutoOpenAt = autoOpenDeadline(now, config.AllowAutoOpen, config.AutoOpenMinutes)
+		}
+		nextState.ClosedAccounts = append(nextState.ClosedAccounts, closure)
 		nextState.consumeSamples(account, now)
-	}
-	for _, externalID := range plan.Reopen {
-		account, ok := accountByExternalID[externalID]
-		if !ok {
-			continue
-		}
-		if err := s.setScheduling(ctx, station, account, accountGroups[account.ID], true, sourceDynamicMonitor); err != nil {
-			failures = append(failures, fmt.Sprintf("账号 %s 开启调度: %v", account.Name, err))
-			continue
-		}
-		nextState.ClosedAccounts = removeDynamicMonitorClosure(nextState.ClosedAccounts, externalID)
-		nextState.consumeSamples(account, time.Now().UTC())
 	}
 	if err := s.persistDynamicMonitorStateIfChanged(station.ID, state, nextState); err != nil {
 		failures = append(failures, fmt.Sprintf("保存动态监测状态: %v", err))
@@ -1033,7 +1187,7 @@ func (s *Service) applyDynamicMonitor(ctx context.Context, station *storage.Rela
 	return nil
 }
 
-// ReopenTimedDynamicAccounts 由每分钟的独立任务调用：只处理超时自动开启。
+// ReopenTimedDynamicAccounts 由每分钟的独立任务调用：按关闭记录里的自动开启时间开启账号。
 func (s *Service) ReopenTimedDynamicAccounts(ctx context.Context) error {
 	s.dynamicMonitorMu.Lock()
 	defer s.dynamicMonitorMu.Unlock()
@@ -1042,10 +1196,11 @@ func (s *Service) ReopenTimedDynamicAccounts(ctx context.Context) error {
 		return err
 	}
 	var failures []string
+	now := time.Now().UTC()
 	for index := range stations {
 		station := &stations[index]
 		config := ParseDynamicMonitorConfig(station.DynamicMonitorConfig)
-		if !config.Enabled || !config.AllowAutoOpen || config.AutoOpenMinutes <= 0 {
+		if !config.Enabled {
 			continue
 		}
 		state := ParseDynamicMonitorState(station.DynamicMonitorState)
@@ -1079,7 +1234,6 @@ func (s *Service) ReopenTimedDynamicAccounts(ctx context.Context) error {
 			}
 		}
 
-		deadline := time.Now().UTC().Add(-time.Duration(config.AutoOpenMinutes) * time.Minute)
 		nextState := retainedDynamicMonitorState(state, accounts)
 		for _, closure := range state.ClosedAccounts {
 			account, ok := accountByExternalID[closure.AccountExternalID]
@@ -1089,10 +1243,11 @@ func (s *Service) ReopenTimedDynamicAccounts(ctx context.Context) error {
 			}
 			nextState.advanceJudged(account.ExternalID, closure.ClosedAt)
 			if account.Schedulable {
-				nextState.consumeSamples(account, time.Now().UTC())
+				nextState.consumeSamples(account, now)
 				continue
 			}
-			if closure.ClosedAt.After(deadline) {
+			deadline := dynamicMonitorClosureDeadline(closure, config)
+			if deadline == nil || now.Before(*deadline) {
 				nextState.ClosedAccounts = append(nextState.ClosedAccounts, closure)
 				continue
 			}
@@ -1101,7 +1256,7 @@ func (s *Service) ReopenTimedDynamicAccounts(ctx context.Context) error {
 				failures = append(failures, fmt.Sprintf("%s 账号 %s 自动开启: %v", station.Name, account.Name, err))
 				continue
 			}
-			nextState.consumeSamples(account, time.Now().UTC())
+			nextState.consumeSamples(account, now)
 		}
 		if err := s.persistDynamicMonitorStateIfChanged(station.ID, state, nextState); err != nil {
 			failures = append(failures, fmt.Sprintf("%s 保存动态监测状态: %v", station.Name, err))
@@ -1111,6 +1266,18 @@ func (s *Service) ReopenTimedDynamicAccounts(ctx context.Context) error {
 		return fmt.Errorf("账号动态监测自动开启部分失败: %s", strings.Join(failures, "; "))
 	}
 	return nil
+}
+
+// dynamicMonitorClosureDeadline 返回关闭记录的实际自动开启时间。
+// 旧版记录没有 AutoOpenAt，回落到整站通用配置，保证升级后仍能按时开启。
+func dynamicMonitorClosureDeadline(closure DynamicMonitorClosure, config DynamicMonitorConfig) *time.Time {
+	if closure.AutoOpenAt != nil {
+		return closure.AutoOpenAt
+	}
+	if closure.RuleCategory != "" {
+		return nil
+	}
+	return autoOpenDeadline(closure.ClosedAt, config.AllowAutoOpen, config.AutoOpenMinutes)
 }
 
 func removeDynamicMonitorClosure(closures []DynamicMonitorClosure, externalID int64) []DynamicMonitorClosure {
@@ -1178,4 +1345,175 @@ func (s *Service) persistDynamicMonitorStateIfChanged(stationID uint, previous, 
 		return nil
 	}
 	return s.stations.SetDynamicMonitorState(stationID, string(nextBody))
+}
+
+// dynamicMonitorErrorEvent 是一条按状态码筛选出来的上游最终错误。
+type dynamicMonitorErrorEvent struct {
+	AccountExternalID int64
+	CreatedAt         time.Time
+	StatusCode        int
+}
+
+// dynamicMonitorErrorEndpoint 按具体状态码统计账号错误，status_codes 使用逗号分隔。
+func dynamicMonitorErrorEndpoint(baseURL string, statusCodes []int, since, until time.Time, page, pageSize int) string {
+	query := url.Values{}
+	query.Set("page", strconv.Itoa(page))
+	query.Set("page_size", strconv.Itoa(pageSize))
+	query.Set("start_time", since.Format(time.RFC3339))
+	query.Set("end_time", until.Format(time.RFC3339))
+	codes := make([]string, 0, len(statusCodes))
+	for _, code := range statusCodes {
+		codes = append(codes, strconv.Itoa(code))
+	}
+	query.Set("status_codes", strings.Join(codes, ","))
+	return strings.TrimRight(baseURL, "/") + "/api/v1/admin/ops/request-errors?" + query.Encode()
+}
+
+// dynamicMonitorErrorEventKey 返回一次请求的去重键，同一请求的重试只计一次。
+func dynamicMonitorErrorEventKey(item remoteRequestError) string {
+	if value := strings.TrimSpace(item.ClientRequestID); value != "" {
+		return "client:" + value
+	}
+	if value := strings.TrimSpace(item.RequestID); value != "" {
+		return "request:" + value
+	}
+	return ""
+}
+
+// dynamicMonitorErrorEventFrom 只保留账号级、上游最终失败的错误记录。
+func dynamicMonitorErrorEventFrom(item remoteRequestError, statusSet map[int]struct{}) (dynamicMonitorErrorEvent, bool) {
+	if item.AccountID <= 0 {
+		return dynamicMonitorErrorEvent{}, false
+	}
+	if _, ok := statusSet[item.StatusCode]; !ok {
+		return dynamicMonitorErrorEvent{}, false
+	}
+	owner := strings.ToLower(strings.TrimSpace(item.ErrorOwner))
+	phase := strings.ToLower(strings.TrimSpace(item.ErrorPhase))
+	if phase == "" {
+		phase = strings.ToLower(strings.TrimSpace(item.Phase))
+	}
+	if owner == "client" || (owner != "provider" && phase != "upstream") {
+		return dynamicMonitorErrorEvent{}, false
+	}
+	message := strings.TrimSpace(item.Message)
+	if message == "" || strings.HasPrefix(strings.ToLower(message), "recovered upstream error") {
+		return dynamicMonitorErrorEvent{}, false
+	}
+	created, ok := parseMonitorTime(item.CreatedAt)
+	if !ok {
+		return dynamicMonitorErrorEvent{}, false
+	}
+	return dynamicMonitorErrorEvent{AccountExternalID: item.AccountID, CreatedAt: created, StatusCode: item.StatusCode}, true
+}
+
+// fetchDynamicMonitorErrorEvents 分页读取一个报错组窗口内的错误明细。
+// 第二个返回值为 false 表示统计不完整，调用方据此跳过自动关闭。
+func (s *Service) fetchDynamicMonitorErrorEvents(ctx context.Context, baseURL, apiKey string, group DynamicMonitorErrorRuleGroup, since, until time.Time) ([]dynamicMonitorErrorEvent, bool) {
+	statusSet := make(map[int]struct{}, len(group.StatusCodes))
+	for _, code := range group.StatusCodes {
+		statusSet[code] = struct{}{}
+	}
+	events := make([]dynamicMonitorErrorEvent, 0, dynamicMonitorErrorPageSize)
+	seen := make(map[string]struct{})
+	for page := 1; page <= dynamicMonitorMaxErrorPages; page++ {
+		var data remoteRequestErrorPage
+		endpoint := dynamicMonitorErrorEndpoint(baseURL, group.StatusCodes, since, until, page, dynamicMonitorErrorPageSize)
+		if err := s.get(ctx, endpoint, apiKey, &data); err != nil {
+			return nil, false
+		}
+		for _, item := range data.Items {
+			event, ok := dynamicMonitorErrorEventFrom(item, statusSet)
+			if !ok {
+				continue
+			}
+			if key := dynamicMonitorErrorEventKey(item); key != "" {
+				if _, done := seen[key]; done {
+					continue
+				}
+				seen[key] = struct{}{}
+			}
+			events = append(events, event)
+		}
+		if len(data.Items) < dynamicMonitorErrorPageSize || int64(page*dynamicMonitorErrorPageSize) >= data.Total {
+			return events, true
+		}
+	}
+	return events, false
+}
+
+// dynamicMonitorErrorHits 计算本轮达到阈值的账号，命中靠前的报错组优先。
+func (s *Service) dynamicMonitorErrorHits(ctx context.Context, station *storage.RelayStation, config DynamicMonitorConfig, state DynamicMonitorState, accounts []storage.RelayAccount) map[int64]dynamicMonitorErrorHit {
+	if len(config.ErrorGroups) == 0 {
+		return nil
+	}
+	schedulable := make(map[int64]struct{}, len(accounts))
+	for _, account := range accounts {
+		if relayAccountSchedulable(account) {
+			schedulable[account.ExternalID] = struct{}{}
+		}
+	}
+	if len(schedulable) == 0 {
+		return nil
+	}
+	apiKey, err := s.cipher.Decrypt(station.APIKeyCipher)
+	if err != nil {
+		return nil
+	}
+	now := time.Now().UTC()
+	hits := make(map[int64]dynamicMonitorErrorHit)
+	for index, group := range config.ErrorGroups {
+		if len(group.StatusCodes) == 0 {
+			continue
+		}
+		since := now.Add(-time.Duration(group.LookbackMinutes) * time.Minute)
+		events, complete := s.fetchDynamicMonitorErrorEvents(ctx, station.BaseURL, apiKey, group, since, now)
+		if !complete {
+			continue
+		}
+		counts := countDynamicMonitorErrorEvents(events, schedulable, state.Judged)
+		for externalID, count := range counts {
+			if _, done := hits[externalID]; done {
+				continue
+			}
+			if count < int64(group.Threshold) {
+				continue
+			}
+			hits[externalID] = dynamicMonitorErrorHit{
+				RuleGroupName:   group.Label(index),
+				StatusCodes:     append([]int(nil), group.StatusCodes...),
+				Count:           count,
+				WindowMinutes:   group.LookbackMinutes,
+				AllowAutoOpen:   group.AllowAutoOpen,
+				AutoOpenMinutes: group.AutoOpenMinutes,
+			}
+		}
+	}
+	return hits
+}
+
+// countDynamicMonitorErrorEvents 按账号统计窗口内的错误数。
+// 只统计可调度账号，且忽略判定边界（关闭/重开时间）及之前的记录，
+// 避免账号刚被开启就被同一批旧错误再次关闭。
+func countDynamicMonitorErrorEvents(events []dynamicMonitorErrorEvent, schedulable map[int64]struct{}, judged map[int64]time.Time) map[int64]int64 {
+	counts := make(map[int64]int64)
+	for _, event := range events {
+		if _, ok := schedulable[event.AccountExternalID]; !ok {
+			continue
+		}
+		if boundary := judged[event.AccountExternalID]; !boundary.IsZero() && !event.CreatedAt.After(boundary) {
+			continue
+		}
+		counts[event.AccountExternalID]++
+	}
+	return counts
+}
+
+// autoOpenDeadline 按配置计算自动开启时间，未启用时返回 nil。
+func autoOpenDeadline(now time.Time, allow bool, minutes int) *time.Time {
+	if !allow || minutes <= 0 {
+		return nil
+	}
+	value := now.UTC().Add(time.Duration(minutes) * time.Minute)
+	return &value
 }

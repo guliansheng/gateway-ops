@@ -105,6 +105,7 @@ type remoteRequestError struct {
 	Model              string `json:"model"`
 	RequestedModel     string `json:"requested_model"`
 	UpstreamModel      string `json:"upstream_model"`
+	AccountID          int64  `json:"account_id"`
 	GroupID            int64  `json:"group_id"`
 	DurationMS         *int64 `json:"duration_ms"`
 	TimeToFirstTokenMS *int64 `json:"time_to_first_token_ms"`

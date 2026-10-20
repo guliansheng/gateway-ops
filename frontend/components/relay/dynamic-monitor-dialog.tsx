@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react"
-import { Activity, ChevronDown, Layers3, Power, Plus, RefreshCw, Search, SlidersHorizontal, Trash2, Zap } from "lucide-react"
+import { Activity, AlertTriangle, ChevronDown, HelpCircle, Layers3, Power, Plus, RefreshCw, Search, SlidersHorizontal, Trash2, Zap } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Switch } from "@/components/ui/switch"
-import type { RelayAccountView, RelayDynamicMonitorConfig, RelayDynamicMonitorState, RelayGroupView } from "@/lib/api-types"
+import type { RelayAccountView, RelayDynamicMonitorConfig, RelayDynamicMonitorErrorRuleGroup, RelayDynamicMonitorState, RelayGroupView } from "@/lib/api-types"
 import { relativeTime } from "@/lib/format"
 import { cn } from "@/lib/utils"
 
@@ -90,6 +90,78 @@ function describeRule(draft: RuleGroupDraft): string {
 const CLOSE_REASON_LABELS: Record<string, string> = {
   first_token: "连续超标",
   first_token_single: "单次超时",
+  error_rule: "报错次数超阈值",
+}
+
+/** 报错组参考：常见状态码的原因与建议，展示在悬浮窗里方便查阅。 */
+const ERROR_REFERENCE: { code: string; cause: string; advice: string }[] = [
+  { code: "400", cause: "请求参数或请求体格式错误", advice: "不建议关闭账号" },
+  { code: "401", cause: "上游凭据无效、Token 过期", advice: "可关闭：建议 10 分钟 3 次" },
+  { code: "402", cause: "余额或额度不足", advice: "可临时关闭：1 次即可" },
+  { code: "403", cause: "账号或模型权限不足、区域限制", advice: "可关闭：建议 10 分钟 3 次" },
+  { code: "404", cause: "模型不存在或已下线", advice: "不建议关闭账号" },
+  { code: "408", cause: "请求超时", advice: "改用首字延迟规则" },
+  { code: "409", cause: "并发或状态冲突", advice: "降低并发，不关闭账号" },
+  { code: "413", cause: "请求体或上下文过大", advice: "不建议关闭账号" },
+  { code: "422", cause: "参数语义校验失败", advice: "不建议关闭账号" },
+  { code: "429", cause: "频率或并发限流", advice: "可短暂关闭：建议 5 分钟 5 次" },
+  { code: "499", cause: "客户端主动断开", advice: "不建议关闭账号" },
+  { code: "500", cause: "上游内部错误", advice: "可关闭：建议 10 分钟 3 次" },
+  { code: "502", cause: "上游网关错误、连接失败", advice: "可关闭：建议 10 分钟 3 次" },
+  { code: "503", cause: "上游服务不可用", advice: "可关闭：建议 10 分钟 3 次" },
+  { code: "504", cause: "上游网关超时", advice: "可关闭：建议 10 分钟 3 次" },
+]
+
+/** 报错组编辑态：状态码用逗号分隔的字符串承载，便于清空后重填。 */
+interface ErrorGroupDraft {
+  key: string
+  name: string
+  codes: string
+  threshold: string
+  lookback: string
+  autoOpenEnabled: boolean
+  autoOpen: string
+}
+
+let errorGroupSeq = 0
+
+function makeErrorDraft(index: number, overrides: Partial<ErrorGroupDraft> = {}): ErrorGroupDraft {
+  errorGroupSeq += 1
+  return {
+    key: `error-${errorGroupSeq}`,
+    name: overrides.name ?? `报错组 ${index}`,
+    codes: overrides.codes ?? "502,503",
+    threshold: overrides.threshold ?? "3",
+    lookback: overrides.lookback ?? "10",
+    autoOpenEnabled: overrides.autoOpenEnabled ?? false,
+    autoOpen: overrides.autoOpen ?? "30",
+  }
+}
+
+function toErrorDrafts(config: RelayDynamicMonitorConfig): ErrorGroupDraft[] {
+  const source = config.error_groups ?? []
+  return source.map((group, index) => makeErrorDraft(index + 1, {
+    name: group.name,
+    codes: (group.status_codes ?? []).join(","),
+    threshold: String(group.threshold ?? 0),
+    lookback: String(group.lookback_minutes ?? 0),
+    autoOpenEnabled: (group.auto_open_minutes ?? 0) > 0,
+    autoOpen: (group.auto_open_minutes ?? 0) > 0 ? String(group.auto_open_minutes) : "30",
+  }))
+}
+
+/** 解析逗号或空格分隔的状态码，出现非法值返回 null。 */
+function parseStatusCodes(raw: string): number[] | null {
+  const parts = raw.split(/[\s,，、]+/).map((item) => item.trim()).filter((item) => item !== "")
+  if (parts.length === 0) return null
+  const codes: number[] = []
+  for (const part of parts) {
+    if (!/^\d{3}$/.test(part)) return null
+    const value = Number(part)
+    if (value < 400 || value > 599) return null
+    if (!codes.includes(value)) codes.push(value)
+  }
+  return codes.sort((a, b) => a - b)
 }
 
 let ruleGroupSeq = 0
@@ -334,6 +406,7 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
   const [groupRuleExcluded, setGroupRuleExcluded] = useState<Record<string, boolean>>({})
   const [allowAutoOpen, setAllowAutoOpen] = useState(config.allow_auto_open)
   const [autoOpenMinutes, setAutoOpenMinutes] = useState(String(config.auto_open_minutes))
+  const [errorGroups, setErrorGroups] = useState<ErrorGroupDraft[]>(() => toErrorDrafts(config))
   const [error, setError] = useState("")
 
   const closedAccounts = state.closed_accounts ?? []
@@ -356,6 +429,7 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
       setGroupRuleExcluded(toGroupExcludedDrafts(next))
       setAllowAutoOpen(next.allow_auto_open)
       setAutoOpenMinutes(String(next.auto_open_minutes))
+      setErrorGroups(toErrorDrafts(next))
       setError("")
     }
     wasOpen.current = open
@@ -423,6 +497,18 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
     })
   }
 
+  function patchErrorDraft(key: string, patch: Partial<ErrorGroupDraft>) {
+    setErrorGroups((current) => current.map((draft) => (draft.key === key ? { ...draft, ...patch } : draft)))
+  }
+
+  function addErrorGroup() {
+    setErrorGroups((current) => (current.length >= MAX_RULE_GROUPS ? current : [...current, makeErrorDraft(current.length + 1)]))
+  }
+
+  function removeErrorGroup(key: string) {
+    setErrorGroups((current) => current.filter((draft) => draft.key !== key))
+  }
+
   function submit() {
     const minAccountsValue = Number(minAccounts)
     const autoOpenValue = Number(autoOpenMinutes)
@@ -469,8 +555,29 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
       if (draft.selectedIDs.length === 0) return setError(`${label}：请至少勾选一个参与账号`)
     }
 
+    const payloadErrorGroups: RelayDynamicMonitorErrorRuleGroup[] = []
+    for (const [index, draft] of errorGroups.entries()) {
+      const label = draft.name.trim() || `报错组 ${index + 1}`
+      const codes = parseStatusCodes(draft.codes)
+      if (!codes) return setError(`${label}：请填写 400 到 599 之间的具体状态码，多个用逗号分隔`)
+      const thresholdValue = Number(draft.threshold)
+      const lookbackValue = Number(draft.lookback)
+      const groupAutoOpenValue = draft.autoOpenEnabled ? Number(draft.autoOpen) : 0
+      if (!Number.isInteger(thresholdValue) || thresholdValue < 1 || thresholdValue > 1000) return setError(`${label}：错误次数阈值必须是 1 到 1000 的整数`)
+      if (!Number.isInteger(lookbackValue) || lookbackValue < 1 || lookbackValue > 10080) return setError(`${label}：统计时间窗口必须是 1 到 10080 分钟的整数`)
+      if (draft.autoOpenEnabled && (!Number.isInteger(groupAutoOpenValue) || groupAutoOpenValue < 1 || groupAutoOpenValue > 10080)) return setError(`${label}：关闭后自动开启时间必须是 1 到 10080 分钟的整数`)
+      payloadErrorGroups.push({
+        name: draft.name.trim(),
+        status_codes: codes,
+        threshold: thresholdValue,
+        lookback_minutes: lookbackValue,
+        allow_auto_open: draft.autoOpenEnabled,
+        auto_open_minutes: groupAutoOpenValue,
+      })
+    }
+
     const hasAnyFloor = minAccountsValue > 0 || Object.values(overrides).some((value) => value > 0)
-    if (enabled && ruleGroups.length === 0) return setError("启用监测时请至少配置一个规则组")
+    if (enabled && ruleGroups.length === 0 && payloadErrorGroups.length === 0) return setError("启用监测时请至少配置一个规则组或报错规则组")
     if (enabled && allowAutoOpen && autoOpenValue <= 0 && !hasAnyFloor) return setError("允许动态开启时，请设置自动开启时间或分组最少保留账号数")
 
     setError("")
@@ -483,6 +590,7 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
         single_timeout_seconds: draft.singleTimeoutEnabled ? Number(draft.singleTimeout) : 0,
         account_external_ids: draft.selectedIDs,
       })),
+      error_groups: payloadErrorGroups.length > 0 ? payloadErrorGroups : undefined,
       min_accounts_per_group: minAccountsValue,
       group_min_accounts: Object.keys(overrides).length > 0 ? overrides : undefined,
       group_rule_groups: Object.keys(ruleAssignments).length > 0 ? ruleAssignments : undefined,
@@ -498,7 +606,7 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
         <DialogHeader className="shrink-0 border-b border-border px-4 py-4 sm:px-6">
           <DialogTitle>账号动态监测</DialogTitle>
           <DialogDescription>
-            规则只保存在当前中转站的这个功能里，不会写入分组配置，也不影响自动调组策略：每个规则组命中“连续超标”或“单次超时”任一条件就关闭账号，随后按“分组最少保留账号数”和“超时自动开启”开回来。
+            规则只保存在当前中转站的这个功能里，不会写入分组配置，也不影响自动调组策略：监测规则组按首字延迟关闭勾选的账号，报错规则组按具体 HTTP 状态码统计所有账号；两者都支持各自的超时开启，分组最少保留账号数始终生效。
           </DialogDescription>
         </DialogHeader>
 
@@ -538,8 +646,103 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
                   onRemove={() => removeGroup(draft.key)}
                 />
               ))}
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-background px-3 py-2.5">
+              <div className="flex min-w-0 items-center gap-2">
+                <Zap className="size-4 shrink-0 text-brand" />
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold text-foreground">允许动态开启</p>
+                  <p className="text-[11px] leading-4 text-muted-foreground">作用于上面所有监测规则组关闭的账号；报错规则组在各自组内单独配置。</p>
+                </div>
+              </div>
+              <div className="flex shrink-0 flex-wrap items-center gap-2">
+                <Switch checked={allowAutoOpen} onCheckedChange={setAllowAutoOpen} disabled={busy} aria-label="允许动态开启" />
+                <span className="text-[11px] text-muted-foreground">关闭</span>
+                <Input inputMode="numeric" value={autoOpenMinutes} onChange={(event) => setAutoOpenMinutes(event.target.value)} disabled={busy || !allowAutoOpen} className="h-8 w-20 text-xs tabular-nums" aria-label="关闭多久后自动开启（分钟）" />
+                <span className="text-[11px] text-muted-foreground">分钟后开启</span>
+              </div>
+            </div>
           </ModuleSection>
 
+          <ModuleSection
+            icon={AlertTriangle}
+            title="报错规则组"
+            description="不选择账号，按具体 HTTP 状态码统计所有账号：命中任意一组即关闭账号，关闭后按该组自己的时间自动开启。"
+            action={<>
+              {/* modal 让浮层自建滚动锁（与分组筛选、Select 一致）；否则外层 Dialog 的 RemoveScroll 会吃掉列表里的滚轮事件。 */}
+              <Popover modal>
+                <PopoverTrigger asChild>
+                  <Button type="button" variant="outline" size="sm" className="h-8 gap-1 text-xs">
+                    <HelpCircle className="size-3.5" />常见状态码参考
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[min(36rem,92vw)] p-0" align="end">
+                  <div className="border-b border-border px-3 py-2">
+                    <p className="text-xs font-semibold text-foreground">常见状态码、原因与建议</p>
+                    <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">4xx 多为请求或模型问题，只有上游凭据与权限类错误适合作为关闭标准。</p>
+                  </div>
+                  <div className="max-h-72 overflow-y-auto overscroll-contain p-2">
+                    {ERROR_REFERENCE.map((item) => (
+                      <div key={item.code} className="flex items-start gap-2 rounded px-2 py-1.5 text-[11px] leading-4 hover:bg-muted/50">
+                        <span className="w-10 shrink-0 font-mono font-semibold tabular-nums text-foreground">{item.code}</span>
+                        <span className="min-w-0 flex-1 text-muted-foreground">{item.cause}</span>
+                        <span className="w-40 shrink-0 text-right text-muted-foreground">{item.advice}</span>
+                      </div>
+                    ))}
+                  </div>
+                </PopoverContent>
+              </Popover>
+              <Button type="button" variant="outline" size="sm" className="h-8 gap-1 text-xs" disabled={busy || errorGroups.length >= MAX_RULE_GROUPS} onClick={addErrorGroup}>
+                <Plus className="size-3.5" />添加报错组
+              </Button>
+            </>}
+          >
+            {errorGroups.length === 0 ? (
+              <p className="rounded-md border border-dashed border-border px-3 py-4 text-center text-[11px] text-muted-foreground">暂无报错规则组；添加后对所有账号生效</p>
+            ) : errorGroups.map((draft, index) => (
+              <div key={draft.key} className="space-y-2 rounded-md border border-border bg-muted/20 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex min-w-0 flex-1 items-center gap-2">
+                    <span className="shrink-0 rounded bg-danger/10 px-1.5 py-0.5 text-[11px] font-semibold text-danger">报错组 {index + 1}</span>
+                    <Input value={draft.name} onChange={(event) => patchErrorDraft(draft.key, { name: event.target.value })} disabled={busy} placeholder="报错组名称" aria-label={`报错组 ${index + 1} 名称`} className="h-8 w-44 text-xs" />
+                  </div>
+                  <Button type="button" variant="ghost" size="sm" className="h-8 shrink-0 gap-1 text-xs text-danger hover:text-danger" disabled={busy} onClick={() => removeErrorGroup(draft.key)} aria-label={`删除报错组 ${index + 1}`}>
+                    <Trash2 className="size-3.5" />删除
+                  </Button>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <div className="rounded-md border border-border bg-background px-2.5 py-2">
+                    <span className="text-[11px] text-muted-foreground">状态码</span>
+                    <Input value={draft.codes} onChange={(event) => patchErrorDraft(draft.key, { codes: event.target.value })} disabled={busy} placeholder="502,503" aria-label={`报错组 ${index + 1} 状态码`} className="mt-1 h-8 text-xs tabular-nums" />
+                  </div>
+                  <div className="rounded-md border border-border bg-background px-2.5 py-2">
+                    <span className="text-[11px] text-muted-foreground">窗口内达到</span>
+                    <div className="mt-1 flex items-center gap-1.5">
+                      <Input inputMode="numeric" value={draft.threshold} onChange={(event) => patchErrorDraft(draft.key, { threshold: event.target.value })} disabled={busy} aria-label={`报错组 ${index + 1} 错误次数阈值`} className="h-8 w-16 text-xs tabular-nums" />
+                      <span className="text-[11px] text-muted-foreground">次关闭</span>
+                    </div>
+                  </div>
+                  <div className="rounded-md border border-border bg-background px-2.5 py-2">
+                    <span className="text-[11px] text-muted-foreground">统计窗口</span>
+                    <div className="mt-1 flex items-center gap-1.5">
+                      <Input inputMode="numeric" value={draft.lookback} onChange={(event) => patchErrorDraft(draft.key, { lookback: event.target.value })} disabled={busy} aria-label={`报错组 ${index + 1} 统计窗口（分钟）`} className="h-8 w-20 text-xs tabular-nums" />
+                      <span className="text-[11px] text-muted-foreground">分钟</span>
+                    </div>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-background px-2.5 py-2">
+                  <div className="flex items-center gap-1.5">
+                    <Switch checked={draft.autoOpenEnabled} onCheckedChange={(checked) => patchErrorDraft(draft.key, { autoOpenEnabled: checked })} disabled={busy} aria-label={`报错组 ${index + 1} 启用动态开启`} />
+                    <span className="text-xs">关闭后动态开启</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[11px] text-muted-foreground">关闭</span>
+                    <Input inputMode="numeric" value={draft.autoOpen} onChange={(event) => patchErrorDraft(draft.key, { autoOpen: event.target.value })} disabled={busy || !draft.autoOpenEnabled} aria-label={`报错组 ${index + 1} 自动开启时间（分钟）`} className="h-8 w-20 text-xs tabular-nums" />
+                    <span className="text-[11px] text-muted-foreground">分钟后开启</span>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </ModuleSection>
           <ModuleSection
             icon={SlidersHorizontal}
             title="分组规则"
@@ -653,21 +856,6 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
             </div>
           </ModuleSection>
 
-          <ModuleSection
-            icon={Zap}
-            title="允许动态开启"
-            description="被规则关闭的账号，按超时时间或分组最少保留账号数自动开启。"
-            action={<Switch checked={allowAutoOpen} onCheckedChange={setAllowAutoOpen} disabled={busy} aria-label="允许动态开启" />}
-          >
-            <div className="flex flex-wrap items-center gap-3">
-              <Label htmlFor="dm-auto-open" className="shrink-0 text-xs">关闭多久后自动开启</Label>
-              <div className="flex items-center gap-1.5">
-                <Input id="dm-auto-open" inputMode="numeric" value={autoOpenMinutes} onChange={(event) => setAutoOpenMinutes(event.target.value)} disabled={busy || !allowAutoOpen} className="h-8 w-20 text-xs tabular-nums" aria-label="关闭多久后自动开启（分钟）" />
-                <span className="text-[11px] text-muted-foreground">分钟</span>
-              </div>
-              <span className="text-[11px] text-muted-foreground">0 表示不启用超时开启</span>
-            </div>
-          </ModuleSection>
 
           <ModuleSection
             icon={Activity}
@@ -681,13 +869,27 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
             ) : (
               <div className="max-h-40 space-y-1.5 overflow-y-auto rounded-md border border-border p-2 pr-1">
                 {closedAccounts.map((closure) => (
-                  <div key={closure.account_external_id} className="flex flex-wrap items-center justify-between gap-2 border border-transparent px-2 py-1.5">
-                    <span className="flex min-w-0 items-center gap-1.5">
-                      <span className="truncate text-xs font-medium">{closure.account_name}</span>
-                      <span className="font-mono text-[11px] font-normal text-muted-foreground">#{closure.account_external_id}</span>
-                      <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">{CLOSE_REASON_LABELS[closure.reason] ?? "规则命中"}</span>
+                  <div key={closure.account_external_id} className="flex flex-wrap items-start justify-between gap-2 border border-transparent px-2 py-1.5">
+                    <span className="flex min-w-0 flex-col gap-1">
+                      <span className="flex min-w-0 flex-wrap items-center gap-1.5">
+                        <span className="truncate text-xs font-medium">{closure.account_name}</span>
+                        <span className="font-mono text-[11px] font-normal text-muted-foreground">#{closure.account_external_id}</span>
+                        <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-medium", closure.rule_category === "error" ? "bg-danger/10 text-danger" : "bg-warning/10 text-warning")}>
+                          {closure.rule_category === "error" ? "报错规则组" : "监测规则组"}
+                        </span>
+                        <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">{CLOSE_REASON_LABELS[closure.reason] ?? "规则命中"}</span>
+                      </span>
+                      <span className="text-[11px] leading-4 text-muted-foreground">
+                        命中规则：{closure.rule_group_name?.trim() || "未记录"}
+                        {closure.error_status_codes && closure.error_status_codes.length > 0
+                          ? ` · 状态码 ${closure.error_status_codes.join("、")} · ${closure.error_window_minutes ?? 0} 分钟内 ${closure.error_count ?? 0} 次`
+                          : ""}
+                      </span>
                     </span>
-                    <span className="text-[11px] text-muted-foreground">关闭于 {relativeTime(closure.closed_at)}</span>
+                    <span className="shrink-0 text-right text-[11px] text-muted-foreground">
+                      <span className="block">关闭于 {relativeTime(closure.closed_at)}</span>
+                      <span className="block">{closure.auto_open_at ? "到点自动开启" : "仅分组保底开启"}</span>
+                    </span>
                   </div>
                 ))}
               </div>

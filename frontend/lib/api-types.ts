@@ -999,10 +999,27 @@ export interface RelayDynamicMonitorRuleGroup {
   account_external_ids: number[]
 }
 
+// 全局报错规则组：不选择账号，按具体 HTTP 状态码统计所有账号的上游最终失败请求。
+export interface RelayDynamicMonitorErrorRuleGroup {
+  /** 规则组名称，仅用于界面展示。 */
+  name: string
+  /** 具体 HTTP 状态码，例如 401、429、502；不使用 4xx/5xx 范围。 */
+  status_codes: number[]
+  /** 统计窗口内达到该错误次数后关闭账号。 */
+  threshold: number
+  /** 统计时间窗口（分钟）。 */
+  lookback_minutes: number
+  /** 该组关闭的账号是否允许超时自动开启。 */
+  allow_auto_open: boolean
+  /** 关闭多久后自动开启，0 表示不启用。 */
+  auto_open_minutes: number
+}
 export interface RelayDynamicMonitorConfig {
   enabled: boolean
   /** 多组规则，每组独立的阈值与超标次数。 */
   groups: RelayDynamicMonitorRuleGroup[]
+  /** 全局报错规则组，对所有账号生效。 */
+  error_groups?: RelayDynamicMonitorErrorRuleGroup[]
   /**
    * 公共值：分组至少保留多少个可用账号，0 表示不设置。
    * 未在 group_min_accounts 中单独设置的分组都使用这个值。
@@ -1034,8 +1051,19 @@ export interface RelayDynamicMonitorConfig {
 export interface RelayDynamicMonitorClosure {
   account_external_id: number
   account_name: string
+  /** first_token / first_token_single / error_rule */
   reason: string
+  /** monitor 为监测规则组关闭，error 为报错规则组关闭。 */
+  rule_category?: "monitor" | "error" | string
+  /** 命中的规则组名称。 */
+  rule_group_name?: string
+  /** 报错组命中的状态码、次数与统计窗口。 */
+  error_status_codes?: number[]
+  error_count?: number
+  error_window_minutes?: number
   closed_at: string
+  /** 该记录允许自动开启的时间；缺省表示只能靠分组保底开启。 */
+  auto_open_at?: string | null
 }
 
 export interface RelayDynamicMonitorState {
