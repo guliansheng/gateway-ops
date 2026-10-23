@@ -792,7 +792,8 @@ export interface RelayGroupView {
   account_types: string[]
   model_types: string[]
   rate_multiplier: number
-	monitor_enabled: boolean
+  monitor_enabled: boolean
+  model_pricing_enabled: boolean
   account_count: number
   priced_account_count: number
   channels: RelayChannelView[]
@@ -806,6 +807,19 @@ export interface PublicGroupMonitorCall {
 	model?: string
 	first_token_ms?: number | null
 	duration_ms?: number | null
+}
+
+export interface PublicGroupMonitorBucket {
+  start_at: string
+  end_at: string
+  total: number
+  success_count: number
+  failure_count: number
+  availability?: number | null
+  cache_rate?: number | null
+  first_token_ms?: number | null
+  duration_ms?: number | null
+  data_complete: boolean
 }
 
 export interface PublicGroupMonitorGroup {
@@ -825,6 +839,9 @@ export interface PublicGroupMonitorGroup {
 	consecutive_failures: number
 	failure_summary?: string
 	calls: PublicGroupMonitorCall[]
+	buckets?: PublicGroupMonitorBucket[]
+	cache_rate?: number | null
+	first_token_ms?: number | null
 }
 
 export interface PublicGroupMonitorSummary {
@@ -840,77 +857,102 @@ export interface PublicGroupMonitorSummary {
 export interface PublicGroupMonitorView {
 	station_id: number
 	station_name: string
+	range: "90m" | "24h" | "7d" | "30d"
 	updated_at: string
 	groups: PublicGroupMonitorGroup[]
 	summary: PublicGroupMonitorSummary
 }
 
+export interface PublicModelPricingValues {
+	billing_mode?: string
+	input_price?: number | null
+	output_price?: number | null
+	cache_write_price?: number | null
+	cache_read_price?: number | null
+	image_input_price?: number | null
+	image_output_price?: number | null
+	per_request_price?: number | null
+	image_price_1k?: number | null
+	image_price_2k?: number | null
+	image_price_4k?: number | null
+}
+
 export interface PublicModelPricingItem {
-  model: string
-  billing_model?: string
-  company: string
-  provider?: string
-  platform?: string
-  billing_mode?: string
-  billing_model_source?: string
-  price_source: "system_default" | "channel_override" | "channel_override_with_default" | "group_image_pricing" | "unavailable"
-  channel_id: number
-  channel_name: string
-  station_id: number
-  station_name: string
-  groups?: string[]
-  input_price?: number | null
-  output_price?: number | null
-  cache_write_price?: number | null
-  cache_read_price?: number | null
-  image_input_price?: number | null
-  image_output_price?: number | null
-  per_request_price?: number | null
-  image_price_1k?: number | null
-  image_price_2k?: number | null
-  image_price_4k?: number | null
-  fast_multiplier?: number | null
-  flex_multiplier?: number | null
-  intervals?: unknown[]
-  time_pricing?: unknown
+	model: string
+	billing_model?: string
+	company: string
+	provider?: string
+	platform?: string
+	billing_mode?: string
+	billing_model_source?: string
+	price_source: "system_default" | "channel_override" | "channel_override_with_default" | "group_image_pricing" | "unavailable"
+	official_pricing?: PublicModelPricingValues | null
+	official_pricing_source?: string
+	channel_id: number
+	channel_name: string
+	station_id: number
+	station_name: string
+	groups?: string[]
+	input_price?: number | null
+	output_price?: number | null
+	cache_write_price?: number | null
+	cache_read_price?: number | null
+	image_input_price?: number | null
+	image_output_price?: number | null
+	per_request_price?: number | null
+	image_price_1k?: number | null
+	image_price_2k?: number | null
+	image_price_4k?: number | null
+	fast_multiplier?: number | null
+	flex_multiplier?: number | null
+	intervals?: unknown[]
+	time_pricing?: unknown
+}
+
+export interface PublicPricingGroup {
+	name: string
+	rate_multiplier: number
 }
 
 export interface PublicModelPricingView {
-  station_id: number
-  station_name: string
-  updated_at: string
-  items: PublicModelPricingItem[]
-  summary: {
-    models: number
-    companies: number
-    channels: number
-    companies_list: string[]
-    platforms: string[]
-    billing_modes: string[]
-  }
+	station_id: number
+	station_name: string
+	updated_at: string
+	currency?: "USD" | "CNY"
+	items: PublicModelPricingItem[]
+	public_groups?: PublicPricingGroup[]
+	warnings?: string[]
+	summary: {
+		models: number
+		companies: number
+		channels: number
+		companies_list: string[]
+		platforms: string[]
+		billing_modes: string[]
+	}
 }
 
 export type PublicServiceStatusIndicator = "none" | "minor" | "major" | "critical" | "unknown" | string
 
 export interface PublicServiceStatusSummary {
-  indicator: PublicServiceStatusIndicator
-  description: string
+	indicator: PublicServiceStatusIndicator
+	description: string
 }
 
 export interface PublicServiceStatusComponent {
-  id: string
-  name: string
-  status: string
-  description?: string
-  updated_at?: string | null
-  history: PublicServiceStatusDay[]
+	id: string
+	name: string
+	status: string
+	description?: string
+	updated_at?: string | null
+	history: PublicServiceStatusDay[]
 }
 
 export interface PublicServiceStatusBlip {
-  id: string
-  name: string
-  status: string
-  impact: string
+	id: string
+	name: string
+	status: string
+	impact: string
 }
 
 export interface PublicServiceStatusDay {
@@ -1001,8 +1043,12 @@ export interface RelayDynamicMonitorRuleGroup {
 
 // 全局报错规则组：不选择账号，按具体 HTTP 状态码统计所有账号的上游最终失败请求。
 export interface RelayDynamicMonitorErrorRuleGroup {
+  /** 稳定规则标识，由后端补齐，编辑保存时原样保留。 */
+  id?: string
   /** 规则组名称，仅用于界面展示。 */
   name: string
+  /** 是否启用；旧配置缺省时视为启用。 */
+  enabled?: boolean
   /** 具体 HTTP 状态码，例如 401、429、502；不使用 4xx/5xx 范围。 */
   status_codes: number[]
   /** 统计窗口内达到该错误次数后关闭账号。 */
@@ -1018,8 +1064,10 @@ export interface RelayDynamicMonitorConfig {
   enabled: boolean
   /** 多组规则，每组独立的阈值与超标次数。 */
   groups: RelayDynamicMonitorRuleGroup[]
-  /** 全局报错规则组，对所有账号生效。 */
+  /** 全局报错规则组，对未保护账号生效。 */
   error_groups?: RelayDynamicMonitorErrorRuleGroup[]
+  /** 免于本功能所有关闭规则的账号，最多 1000 个；不影响手动或其他功能。 */
+  protected_account_external_ids?: number[]
   /**
    * 公共值：分组至少保留多少个可用账号，0 表示不设置。
    * 未在 group_min_accounts 中单独设置的分组都使用这个值。
@@ -1057,6 +1105,8 @@ export interface RelayDynamicMonitorClosure {
   rule_category?: "monitor" | "error" | string
   /** 命中的规则组名称。 */
   rule_group_name?: string
+  /** 报错组稳定标识，避免改名、重排或同名组影响自动开启。 */
+  rule_group_id?: string
   /** 报错组命中的状态码、次数与统计窗口。 */
   error_status_codes?: number[]
   error_count?: number
@@ -1126,6 +1176,7 @@ export interface PublicHelpDocument {
   document_id: number
   station_id: number
   station_name: string
+  station_url: string
   title: string
   content: string
   updated_at: string
