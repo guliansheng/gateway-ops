@@ -1,13 +1,14 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { Activity, AlertCircle, ArrowUpRight, CheckCircle2, ChevronDown, ChevronRight, CircleHelp, CircleX, Clock3, ExternalLink, Info, RefreshCw, TriangleAlert } from "lucide-react"
+import { Activity, AlertCircle, ArrowUpRight, CheckCircle2, ChevronDown, ChevronRight, CircleHelp, CircleX, Clock3, ExternalLink, Info, TriangleAlert } from "lucide-react"
 import openAIIcon from "@lobehub/icons-static-svg/icons/openai.svg"
 import anthropicIcon from "@lobehub/icons-static-svg/icons/anthropic.svg"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { PublicPageHeader, PublicPageTabs } from "@/components/public/public-page-header"
 import { apiFetch } from "@/lib/api"
 import type { PublicServiceStatus, PublicServiceStatusComponent, PublicServiceStatusDay, PublicServiceStatusGroup, PublicServiceStatusIncident, PublicServiceStatusView } from "@/lib/api-types"
 import { cn } from "@/lib/utils"
@@ -145,7 +146,7 @@ function ServicePanel({ service, days }: { service: PublicServiceStatus; days: n
 }
 
 function ServiceTabs({ services, selectedID, onSelect }: { services: PublicServiceStatus[]; selectedID: string; onSelect: (id: string) => void }) {
-  return <div className="flex w-full max-w-full overflow-x-auto rounded-lg border border-border bg-muted/50 p-1 sm:w-auto"><div className="flex min-w-full gap-1 sm:min-w-0">{services.map((service) => <button key={service.id} type="button" onClick={() => onSelect(service.id)} className={cn("flex min-h-11 min-w-[min(46vw,12rem)] cursor-pointer items-center justify-center gap-2 rounded-md px-4 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-w-40", selectedID === service.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:bg-background/70 hover:text-foreground")} aria-pressed={selectedID === service.id}><ServiceLogo id={service.id} /><span>{service.name}</span>{service.error ? <TriangleAlert className="size-3.5 text-warning" aria-label="读取失败" /> : null}</button>)}</div></div>
+  return <PublicPageTabs items={services.map((service) => ({ value: service.id, label: service.name, icon: <ServiceLogo id={service.id} />, indicator: service.error ? <TriangleAlert className="size-3.5 text-warning" aria-label="读取失败" /> : undefined }))} value={selectedID} onValueChange={onSelect} label="服务状态切换" />
 }
 
 function LoadingPanel() {
@@ -188,5 +189,21 @@ export default function PublicServiceStatusPage() {
   useEffect(() => { document.title = "服务状态 · GatewayOps" }, [])
 
   const selectedService = data?.services.find((service) => service.id === selectedID) ?? data?.services[0]
-  return <main className="min-h-screen bg-background text-foreground"><div className="relative mx-auto w-full max-w-[1440px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">{refreshing && data ? <div className="pointer-events-none absolute inset-x-0 top-3 z-10 flex justify-center"><span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"><RefreshCw className="size-3.5 animate-spin text-brand" />正在刷新服务状态</span></div> : null}<header className="flex min-h-16 flex-wrap items-start justify-between gap-4 border-b border-border pb-5"><div className="min-w-0"><h1 className="flex items-center gap-2 text-xl font-bold sm:text-2xl"><Activity className="size-5 shrink-0 text-brand sm:size-6" /><span>AI 服务状态</span></h1><p className="mt-1.5 text-sm text-muted-foreground">公开状态页实时摘要，每 {refreshIntervalSeconds} 秒自动刷新</p></div><div className="flex items-center gap-3"><span className="hidden whitespace-nowrap text-xs text-muted-foreground sm:inline">{refreshing ? "刷新中" : `${countdown} 秒后刷新`} · 更新于 {formatTime(data?.updated_at)}</span><Button type="button" variant="outline" size="icon" className="size-11 sm:size-9" aria-label="刷新服务状态" disabled={refreshing} onClick={() => void load(true)}><RefreshCw className={cn("size-4", refreshing && "animate-spin")} /></Button></div></header><div className="mt-5 flex flex-wrap items-center justify-between gap-3"><ServiceTabs services={data?.services ?? []} selectedID={selectedService?.id ?? selectedID} onSelect={setSelectedID} /><div className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"><Info className="size-3.5" />数据来自 OpenAI、Claude 官方状态页</div></div>{error ? <Alert variant="destructive" className="mt-4"><TriangleAlert /><AlertTitle>状态更新失败</AlertTitle><AlertDescription>{error}{data ? "，当前展示最近一次成功读取的数据。" : "，请稍后重试。"}</AlertDescription></Alert> : null}<section className="mt-5" aria-label="服务状态详情">{loading && !data ? <LoadingPanel /> : selectedService ? <ServicePanel service={selectedService} days={data?.days || 60} /> : <div className="flex min-h-64 items-center justify-center border border-dashed border-border text-sm text-muted-foreground">暂无服务状态数据</div>}</section><div className="mt-6 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-4 text-xs text-muted-foreground"><span>状态信息由第三方官方状态页提供，仅供运维参考。</span>{selectedService?.url ? <a className="inline-flex items-center gap-1 font-medium text-brand hover:underline" href={selectedService.url} target="_blank" rel="noopener noreferrer">打开 {selectedService.name} 官方状态页<ArrowUpRight className="size-3.5" /></a> : null}</div><span className="sr-only" aria-live="polite">{refreshing ? "正在刷新服务状态" : error ? "服务状态刷新失败" : "服务状态已更新"}</span></div></main>
+  return <main data-public-page className="min-h-screen min-w-0 bg-transparent text-foreground"><div className="w-full min-w-0">
+    <PublicPageHeader
+      icon={Activity}
+      title="AI 服务状态"
+      description="OpenAI / Claude 官方服务状态"
+      updatedAt={data?.updated_at}
+      refreshing={refreshing}
+      refreshIn={countdown}
+      refreshLabel="刷新服务状态"
+      onRefresh={() => void load(true)}
+      controls={data?.services.length ? <ServiceTabs services={data.services} selectedID={selectedService?.id ?? selectedID} onSelect={setSelectedID} /> : undefined}
+    />
+    {error ? <Alert variant="destructive" className="mb-3"><TriangleAlert /><AlertTitle>状态更新失败</AlertTitle><AlertDescription>{error}{data ? "，当前展示最近一次成功读取的数据。" : "，请稍后重试。"}</AlertDescription></Alert> : null}
+    <section aria-label="服务状态详情">{loading && !data ? <LoadingPanel /> : selectedService ? <ServicePanel service={selectedService} days={data?.days || 60} /> : <div className="flex min-h-64 items-center justify-center border border-dashed border-border text-sm text-muted-foreground">暂无服务状态数据</div>}</section>
+    <div className="mt-6 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-4 text-xs text-muted-foreground"><span>状态信息由第三方官方状态页提供，仅供运维参考。</span>{selectedService?.url ? <a className="inline-flex items-center gap-1 font-medium text-brand hover:underline" href={selectedService.url} target="_blank" rel="noopener noreferrer">打开 {selectedService.name} 官方状态页<ArrowUpRight className="size-3.5" /></a> : null}</div>
+    <span className="sr-only" aria-live="polite">{refreshing ? "正在刷新服务状态" : error ? "服务状态刷新失败" : "服务状态已更新"}</span>
+  </div></main>
 }

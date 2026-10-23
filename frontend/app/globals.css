@@ -242,3 +242,24 @@
     cursor: not-allowed;
   }
 }
+
+html:has(main[data-public-page]),
+body:has(main[data-public-page]) {
+  background-color: transparent;
+}
+
+main[data-public-page] {
+  box-sizing: border-box;
+  padding: 24px;
+}
+
+/* The public-page inset replaces each content wrapper's old vertical padding. */
+main[data-public-page] > div {
+  padding-block: 0;
+}
+
+/* Native selects can otherwise retain their longest option's intrinsic width. */
+main[data-public-page] select {
+  min-width: 0;
+  max-width: 100%;
+}
