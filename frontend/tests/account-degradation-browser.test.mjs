@@ -30,6 +30,7 @@ const errors = []
 const unexpected = []
 const accountConfigs = new Map()
 let failModels = false
+let runDelay = 0
 let nextID = 100
 let browser
 try {
@@ -67,6 +68,7 @@ try {
         const actualModel = accountID === 12 && body.fallback_model ? body.fallback_model : body.model
         const saved = result(nextID++,body.method,"normal",{model:actualModel,judge_model:body.judge_model || actualModel})
         histories.set(accountID,[saved,...(histories.get(accountID) || [])])
+        if (runDelay) await new Promise((done) => setTimeout(done, runDelay))
         return respond(saved)
       }
       return respond({results:histories.get(accountID) || []})
@@ -100,6 +102,34 @@ try {
   assert.equal(await rows.getByRole("checkbox").getAttribute("aria-label"),"选择账号 降智账号")
   await selectFilter("全部账号")
   console.log("PASS: definitive normal/degraded filters exclude failed, inconclusive and untested accounts")
+
+  // 关闭弹窗后「最近降智检测」列常驻显示正在测试，切去测别的账号也不丢
+  runDelay = 1500
+  const runningCell = page.getByRole("button",{name:"查看降智账号降智测试历史",exact:true}).locator("xpath=..")
+  assert.match(await runningCell.innerText(),/鹈鹕 · candidate/)
+  await page.getByRole("button",{name:"查看降智账号降智测试历史",exact:true}).click()
+  let runningDialog = page.getByRole("dialog",{name:"账号降智测试",exact:true})
+  await runningDialog.getByLabel("测试题目").selectOption("candy")
+  await runningDialog.getByRole("button",{name:"立即测试",exact:true}).click()
+  await runningDialog.getByRole("button",{name:"Close",exact:true}).click()
+  await runningCell.getByText("正在测试",{exact:true}).waitFor({timeout:3000})
+  const runningText = await runningCell.innerText()
+  assert.match(runningText,/鹈鹕 · candidate/)
+  assert.match(runningText,/疑似降智/)
+  // 另一个账号开始测试时，前一个账号的运行状态必须仍在
+  const otherCell = page.getByRole("button",{name:"查看失败账号降智测试历史",exact:true}).locator("xpath=..")
+  await page.getByRole("button",{name:"查看失败账号降智测试历史",exact:true}).click()
+  runningDialog = page.getByRole("dialog",{name:"账号降智测试",exact:true})
+  await runningDialog.getByRole("button",{name:"立即测试",exact:true}).click()
+  await runningDialog.getByRole("button",{name:"Close",exact:true}).click()
+  await runningCell.getByText("正在测试",{exact:true}).waitFor({timeout:3000})
+  await otherCell.getByText("正在测试",{exact:true}).waitFor({timeout:3000})
+  await runningCell.getByText("糖果 · backup",{exact:true}).waitFor({timeout:8000})
+  assert.equal(await runningCell.getByText("正在测试",{exact:true}).count(),0)
+  assert.match(await runningCell.innerText(),/正常/)
+  await otherCell.getByText("鹈鹕 · candidate",{exact:true}).waitFor({timeout:8000})
+  runDelay = 0
+  console.log("PASS: latest column keeps the running state across dialog close and another account's test")
 
 	await page.getByRole("button",{name:"配置正常账号降智测试",exact:true}).click()
 	let dialog = page.getByRole("dialog",{name:"账号降智测试配置",exact:true})
