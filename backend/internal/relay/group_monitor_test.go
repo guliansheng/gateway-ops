@@ -1,6 +1,8 @@
 package relay
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -152,5 +154,16 @@ func TestBuildPublicGroupMonitorGroupKeepsGenericReasonWhenModelsDoNotExplainFai
 	got := buildPublicGroupMonitorGroup(group, usage, failures, true, now)
 	if got.FailureSummary != "报错主要原因：上游响应异常（1 次）" {
 		t.Fatalf("failure summary = %q", got.FailureSummary)
+	}
+}
+
+func TestPublicGroupMonitorOmitsFailureSummary(t *testing.T) {
+	group := buildPublicGroupMonitorGroup(storage.RelayGroup{ExternalID: 1, Name: "test", Status: "active", MonitorEnabled: true}, nil, []monitorEvent{{model: "private-model", failureReason: monitorFailureUpstream}}, true, time.Now())
+	data, err := json.Marshal(group)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "failure_summary") || strings.Contains(string(data), "报错主要原因") {
+		t.Fatalf("public monitor exposed failure details: %s", data)
 	}
 }

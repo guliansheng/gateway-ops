@@ -23,6 +23,7 @@ const (
 type PublicGroupMonitor struct {
 	StationID   uint                      `json:"station_id"`
 	StationName string                    `json:"station_name"`
+	Range       string                    `json:"range"`
 	UpdatedAt   time.Time                 `json:"updated_at"`
 	Groups      []PublicGroupMonitorGroup `json:"groups"`
 	Summary     PublicGroupMonitorSummary `json:"summary"`
@@ -39,22 +40,25 @@ type PublicGroupMonitorSummary struct {
 }
 
 type PublicGroupMonitorGroup struct {
-	ExternalID          int64                    `json:"external_id"`
-	Name                string                   `json:"name"`
-	Description         string                   `json:"description,omitempty"`
-	Platform            string                   `json:"platform,omitempty"`
-	RateMultiplier      float64                  `json:"rate_multiplier"`
-	Enabled             bool                     `json:"enabled"`
-	GroupStatus         string                   `json:"group_status,omitempty"`
-	Status              string                   `json:"status"`
-	DataComplete        bool                     `json:"data_complete"`
-	UpdatedAt           time.Time                `json:"updated_at"`
-	LatestCallAt        *time.Time               `json:"latest_call_at,omitempty"`
-	SuccessCount        int                      `json:"success_count"`
-	FailureCount        int                      `json:"failure_count"`
-	ConsecutiveFailures int                      `json:"consecutive_failures"`
-	FailureSummary      string                   `json:"failure_summary,omitempty"`
-	Calls               []PublicGroupMonitorCall `json:"calls"`
+	ExternalID          int64                      `json:"external_id"`
+	Name                string                     `json:"name"`
+	Description         string                     `json:"description,omitempty"`
+	Platform            string                     `json:"platform,omitempty"`
+	RateMultiplier      float64                    `json:"rate_multiplier"`
+	Enabled             bool                       `json:"enabled"`
+	GroupStatus         string                     `json:"group_status,omitempty"`
+	Status              string                     `json:"status"`
+	DataComplete        bool                       `json:"data_complete"`
+	UpdatedAt           time.Time                  `json:"updated_at"`
+	LatestCallAt        *time.Time                 `json:"latest_call_at,omitempty"`
+	SuccessCount        int                        `json:"success_count"`
+	FailureCount        int                        `json:"failure_count"`
+	ConsecutiveFailures int                        `json:"consecutive_failures"`
+	FailureSummary      string                     `json:"-"`
+	Calls               []PublicGroupMonitorCall   `json:"calls"`
+	Buckets             []PublicGroupMonitorBucket `json:"buckets"`
+	CacheRate           *float64                   `json:"cache_rate,omitempty"`
+	FirstTokenMS        *int64                     `json:"first_token_ms,omitempty"`
 }
 
 type PublicGroupMonitorCall struct {
@@ -71,14 +75,17 @@ type publicMonitorCacheEntry struct {
 }
 
 type monitorEvent struct {
-	success         bool
-	createdAt       time.Time
-	model           string
-	requestID       string
-	clientRequestID string
-	firstTokenMS    *int64
-	durationMS      *int64
-	failureReason   string
+	success             bool
+	createdAt           time.Time
+	model               string
+	requestID           string
+	clientRequestID     string
+	firstTokenMS        *int64
+	durationMS          *int64
+	failureReason       string
+	cacheReadTokens     int64
+	inputTokens         int64
+	cacheCreationTokens int64
 }
 
 type monitorModelStats struct {
@@ -134,19 +141,33 @@ type monitorFetchResult struct {
 
 func (s *Service) invalidatePublicMonitor(stationID uint) {
 	s.publicMonitorMu.Lock()
-	delete(s.publicMonitorCache, stationID)
+	prefix := fmt.Sprintf("%d:", stationID)
+	for key := range s.publicMonitorCache {
+		if strings.HasPrefix(key, prefix) {
+			delete(s.publicMonitorCache, key)
+		}
+	}
 	s.publicMonitorMu.Unlock()
 }
 
-// PublicGroupMonitor aggregates the latest successful calls and provider-side
-// failures for monitored groups. Upstream failures are retained as events so a
-// group that stopped working is visible even when its last successful call is
-// old. The short cache prevents a public page refresh from fanning out to the
-// remote admin API on every request.
+// PublicGroupMonitor keeps the original 90-minute API contract for internal callers.
 func (s *Service) PublicGroupMonitor(ctx context.Context, stationID uint) (PublicGroupMonitor, error) {
+	return s.PublicGroupMonitorForRange(ctx, stationID, publicMonitorDefaultRange)
+}
+
+// PublicGroupMonitorForRange aggregates a public monitor window without exposing
+// upstream credentials, raw errors, accounts, or request identifiers.
+func (s *Service) PublicGroupMonitorForRange(ctx context.Context, stationID uint, rawRange string) (PublicGroupMonitor, error) {
+	config, ok := monitorWindowConfigFor(rawRange)
+	if !ok {
+		return PublicGroupMonitor{}, fmt.Errorf("unsupported monitor range %q", rawRange)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	now := time.Now().UTC()
+	cacheKey := fmt.Sprintf("%d:%s", stationID, config.key)
 	s.publicMonitorMu.Lock()
-	if cached, ok := s.publicMonitorCache[stationID]; ok && now.Before(cached.ExpiresAt) {
+	if cached, ok := s.publicMonitorCache[cacheKey]; ok && now.Before(cached.ExpiresAt) {
 		s.publicMonitorMu.Unlock()
 		return cached.View, nil
 	}
@@ -160,7 +181,7 @@ func (s *Service) PublicGroupMonitor(ctx context.Context, stationID uint) (Publi
 	if err != nil {
 		return PublicGroupMonitor{}, err
 	}
-	view := PublicGroupMonitor{StationID: stationID, StationName: station.Name, UpdatedAt: now, Groups: []PublicGroupMonitorGroup{}}
+	view := PublicGroupMonitor{StationID: stationID, StationName: station.Name, Range: config.key, UpdatedAt: now, Groups: []PublicGroupMonitorGroup{}}
 	monitored := make([]int, 0, len(groups))
 	for index := range groups {
 		if groups[index].MonitorEnabled {
@@ -169,7 +190,7 @@ func (s *Service) PublicGroupMonitor(ctx context.Context, stationID uint) (Publi
 	}
 	if len(monitored) == 0 {
 		view.Summary.Total = 0
-		s.storePublicMonitor(stationID, view, now)
+		s.storePublicMonitor(stationID, config.key, view, now)
 		return view, nil
 	}
 
@@ -195,20 +216,10 @@ func (s *Service) PublicGroupMonitor(ctx context.Context, stationID uint) (Publi
 			for job := range jobs {
 				group := groups[monitored[job.index]]
 				result := monitorFetchResult{index: job.index, kind: job.kind}
-				if job.kind == monitorFetchUsage {
-					var page remoteUsagePage
-					endpoint := fmt.Sprintf("%s/api/v1/admin/usage?page=1&page_size=%d&group_id=%d", station.BaseURL, groupMonitorLimit, group.ExternalID)
-					result.err = s.get(ctx, endpoint, apiKey, &page)
-					if result.err == nil {
-						result.usage = usageMonitorEvents(page.Items)
-					}
-				} else {
-					var page remoteRequestErrorPage
-					endpoint := fmt.Sprintf("%s/api/v1/admin/ops/request-errors?page=1&page_size=%d&group_id=%d", station.BaseURL, groupMonitorLimit, group.ExternalID)
-					result.err = s.get(ctx, endpoint, apiKey, &page)
-					if result.err == nil {
-						result.errors = errorMonitorEvents(page.Items, group.ExternalID)
-					}
+				result.usage, result.err = s.fetchMonitorWindowForConfig(ctx, station.BaseURL, apiKey, group.ExternalID, job.kind, now, config)
+				if job.kind == monitorFetchErrors {
+					result.errors = result.usage
+					result.usage = nil
 				}
 				results <- result
 			}
@@ -244,7 +255,9 @@ func (s *Service) PublicGroupMonitor(ctx context.Context, stationID uint) (Publi
 	}
 	for index, groupIndex := range monitored {
 		group := groups[groupIndex]
-		item := buildPublicGroupMonitorGroup(group, perGroup[index].usage, perGroup[index].errors, perGroup[index].usageOK && perGroup[index].errorsOK, now)
+		complete := perGroup[index].usageOK && perGroup[index].errorsOK
+		item := buildPublicGroupMonitorGroup(group, perGroup[index].usage, perGroup[index].errors, complete, now)
+		item.Buckets, item.CacheRate, item.FirstTokenMS = buildMonitorBucketsForConfig(perGroup[index].usage, perGroup[index].errors, complete, now, config)
 		view.Groups = append(view.Groups, item)
 		switch item.Status {
 		case "available":
@@ -262,13 +275,13 @@ func (s *Service) PublicGroupMonitor(ctx context.Context, stationID uint) (Publi
 		}
 	}
 	view.Summary.Total = len(view.Groups)
-	s.storePublicMonitor(stationID, view, now)
+	s.storePublicMonitor(stationID, config.key, view, now)
 	return view, nil
 }
 
-func (s *Service) storePublicMonitor(stationID uint, view PublicGroupMonitor, now time.Time) {
+func (s *Service) storePublicMonitor(stationID uint, rangeKey string, view PublicGroupMonitor, now time.Time) {
 	s.publicMonitorMu.Lock()
-	s.publicMonitorCache[stationID] = publicMonitorCacheEntry{ExpiresAt: now.Add(groupMonitorCacheTTL), View: view}
+	s.publicMonitorCache[fmt.Sprintf("%d:%s", stationID, rangeKey)] = publicMonitorCacheEntry{ExpiresAt: now.Add(groupMonitorCacheTTL), View: view}
 	s.publicMonitorMu.Unlock()
 }
 
@@ -284,7 +297,11 @@ func usageMonitorEvents(items []remoteUsage) []monitorEvent {
 			model = strings.TrimSpace(item.Model)
 		}
 		first, duration := item.FirstTokenMS, item.DurationMS
-		events = append(events, monitorEvent{success: true, createdAt: created, model: model, requestID: strings.TrimSpace(item.RequestID), clientRequestID: strings.TrimSpace(item.ClientRequestID), firstTokenMS: &first, durationMS: &duration})
+		cacheCreation := item.CacheCreationTokens
+		if cacheCreation == 0 {
+			cacheCreation = item.CacheCreation5mTokens + item.CacheCreation1hTokens
+		}
+		events = append(events, monitorEvent{success: true, createdAt: created, model: model, requestID: strings.TrimSpace(item.RequestID), clientRequestID: strings.TrimSpace(item.ClientRequestID), firstTokenMS: &first, durationMS: &duration, cacheReadTokens: item.CacheReadTokens, inputTokens: item.InputTokens, cacheCreationTokens: cacheCreation})
 	}
 	return events
 }

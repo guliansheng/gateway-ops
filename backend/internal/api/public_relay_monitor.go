@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/guliansheng/gateway-ops/internal/relay"
 	"gorm.io/gorm"
 )
 
@@ -20,7 +21,13 @@ func publicRelayGroupMonitor(c *gin.Context, d *Deps) {
 		fail(c, http.StatusBadRequest, errors.New("无效的中转站 ID"))
 		return
 	}
-	view, err := d.Relay.PublicGroupMonitor(c.Request.Context(), stationID)
+	rawRange := c.DefaultQuery("range", "90m")
+	monitorRange, ok := relay.NormalizePublicMonitorRange(rawRange)
+	if !ok {
+		fail(c, http.StatusBadRequest, errors.New("时间范围仅支持 90m、24h、7d 或 30d"))
+		return
+	}
+	view, err := d.Relay.PublicGroupMonitorForRange(c.Request.Context(), stationID, monitorRange)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			fail(c, http.StatusNotFound, errors.New("中转站不存在"))

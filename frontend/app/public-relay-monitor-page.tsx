@@ -1,265 +1,242 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
-import { Activity, Ban, CheckCircle2, CircleHelp, CircleX, Clock3, Info, RefreshCw, TriangleAlert } from "lucide-react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Activity, TriangleAlert } from "lucide-react"
 import { useParams } from "react-router-dom"
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
-import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { apiFetch } from "@/lib/api"
-import type { PublicGroupMonitorCall, PublicGroupMonitorGroup, PublicGroupMonitorStatus, PublicGroupMonitorView } from "@/lib/api-types"
-import { cn } from "@/lib/utils"
+import { GroupDegradationStatus } from "@/components/monitor/group-degradation-settings"
 import { PlatformBadge } from "@/components/relay/platform-badge"
-import { RecentUsageCard, RecentUsageTooltip, recentUsageTooltipNarrowClassName } from "@/components/monitor/recent-usage-tooltip"
+import { apiFetch } from "@/lib/api"
+import type { PublicGroupMonitorBucket, PublicGroupMonitorGroup, PublicGroupMonitorStatus, PublicGroupMonitorView } from "@/lib/api-types"
+import { cn } from "@/lib/utils"
+import { PublicPageHeader, PublicPageTabs } from "@/components/public/public-page-header"
+import { availabilityBand, availabilityBands, availabilityBar } from "@/lib/group-monitor"
 
-const refreshIntervalSeconds = 30
-const refreshIntervalMS = refreshIntervalSeconds * 1_000
-const monitorBrowserCacheVersion = 1
+const refreshSeconds = 30
+const cacheVersion = 4
+const monitorRanges = ["90m", "24h", "7d", "30d"] as const
+type MonitorRange = (typeof monitorRanges)[number]
 
-type MonitorBrowserCache = {
-  version: number
-  data: PublicGroupMonitorView
+const rangeConfig: Record<MonitorRange, { label: string; description: string; bucketMS: number; bucketCount: number }> = {
+  "90m": { label: "90m", description: "近 90 分钟 · 每格 5 分钟", bucketMS: 5 * 60 * 1000, bucketCount: 18 },
+  "24h": { label: "24h", description: "近 24 小时 · 每格 1 小时", bucketMS: 60 * 60 * 1000, bucketCount: 24 },
+  "7d": { label: "7d", description: "近 7 天 · 每格 6 小时", bucketMS: 6 * 60 * 60 * 1000, bucketCount: 28 },
+  "30d": { label: "30d", description: "近 30 天 · 每格 1 天", bucketMS: 24 * 60 * 60 * 1000, bucketCount: 30 },
 }
 
-function monitorBrowserCacheKey(stationID: number) {
-  return `gatewayops:group-monitor:v${monitorBrowserCacheVersion}:${stationID}`
+function cacheKey(stationID: number, range: MonitorRange) {
+  return `gatewayops:group-monitor:v${cacheVersion}:${stationID}:${range}`
 }
 
-function readMonitorBrowserCache(stationID: number): PublicGroupMonitorView | null {
-  if (typeof window === "undefined" || !Number.isInteger(stationID) || stationID <= 0) return null
+function readCache(stationID: number, range: MonitorRange): PublicGroupMonitorView | null {
   try {
-    const raw = window.localStorage.getItem(monitorBrowserCacheKey(stationID))
-    if (!raw) return null
-    const cached = JSON.parse(raw) as MonitorBrowserCache
-    if (cached.version !== monitorBrowserCacheVersion || cached.data?.station_id !== stationID || !Array.isArray(cached.data?.groups)) return null
-    return cached.data
+    const data = JSON.parse(window.localStorage.getItem(cacheKey(stationID, range)) || "null") as PublicGroupMonitorView | null
+    const at = new Date(data?.updated_at || "").getTime()
+    return data?.station_id === stationID && data.range === range && Array.isArray(data.groups) && Date.now() - at < 5 * 60 * 1000 ? data : null
   } catch {
     return null
   }
 }
 
-function writeMonitorBrowserCache(stationID: number, data: PublicGroupMonitorView) {
-  if (typeof window === "undefined") return
-  try {
-    window.localStorage.setItem(monitorBrowserCacheKey(stationID), JSON.stringify({ version: monitorBrowserCacheVersion, data } satisfies MonitorBrowserCache))
-  } catch {
-    // Storage can be unavailable in private browsing; live refresh remains available.
-  }
+const statuses: Record<PublicGroupMonitorStatus, { label: string; tone: string }> = {
+  available: { label: "正常", tone: "bg-success/10 text-success" },
+  degraded: { label: "不稳定", tone: "bg-warning/10 text-warning" },
+  unavailable: { label: "不可用", tone: "bg-danger/10 text-danger" },
+  idle: { label: "暂无请求", tone: "bg-muted text-muted-foreground" },
+  disabled: { label: "已停用", tone: "bg-muted text-muted-foreground" },
+  unknown: { label: "数据不完整", tone: "bg-muted text-muted-foreground" },
 }
 
-const statusMeta: Record<PublicGroupMonitorStatus, { label: string; className: string; pillClassName: string; icon: typeof CheckCircle2 }> = {
-  available: { label: "可用", className: "text-success", pillClassName: "border-success/25 bg-success/10", icon: CheckCircle2 },
-  degraded: { label: "不稳定", className: "text-warning", pillClassName: "border-warning/25 bg-warning/10", icon: TriangleAlert },
-  unavailable: { label: "不可用", className: "text-danger", pillClassName: "border-danger/25 bg-danger/10", icon: CircleX },
-  idle: { label: "暂无调用", className: "text-muted-foreground", pillClassName: "border-border bg-muted/60", icon: Clock3 },
-  disabled: { label: "已停用", className: "text-muted-foreground", pillClassName: "border-border bg-muted/60", icon: Ban },
-  unknown: { label: "状态未知", className: "text-warning", pillClassName: "border-warning/25 bg-warning/10", icon: CircleHelp },
+function percent(value: number | null | undefined) {
+  return value == null || !Number.isFinite(value) ? "—" : `${(value * 100).toFixed(1)}%`
 }
 
-type LatencyTone = "good" | "warn" | "slow" | "critical"
-
-function latencyTone(value: number | null | undefined, metric: "first" | "duration"): LatencyTone {
-  if (value == null || !Number.isFinite(value) || value < 0) return "critical"
-  const thresholds = metric === "first"
-    ? { warn: 10_000, slow: 30_000, critical: 60_000 }
-    : { warn: 60_000, slow: 180_000, critical: 300_000 }
-  if (value >= thresholds.critical) return "critical"
-  if (value >= thresholds.slow) return "slow"
-  if (value >= thresholds.warn) return "warn"
-  return "good"
+function latency(value: number | null | undefined) {
+  return value == null || !Number.isFinite(value) || value < 0 ? "—" : value < 1000 ? `${Math.round(value)}ms` : `${(value / 1000).toFixed(1)}s`
 }
 
-const latencyColor: Record<LatencyTone, string> = {
-  good: "#10b981",
-  warn: "#f59e0b",
-  slow: "#f97316",
-  critical: "#ef4444",
-}
-
-const latencyTextClass: Record<LatencyTone, string> = {
-  good: "text-emerald-600 dark:text-emerald-400",
-  warn: "text-amber-600 dark:text-amber-400",
-  slow: "text-orange-600 dark:text-orange-400",
-  critical: "text-red-600 dark:text-red-400",
-}
-
-function formatLatency(value: number | null | undefined) {
-  if (value == null || !Number.isFinite(value) || value < 0) return "-"
-  const milliseconds = Math.round(value)
-  if (milliseconds < 1_000) return `${milliseconds}ms`
-  const totalSeconds = milliseconds / 1_000
-  if (totalSeconds < 60) return `${totalSeconds.toFixed(totalSeconds < 10 ? 1 : 0)}秒`
-  const hours = Math.floor(totalSeconds / 3_600)
-  const minutes = Math.floor((totalSeconds % 3_600) / 60)
-  const seconds = totalSeconds % 60
-  const secondsText = seconds.toFixed(seconds < 10 && seconds % 1 !== 0 ? 1 : 0).padStart(2, "0")
-  if (hours > 0) return `${hours}时 ${String(minutes).padStart(2, "0")}分 ${secondsText}秒`
-  return `${minutes}分 ${secondsText}秒`
-}
-
-function formatTime(value: string | null | undefined) {
-  if (!value) return "暂无"
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return "暂无"
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
+function time(raw?: string | null, full = false) {
+  const date = new Date(raw || "")
+  return Number.isNaN(date.getTime()) ? "暂无" : date.toLocaleString("zh-CN", {
+    ...(full ? { month: "2-digit", day: "2-digit" } as const : {}),
     hour: "2-digit",
     minute: "2-digit",
-    second: "2-digit",
     hour12: false,
-  }).format(date)
+  })
 }
 
-function LatencyBars({ calls, groupName }: { calls: PublicGroupMonitorCall[]; groupName: string }) {
-  const ordered = useMemo(() => [...calls].reverse(), [calls])
-  if (ordered.length === 0) {
-    return <span className="block w-full text-xs text-muted-foreground">暂无调用记录</span>
-  }
-  return <Tooltip delayDuration={160}>
-    <TooltipTrigger asChild>
-      <button type="button" className="block h-10 w-full rounded-sm px-1 py-1 transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={`查看${groupName}最近${ordered.length}次调用`}>
-        <span className="flex h-8 w-full items-stretch gap-px overflow-hidden" aria-hidden="true">
-          {ordered.map((call, index) => call.success ? <span key={`${call.created_at}-${index}`} className="min-w-0 flex-1 rounded-[3px] opacity-90 transition-opacity hover:opacity-100" style={{ background: `linear-gradient(to top, ${latencyColor[latencyTone(call.duration_ms, "duration")]} 0 50%, ${latencyColor[latencyTone(call.first_token_ms, "first")]} 50% 100%)` }} /> : <span key={`${call.created_at}-${index}`} className="min-w-0 flex-1 rounded-[3px] bg-red-500 opacity-90 transition-opacity hover:opacity-100" />)}
-        </span>
-      </button>
-    </TooltipTrigger>
-    <TooltipContent side="bottom" align="end" className={recentUsageTooltipNarrowClassName}>
-      <RecentUsageTooltip count={ordered.length}>
-        {[...ordered].reverse().map((call, index) => {
-          const first = latencyTone(call.first_token_ms, "first")
-          const duration = latencyTone(call.duration_ms, "duration")
-          return (
-            <RecentUsageCard key={`${call.created_at}-detail-${index}`}>
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <time dateTime={call.created_at} className="whitespace-nowrap font-mono text-xs font-semibold tabular-nums text-slate-700">{formatTime(call.created_at)}</time>
-                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500">#{ordered.length - index}</span>
-              </div>
-              <div className="mt-2 min-w-0 rounded-md bg-slate-50 px-2.5 py-2 ring-1 ring-slate-200/70">
-                <p className="truncate font-mono text-sm font-semibold leading-5 text-slate-950" title={call.model || "-"}>{call.model || "-"}</p>
-              </div>
-              <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 rounded-md bg-slate-50 px-2.5 py-2 font-mono text-xs font-semibold tabular-nums ring-1 ring-slate-200/70">
-                {call.success ? <><span className={latencyTextClass[first]}>首字 {formatLatency(call.first_token_ms)}</span><span className={latencyTextClass[duration]}>总耗时 {formatLatency(call.duration_ms)}</span></> : <span className="text-red-600">调用失败{call.duration_ms != null ? ` · 总耗时 ${formatLatency(call.duration_ms)}` : ""}</span>}
-              </div>
-            </RecentUsageCard>
-          )
-        })}
-      </RecentUsageTooltip>
-    </TooltipContent>
-  </Tooltip>
+function rangeTime(raw: string | null | undefined, range: MonitorRange) {
+  const date = new Date(raw || "")
+  if (Number.isNaN(date.getTime())) return "暂无"
+  if (range === "30d" || range === "7d") return date.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" })
+  return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false })
 }
 
-function Status({ status }: { status: PublicGroupMonitorStatus }) {
-  const meta = statusMeta[status]
-  const Icon = meta.icon
-  return <span className={cn("inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-semibold", meta.className, meta.pillClassName)}><Icon className="size-3.5" />{meta.label}</span>
+function bucketsFor(group: PublicGroupMonitorGroup, range: MonitorRange): PublicGroupMonitorBucket[] {
+  if (group.buckets?.length) return group.buckets
+  const config = rangeConfig[range]
+  const at = new Date(group.updated_at).getTime()
+  const current = Math.floor((Number.isFinite(at) ? at : Date.now()) / config.bucketMS) * config.bucketMS
+  return Array.from({ length: config.bucketCount }, (_, index) => ({
+    start_at: new Date(current - (config.bucketCount - 1 - index) * config.bucketMS).toISOString(),
+    end_at: new Date(current - (config.bucketCount - 2 - index) * config.bucketMS).toISOString(),
+    total: 0,
+    success_count: 0,
+    failure_count: 0,
+    data_complete: false,
+  }))
 }
 
-function successRate(group: PublicGroupMonitorGroup) {
-  const total = group.success_count + group.failure_count
-  return total > 0 ? `${((group.success_count / total) * 100).toFixed(1)}%` : "-"
-}
 
-function MonitorRow({ group }: { group: PublicGroupMonitorGroup }) {
-  return <article className="group overflow-hidden rounded-[5px] border border-border/80 bg-card shadow-sm transition-[border-color,box-shadow] duration-200 hover:border-brand/40 hover:shadow-md">
-    <div className="p-4 sm:p-5">
-      <div className="flex min-w-0 flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 flex-wrap items-center gap-2.5">
-            <h2 className="min-w-0 truncate text-base font-semibold text-foreground" title={group.name}>{group.name}</h2>
-            <span className="inline-flex shrink-0 items-center rounded-md border border-brand/20 bg-brand/5 px-2 py-1 font-mono text-[11px] font-semibold tabular-nums text-brand">倍率 {group.rate_multiplier.toFixed(3)}</span>
-            <PlatformBadge platform={group.platform} />
-          </div>
-          <p className="mt-2 line-clamp-2 text-xs leading-5 text-muted-foreground" title={group.description || "暂无描述"}>{group.description || "暂无描述"}</p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <Status status={group.status} />
-          <span className="inline-flex items-center rounded-md border border-brand/20 bg-brand/5 px-2.5 py-1.5 font-mono text-xs font-semibold tabular-nums text-brand">成功率 {successRate(group)}</span>
-        </div>
-      </div>
-
-      <div className="mt-4 border-t border-border/70 pt-3.5">
-        <div className="flex min-w-0 flex-wrap items-center justify-between gap-2 text-[11px]">
-          <span className="flex min-w-0 items-center gap-2 text-muted-foreground"><span className="font-medium text-foreground/80">最近调用</span>{group.failure_summary ? <span className="truncate text-xs font-semibold text-warning" title={group.failure_summary}>{group.failure_summary}</span> : null}</span>
-          <span className="shrink-0 font-mono text-sm font-semibold tabular-nums text-foreground">{formatTime(group.latest_call_at)}</span>
-        </div>
-        <div className="mt-2 rounded-md bg-muted/35 px-2 py-1.5">
-          <LatencyBars calls={group.calls} groupName={group.name} />
-        </div>
-      </div>
-
+function Timeline({ group, range }: { group: PublicGroupMonitorGroup; range: MonitorRange }) {
+  const buckets = bucketsFor(group, range)
+  return <section className="mt-4" aria-label={`${group.name}${rangeConfig[range].description}`}>
+    <div className="mb-2 flex items-center justify-between gap-2 text-[11px] font-medium text-muted-foreground">
+      <span>{rangeConfig[range].description}</span>
+      <span>被动监控</span>
     </div>
+    <div className="flex h-6 items-end gap-1" role="list" aria-label={`${group.name}时间趋势，可用率越高柱形越高`}>
+      {buckets.map((bucket) => {
+        const { shape, label: status } = availabilityBar(bucket)
+        return <Tooltip key={bucket.start_at} delayDuration={120}>
+          <TooltipTrigger asChild>
+            <button type="button" role="listitem" className={cn("min-w-0 flex-1 rounded-[3px] transition-[filter] hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring", shape)} aria-label={`${rangeTime(bucket.start_at, range)} 至 ${rangeTime(bucket.end_at, range)}，${status}，${bucket.total} 次请求`} />
+          </TooltipTrigger>
+          <TooltipContent side="top" className="max-w-[min(23rem,calc(100vw-2rem))] border-0 bg-zinc-900 px-3 py-2 text-xs text-white shadow-lg">
+            <p className="font-semibold">{time(bucket.start_at, true)}–{time(bucket.end_at)} · {status}</p>
+            {bucket.total ? <p className="mt-1 leading-5">{bucket.total} 次请求 · 可用率 {percent(bucket.availability)} · 缓存率 {percent(bucket.cache_rate)} · 首 Token {latency(bucket.first_token_ms)}</p> : null}
+            {!bucket.data_complete ? <p className="mt-1 text-zinc-300">日志源读取失败或超过采集上限，指标仅为部分样本。</p> : null}
+          </TooltipContent>
+        </Tooltip>
+      })}
+    </div>
+    <div className="mt-1 flex justify-between text-[10px] tabular-nums text-muted-foreground">
+      <time>{rangeTime(buckets[0]?.start_at, range)}</time>
+      <time>{rangeTime(buckets[buckets.length - 1]?.end_at || group.updated_at, range)}</time>
+    </div>
+  </section>
+}
+
+function MonitorCard({ group, range, stationID }: { group: PublicGroupMonitorGroup; range: MonitorRange; stationID: number }) {
+  const buckets = bucketsFor(group, range)
+  const total = buckets.reduce((sum, bucket) => sum + bucket.total, 0)
+  const success = buckets.reduce((sum, bucket) => sum + bucket.success_count, 0)
+  const meta = statuses[group.status] ?? statuses.unknown
+  const availability = total ? success / total : null
+  const band = group.data_complete ? availabilityBand(availability) : null
+  return <article className="flex h-full min-w-0 flex-col rounded-2xl border border-border/70 bg-card p-5 shadow-md shadow-slate-900/5 transition-shadow hover:shadow-lg motion-reduce:transition-none">
+    <header className="flex items-start justify-between gap-3">
+      <div className="min-w-0">
+        <h3 className="break-words text-base font-semibold">{group.name}</h3>
+        <div className="mt-1.5 flex flex-wrap items-center gap-2"><PlatformBadge platform={group.platform} compact /><span className="text-[11px] font-medium text-muted-foreground">倍率 {group.rate_multiplier.toFixed(2)}x</span></div>
+      </div>
+      <span className={cn("shrink-0 rounded-full px-2.5 py-1 text-xs font-medium", meta.tone)}>{meta.label}</span>
+    </header>
+    {group.description ? <p className="mt-2 line-clamp-2 text-xs leading-5 text-muted-foreground">{group.description}</p> : null}
+    <div className="pt-4">
+      <div data-public-monitor-metrics className="grid grid-cols-2 gap-2"><Metric label="可用率" value={percent(availability)} tone={band?.textTone} /><Metric label="首 Token" value={latency(group.first_token_ms)} /></div>
+      <Timeline group={group} range={range} />
+    </div>
+    <GroupDegradationStatus stationID={stationID} groupID={group.external_id} />
   </article>
 }
 
+function Metric({ label, value, tone }: { label: string; value: string; tone?: string }) {
+  return <div className="min-w-0 rounded-md border border-border/70 bg-muted/15 px-3 py-3"><p className="text-[11px] font-medium text-muted-foreground">{label}</p><p className={cn("mt-1.5 font-mono text-base font-semibold tabular-nums", tone)}>{value}</p></div>
+}
+
 function LoadingCards() {
-  return <div className="grid min-h-[420px] gap-3 min-[1150px]:grid-cols-2">{Array.from({ length: 6 }).map((_, index) => <div key={index} className="overflow-hidden rounded-[5px] border border-border/80 bg-card p-4 shadow-sm sm:p-5"><div className="flex items-start justify-between gap-3"><div><Skeleton className="h-4 w-32" /><Skeleton className="mt-2 h-3 w-24" /></div><div className="flex gap-2"><Skeleton className="h-7 w-16 rounded-md" /><Skeleton className="h-7 w-20 rounded-md" /></div></div><div className="mt-5 border-t border-border/70 pt-3.5"><Skeleton className="mb-2 h-3 w-24" /><Skeleton className="h-10 w-full rounded-md" /></div></div>)}</div>
+  return <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">{Array.from({ length: 6 }, (_, index) => <div key={index} className="rounded-2xl border border-border/70 bg-card p-5 shadow-md shadow-slate-900/5"><Skeleton className="h-5 w-32" /><Skeleton className="mt-6 h-16 w-full" /><Skeleton className="mt-5 h-5 w-full" /></div>)}</div>
+}
+
+function StationMonitor({ stationID }: { stationID: number }) {
+  const [range, setRange] = useState<MonitorRange>("90m")
+  const [data, setData] = useState<PublicGroupMonitorView | null>(() => readCache(stationID, "90m"))
+  const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
+  const [countdown, setCountdown] = useState(refreshSeconds)
+  const [error, setError] = useState("")
+  const inFlight = useRef(false)
+  const controller = useRef<AbortController | null>(null)
+
+  const load = useCallback(async () => {
+    if (inFlight.current) return
+    inFlight.current = true
+    setRefreshing(true)
+    const abort = new AbortController()
+    controller.current = abort
+    try {
+      const next = await apiFetch<PublicGroupMonitorView>(`/public/relay-stations/${stationID}/group-monitor?range=${encodeURIComponent(range)}`, { skipAuthErrorHandler: true, signal: abort.signal })
+      if (abort.signal.aborted) return
+      if (next.range !== range) throw new Error("监控时间范围响应不一致")
+      setData(next)
+      setError("")
+      try { window.localStorage.setItem(cacheKey(stationID, range), JSON.stringify(next)) } catch { /* Live data works without storage. */ }
+    } catch (e) {
+      if (!abort.signal.aborted) setError(e instanceof Error ? e.message : "监控数据读取失败")
+    } finally {
+      if (controller.current === abort) {
+        inFlight.current = false
+        if (!abort.signal.aborted) { setLoading(false); setRefreshing(false); setCountdown(refreshSeconds) }
+      }
+    }
+  }, [range, stationID])
+
+  useEffect(() => {
+    setData(readCache(stationID, range))
+    setLoading(true)
+    void load()
+    const timer = window.setInterval(() => { if (!document.hidden) void load() }, refreshSeconds * 1000)
+    const clock = window.setInterval(() => setCountdown((current) => Math.max(current - 1, 0)), 1000)
+    return () => { controller.current?.abort(); inFlight.current = false; window.clearInterval(timer); window.clearInterval(clock) }
+  }, [load, range, stationID])
+
+  useEffect(() => { document.title = "渠道状态 · 分组监控" }, [])
+
+  const platforms = useMemo(() => {
+    const groups = new Map<string, PublicGroupMonitorGroup[]>()
+    for (const group of data?.groups ?? []) {
+      const platform = group.platform || "其他"
+      groups.set(platform, [...(groups.get(platform) ?? []), group])
+    }
+    return [...groups.entries()]
+  }, [data?.groups])
+
+  const summary = useMemo(() => {
+    let total = 0
+    let success = 0
+    const cacheRates: number[] = []
+    for (const group of data?.groups ?? []) {
+      const buckets = bucketsFor(group, range)
+      total += buckets.reduce((sum, bucket) => sum + bucket.total, 0)
+      success += buckets.reduce((sum, bucket) => sum + bucket.success_count, 0)
+      if (group.cache_rate != null && Number.isFinite(group.cache_rate)) cacheRates.push(group.cache_rate)
+    }
+    return { availability: total ? success / total : null, cacheRate: cacheRates.length ? cacheRates.reduce((sum, value) => sum + value, 0) / cacheRates.length : null }
+  }, [data?.groups, range])
+
+  return <main data-public-page className="min-h-screen min-w-0 bg-transparent text-foreground"><div className="w-full min-w-0">
+    <PublicPageHeader
+      icon={Activity}
+      title="渠道状态"
+      description="分组可用率、缓存率与首 Token 响应趋势"
+      updatedAt={data?.updated_at}
+      refreshing={refreshing}
+      refreshIn={countdown}
+      refreshLabel="刷新监控"
+      onRefresh={() => void load()}
+      controls={<PublicPageTabs items={monitorRanges.map((value) => ({ value, label: rangeConfig[value].label }))} value={range} label="监控时间范围" onValueChange={(value) => { if (value !== range) { setRange(value as MonitorRange); setCountdown(refreshSeconds) } }} />}
+      metadata={<><span>{data?.groups.length ?? 0} 组</span><span>可用率 {percent(summary.availability)} · 缓存率 {percent(summary.cacheRate)}</span></>}
+    />
+    <div className="mb-3 flex flex-wrap items-center justify-between gap-3 text-[11px] text-muted-foreground"><p>{rangeConfig[range].description}，数据来自已有调用日志，不主动探测。柱形越高代表可用率越高；无请求或采集不完整时不参与颜色分级。</p><div className="flex flex-wrap gap-3" aria-label="可用率分级图例">{availabilityBands.map((band) => <span key={band.minimum} className="flex items-end gap-1"><i aria-hidden="true" className={cn("w-2 rounded-sm", band.shape)} />{band.label}</span>)}<span className="flex items-end gap-1"><i aria-hidden="true" className="mb-0.5 h-[3px] w-2 rounded-sm bg-zinc-300" />无请求或未知</span></div></div>
+    {error ? <p role="alert" className="mb-4 flex items-center gap-2 rounded-md border border-danger/30 bg-danger/5 p-3 text-sm text-danger"><TriangleAlert className="size-4 shrink-0" />{error}{data ? "，正在显示上次数据" : ""}</p> : null}
+    {loading && !data ? <LoadingCards /> : !data?.groups.length ? <p className="rounded-lg border border-dashed border-border px-5 py-16 text-center text-sm text-muted-foreground">当前没有开启监控的分组</p> : <div className="space-y-7">{platforms.map(([platform, groups]) => <section key={platform} aria-label={`${platform}分组`}><div className="mb-3 flex items-center gap-2"><PlatformBadge platform={platform} /><span className="text-xs text-muted-foreground">{groups.length}</span></div><div className="grid items-stretch gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">{groups.map((group) => <MonitorCard key={group.external_id} group={group} range={range} stationID={stationID} />)}</div></section>)}</div>}
+  </div></main>
 }
 
 export default function PublicRelayMonitorPage() {
   const { stationID } = useParams()
-  const numericStationID = Number(stationID)
-  const initialCache = useMemo(() => readMonitorBrowserCache(numericStationID), [numericStationID])
-  const [data, setData] = useState<PublicGroupMonitorView | null>(initialCache)
-  const [loading, setLoading] = useState(!initialCache)
-  const [refreshing, setRefreshing] = useState(false)
-  const [countdown, setCountdown] = useState(refreshIntervalSeconds)
-  const [error, setError] = useState<string | null>(null)
-
-  const load = useCallback(async (silent = false) => {
-    if (!Number.isInteger(numericStationID) || numericStationID <= 0) {
-      setError("监控页面地址无效")
-      setLoading(false)
-      return
-    }
-    if (silent) setRefreshing(true)
-    try {
-      const next = await apiFetch<PublicGroupMonitorView>(`/public/relay-stations/${numericStationID}/group-monitor`, { skipAuthErrorHandler: true })
-      setData(next)
-      writeMonitorBrowserCache(numericStationID, next)
-      setError(null)
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "监控数据读取失败")
-    } finally {
-      setLoading(false)
-      setRefreshing(false)
-      setCountdown(refreshIntervalSeconds)
-    }
-  }, [numericStationID])
-
-  useEffect(() => {
-    void load(Boolean(initialCache))
-    const timer = window.setInterval(() => void load(true), refreshIntervalMS)
-    const countdownTimer = window.setInterval(() => setCountdown((current) => current <= 1 ? refreshIntervalSeconds : current - 1), 1_000)
-    return () => {
-      window.clearInterval(timer)
-      window.clearInterval(countdownTimer)
-    }
-  }, [initialCache, load])
-
-  useEffect(() => {
-    if (data?.station_name) document.title = `${data.station_name} · 分组调用监控`
-  }, [data?.station_name])
-
-  const summary = data?.summary
-  return <main className="min-h-screen bg-background text-foreground">
-    <div className="relative mx-auto w-full max-w-[1440px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
-      {refreshing && data ? <div className="pointer-events-none absolute inset-x-0 top-3 z-50 flex justify-center"><span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"><RefreshCw className="size-3.5 animate-spin text-brand" />正在刷新分组监控</span></div> : null}
-      <header className="flex min-h-16 flex-wrap items-start justify-between gap-4 border-b border-border pb-5">
-        <div className="min-w-0"><h1 className="flex items-center gap-2 text-xl font-bold sm:text-2xl"><Activity className="size-5 shrink-0 text-brand sm:size-6" /><span className="truncate">{data?.station_name || "分组调用监控"}</span></h1><p className="mt-1.5 text-sm text-muted-foreground">公开分组的近期调用结果与响应耗时</p></div>
-        <div className="flex items-center gap-3"><span className="whitespace-nowrap font-mono text-xs tabular-nums text-muted-foreground">{refreshing ? "刷新中" : `${countdown} 秒后刷新`}</span><span className="hidden text-xs text-muted-foreground sm:inline">更新于 {formatTime(data?.updated_at)}</span><Button type="button" variant="outline" size="icon" className="size-11 sm:size-9" aria-label="刷新监控数据" disabled={refreshing} onClick={() => void load(true)}><RefreshCw className={cn("size-4", refreshing && "animate-spin")} /></Button></div>
-      </header>
-
-      {summary ? <section className="grid grid-cols-2 border-b border-border sm:grid-cols-4" aria-label="分组状态统计"><div className="py-4 sm:px-4 sm:first:pl-0"><p className="text-[11px] text-muted-foreground">监控分组</p><p className="mt-1 font-mono text-xl font-bold tabular-nums">{summary.total}</p></div><div className="py-4 sm:px-4"><p className="text-[11px] text-muted-foreground">可用</p><p className="mt-1 font-mono text-xl font-bold tabular-nums text-success">{summary.available}</p></div><div className="py-4 sm:px-4"><p className="text-[11px] text-muted-foreground">不稳定</p><p className="mt-1 font-mono text-xl font-bold tabular-nums text-warning">{summary.degraded}</p></div><div className="py-4 sm:px-4"><p className="text-[11px] text-muted-foreground">不可用</p><p className="mt-1 font-mono text-xl font-bold tabular-nums text-danger">{summary.unavailable}</p></div></section> : null}
-
-      <div className="mt-4 flex items-center gap-3 rounded-lg border border-brand/20 bg-brand/5 px-3.5 py-2.5 text-xs text-foreground" role="note"><span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-brand/10 text-brand"><Info className="size-4" aria-hidden="true" /></span><p className="min-w-0 leading-5"><strong className="font-semibold text-brand">监控说明</strong><span className="mx-2 text-muted-foreground/60" aria-hidden="true">·</span><span className="font-semibold text-warning">仅供趋势参考；状态基于最近调用，不代表当前实际可用性。</span></p></div>
-
-      <section className="mt-5" aria-label="监控分组列表">
-        {error ? <Alert variant="destructive" className="mb-4"><TriangleAlert /><AlertTitle>数据更新失败</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}
-        {loading && !data ? <LoadingCards /> : data ? data.groups.length ? <div className="grid min-h-[420px] gap-3 min-[1150px]:grid-cols-2">{data.groups.map((group) => <MonitorRow key={group.external_id} group={group} />)}</div> : <div className="flex min-h-[420px] items-center justify-center border border-border px-6 text-center text-sm text-muted-foreground">当前没有开启监控的分组</div> : <div className="flex min-h-[420px] items-center justify-center border border-border px-6 text-sm text-muted-foreground">暂无监控数据</div>}
-      </section>
-      <span className="sr-only" aria-live="polite">{refreshing ? "正在刷新监控数据" : error ? "监控数据刷新失败" : "监控数据已更新"}</span>
-    </div>
-  </main>
+  const id = Number(stationID)
+  return Number.isInteger(id) && id > 0 ? <StationMonitor key={id} stationID={id} /> : <main data-public-page className="min-w-0 bg-transparent px-0 py-8 text-center text-sm text-danger">监控页面地址无效</main>
 }

@@ -837,7 +837,6 @@ export interface PublicGroupMonitorGroup {
 	success_count: number
 	failure_count: number
 	consecutive_failures: number
-	failure_summary?: string
 	calls: PublicGroupMonitorCall[]
 	buckets?: PublicGroupMonitorBucket[]
 	cache_rate?: number | null

@@ -70,7 +70,7 @@ type Service struct {
 	manualDegradationSlots    [3]sync.Mutex
 	scheduledDegradationSlots [2]sync.Mutex
 	publicMonitorMu           sync.Mutex
-	publicMonitorCache        map[uint]publicMonitorCacheEntry
+	publicMonitorCache        map[string]publicMonitorCacheEntry
 	publicPricingMu           sync.Mutex
 	publicPricingCache        map[uint]publicModelPricingCacheEntry
 	userEmailMu               sync.Mutex
@@ -102,7 +102,7 @@ func NewService(stations *storage.RelayStations, cipher *crypto.Cipher, deps ...
 		userUsageCache:     make(map[string]userUsageCacheEntry),
 		latencyCache:       make(map[string]latencyCacheEntry),
 		ipLocationCache:    make(map[string]ipLocationCacheEntry),
-		publicMonitorCache: make(map[uint]publicMonitorCacheEntry),
+		publicMonitorCache: make(map[string]publicMonitorCacheEntry),
 		publicPricingCache: make(map[uint]publicModelPricingCacheEntry),
 		userRiskCache:      make(map[string]userRiskCacheEntry),
 	}
