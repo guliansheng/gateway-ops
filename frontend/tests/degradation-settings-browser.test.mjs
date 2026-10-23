@@ -71,15 +71,18 @@ try {
       if (visibility === "hide") results.unshift({ ...record(3), ...hidden, status: "error", reason: "模拟上游调用失败" })
       return route.fulfill({ json: { data: { config: { ...(configs.get(key) || defaultConfig), enabled: true, result_visibility: visibility }, results } } })
     }
-    const accountMatch = url.pathname.match(/^\/api\/relay-stations\/(\d+)\/accounts\/(\d+)\/(models|degradation)(?:\/(run|history))?$/)
+    const accountMatch = url.pathname.match(/^\/api\/relay-stations\/(\d+)\/accounts\/(\d+)\/(models|degradation)(?:\/(run|history)(?:\/(\d+))?)?$/)
     if (accountMatch) {
       if (accountMatch[3] === "models") return route.fulfill({ json: { data: ["candidate", "reviewer"] } })
       const key = `${accountMatch[1]}:${accountMatch[2]}`
       if (accountMatch[4] === "history") {
         assert.equal(method, "DELETE")
         writes.push({ path: url.pathname, method })
-        accountHistories.set(key, [])
-        return route.fulfill({ json: { data: { results: [] } } })
+        const remaining = accountMatch[5]
+          ? (accountHistories.get(key) || []).filter((item) => String(item.id) !== accountMatch[5])
+          : []
+        accountHistories.set(key, remaining)
+        return route.fulfill({ json: { data: { results: remaining } } })
       }
       if (accountMatch[4] === "run") {
         const body = request.postDataJSON()
@@ -118,7 +121,7 @@ try {
       const totals = { runs: items.length, input_tokens: sum("input_tokens"), output_tokens: sum("output_tokens"), base_cost: sum("base_cost"), actual_cost: sum("actual_cost") }
       return route.fulfill({ json: { data: { items: items.slice((page - 1) * pageSize, page * pageSize), totals, total: items.length, page, page_size: pageSize, pages: Math.max(1, Math.ceil(items.length / pageSize)) } } })
     }
-    const match = url.pathname.match(/^\/api\/relay-stations\/(\d+)\/groups\/(\d+)(?:\/(models|degradation)(?:\/(history|run))?)?$/)
+    const match = url.pathname.match(/^\/api\/relay-stations\/(\d+)\/groups\/(\d+)(?:\/(models|degradation)(?:\/(history|run)(?:\/(\d+))?)?)?$/)
     assert.ok(match, `unexpected endpoint ${url.pathname}`)
     const key = `${match[1]}:${match[2]}`
     if (match[3] === "models") return route.fulfill({ json: { data: ["candidate", "reviewer"] } })
@@ -134,6 +137,10 @@ try {
     if (match[4] === "history") {
       assert.equal(method, "DELETE")
       writes.push({ path: url.pathname, method })
+      if (match[5]) {
+        histories.set(key, (histories.get(key) || []).filter((item) => String(item.id) !== match[5]))
+        return route.fulfill({ json: { data: { config: configs.get(key), results: histories.get(key) || [] } } })
+      }
       if (failHistoryClear) { failHistoryClear = false; return route.fulfill({ status: 409, json: { error: "检测正在运行，请稍后清空" } }) }
       histories.set(key, [])
       return route.fulfill({ json: { data: { config: configs.get(key), results: [] } } })
@@ -201,6 +208,9 @@ try {
   const historyLimit = dialog.getByLabel("历史最多保留（条）", { exact: true })
   await historyLimit.waitFor()
   assert.equal(await historyLimit.inputValue(), "20")
+  // 标题与下方控件留出 12px 间距，避免标签贴住输入项
+  const methodGap = await dialog.getByText("测试方式（可多选）", { exact: true }).evaluate((node) => Math.round(node.nextElementSibling.getBoundingClientRect().top - node.getBoundingClientRect().bottom))
+  assert.ok(methodGap >= 12, `方法标题与复选框间距 ${methodGap}`)
   await historyLimit.fill("2")
   await dialog.getByLabel("鹈鹕检测间隔（分钟）").fill("60")
   await dialog.getByLabel("糖果检测间隔（分钟）").fill("10")
@@ -210,8 +220,17 @@ try {
   assert.equal(configs.get("1:101").history_limit, 2)
   assert.equal(configs.get("1:101").pelican_interval_minutes, 60)
   assert.equal(configs.get("1:101").candy_interval_minutes, 10)
-  assert.equal(await dialog.locator("[data-degradation-history] button").count(), 3)
-  assert.match(await dialog.locator("[data-degradation-history] button").nth(1).textContent(), /调用账号 上游账号A/)
+  assert.equal(await dialog.locator("[data-degradation-history] [data-history-row]").count(), 2)
+  assert.match(await dialog.locator("[data-degradation-history] [data-history-row]").nth(1).textContent(), /调用账号 上游账号A/)
+  // 单条历史可删除：只删这一条，其余记录与配置不变
+  await dialog.getByRole("button", { name: /删除 .* 的检测记录/ }).first().click()
+  const singleConfirm = page.getByRole("alertdialog")
+  await singleConfirm.getByRole("button", { name: "确认删除", exact: true }).click()
+  await dialog.getByText("检测记录已删除", { exact: true }).waitFor()
+  assert.equal(histories.get("1:101").length, 1)
+  assert.equal(await dialog.locator("[data-degradation-history] [data-history-row]").count(), 1)
+  assert.ok(writes.some((write) => write.method === "DELETE" && /^\/api\/relay-stations\/1\/groups\/101\/degradation\/history\/\d+$/.test(write.path)))
+  console.log("PASS: single group history record can be deleted without touching the rest")
   await dialog.getByRole("button", { name: "清空历史", exact: true }).click()
   let confirm = page.getByRole("alertdialog")
   await confirm.waitFor()
@@ -222,13 +241,13 @@ try {
   confirm = page.getByRole("alertdialog")
   await confirm.getByRole("button", { name: "确认清空", exact: true }).click()
   await confirm.getByText("检测正在运行，请稍后清空", { exact: true }).waitFor()
-  assert.equal(histories.get("1:101").length, 2)
+  assert.equal(histories.get("1:101").length, 1)
   await confirm.getByRole("button", { name: "确认清空", exact: true }).click()
   await dialog.getByText("检测历史已清空", { exact: true }).waitFor()
   assert.ok(await dialog.getByText("暂无检测记录", { exact: true }).isVisible())
   assert.equal(histories.get("1:102").length, 1)
   assert.equal(configs.get("1:101").history_limit, 2)
-  assert.ok(writes.filter((write) => write.method === "DELETE").every((write) => write.path === "/api/relay-stations/1/groups/101/degradation/history"))
+  assert.ok(writes.filter((write) => write.method === "DELETE").every((write) => /^\/api\/relay-stations\/1\/groups\/101\/degradation\/history(\/\d+)?$/.test(write.path)))
   await dialog.getByRole("button", { name: "Close", exact: true }).click()
   console.log("PASS: legacy history limit, save/prune, cancel without DELETE, failed-clear preservation, scoped clear and unchanged configuration")
 
@@ -269,6 +288,16 @@ try {
   await dialog.getByRole("button", { name: "测试中", exact: true }).waitFor({ timeout: 3000 })
   await dialog.getByRole("status").filter({ hasText: "测试完成，记录已保存" }).waitFor()
   assert.match(await dialog.locator("article").first().textContent(), /鹈鹕测试 · candidate/)
+
+  // 账号记录可单条删除，删除后列表立即同步
+  await dialog.getByRole("button", { name: /删除 .* 的测试记录/ }).click()
+  const accountDeleteConfirm = page.getByRole("alertdialog")
+  await accountDeleteConfirm.getByRole("button", { name: "确认删除", exact: true }).click()
+  await dialog.getByText("测试记录已删除", { exact: true }).waitFor()
+  assert.equal(accountHistories.get("1:11").length, 0)
+  assert.ok(await dialog.getByText("暂无测试记录", { exact: true }).isVisible())
+  assert.ok(writes.some((write) => write.method === "DELETE" && /^\/api\/relay-stations\/1\/accounts\/11\/degradation\/history\/\d+$/.test(write.path)))
+  console.log("PASS: single account history record can be deleted")
   console.log("PASS: closing the dialog keeps the account run running in the background")
 
   // 关闭弹窗后分组检测在后台继续，重开显示运行中并自动补记录
@@ -284,7 +313,7 @@ try {
   dialog = page.getByRole("dialog", { name: "分组降智监测配置", exact: true })
   await dialog.getByRole("button", { name: "检测中", exact: true }).waitFor({ timeout: 3000 })
   await dialog.getByText("检测完成，结果已保存", { exact: true }).waitFor()
-  const groupRunRow = dialog.locator("[data-degradation-history] button").nth(1)
+  const groupRunRow = dialog.locator("[data-degradation-history] [data-history-row]").nth(0)
   assert.match(await groupRunRow.textContent(), /调用账号 上游账号A/)
   await dialog.getByRole("button", { name: "Close", exact: true }).click()
   console.log("PASS: closing the dialog keeps the group run running in the background")

@@ -163,3 +163,14 @@ func (r *RelayStations) ClearAccountDegradationHistory(ctx context.Context, stat
 			Delete(&AccountDegradationResult{}).Error
 	})
 }
+
+// DeleteAccountDegradationResult removes one manual test record, scoped to the
+// station and account. Other records, configuration and scheduling stay; a
+// missing row is not an error so repeated deletes stay idempotent.
+func (r *RelayStations) DeleteAccountDegradationResult(ctx context.Context, stationID uint, accountID int64, resultID uint) error {
+	if err := r.accountDegradationScope(ctx, stationID, accountID); err != nil {
+		return err
+	}
+	return r.db.WithContext(ctx).Where("id = ? AND station_id = ? AND account_external_id = ?", resultID, stationID, accountID).
+		Delete(&AccountDegradationResult{}).Error
+}

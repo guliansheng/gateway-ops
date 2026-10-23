@@ -353,6 +353,17 @@ func (r *RelayStations) ClearGroupDegradationHistory(ctx context.Context, statio
 	})
 	return view, err
 }
+
+// DeleteGroupDegradationResult removes one history row. The record is scoped to
+// the station and group, so an id from another scope cannot be deleted and a
+// missing row is not an error. Configuration and scheduling stay untouched.
+func (r *RelayStations) DeleteGroupDegradationResult(ctx context.Context, stationID uint, groupID int64, resultID uint) error {
+	if _, err := r.groupDegradationScope(ctx, stationID, groupID); err != nil {
+		return err
+	}
+	return r.db.WithContext(ctx).Where("id = ? AND station_id = ? AND group_external_id = ?", resultID, stationID, groupID).
+		Delete(&GroupDegradationResult{}).Error
+}
 func newGroupDegradationLease() (string, error) {
 	var token [24]byte
 	if _, err := rand.Read(token[:]); err != nil {

@@ -55,7 +55,7 @@ try {
 		if (request.method() === "PUT") { const body = request.postDataJSON(); accountConfigs.set(key, body); return respond(body) }
 		return respond(accountConfigs.get(key) || {enabled:false,method:"pelican",model:"candidate",judge_model:"",effort:"none",pelican_interval_minutes:60,candy_interval_minutes:10,history_limit:100,disable_on_degraded:false,protocol:""})
 	}
-    const match = path.match(/^\/api\/relay-stations\/(\d+)\/accounts\/(\d+)\/(models|degradation)(?:\/(run))?$/)
+    const match = path.match(/^\/api\/relay-stations\/(\d+)\/accounts\/(\d+)\/(models|degradation)(?:\/(run|history)(?:\/(\d+))?)?$/)
     if (match) {
       const accountID = Number(match[2])
       if (match[3] === "models") {
@@ -70,6 +70,11 @@ try {
         histories.set(accountID,[saved,...(histories.get(accountID) || [])])
         if (runDelay) await new Promise((done) => setTimeout(done, runDelay))
         return respond(saved)
+      }
+      if (match[4] === "history") {
+        const remaining = match[5] ? (histories.get(accountID) || []).filter((item) => String(item.id) !== match[5]) : []
+        histories.set(accountID, remaining)
+        return respond({ results: remaining })
       }
       return respond({results:histories.get(accountID) || []})
     }
@@ -154,6 +159,17 @@ try {
 	await dialog.getByText("测试完成，记录已保存",{exact:true}).waitFor()
 	await dialog.getByRole("region",{name:"账号降智测试历史"}).waitFor()
 	assert.equal(writes.filter((write)=>write.accountID===11).length,1)
+	// 单条历史可删除，删除后列表同步
+	const historyRegion = dialog.getByRole("region",{name:"账号降智测试历史"})
+	const historyCount = histories.get(11).length
+	assert.ok(historyCount >= 1)
+	await historyRegion.getByRole("button",{name:/删除 .* 的测试记录/}).first().click()
+	const singleDelete = page.getByRole("alertdialog")
+	await singleDelete.getByRole("button",{name:"确认删除",exact:true}).click()
+	await dialog.getByText("测试记录已删除",{exact:true}).waitFor()
+	assert.equal(histories.get(11).length, historyCount - 1)
+	assert.equal(await historyRegion.getByRole("button",{name:/删除 .* 的测试记录/}).count(), historyCount - 1)
+	console.log("PASS: single account history record can be deleted")
 	await page.setViewportSize({width:390,height:844})
 	await page.waitForFunction(()=>{const d=document.querySelector('[role="dialog"]');if(!d)return false;const b=d.getBoundingClientRect();return b.x>=0&&b.width<=innerWidth&&b.height<=innerHeight})
 	assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),"mobile overflow")

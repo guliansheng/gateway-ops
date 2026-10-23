@@ -1096,7 +1096,7 @@ function RiskRow({
         </span>
       </div>
       <div className="min-w-0">
-        <AccountDegradationTestButton showLatest stationID={overview.station.id} accountID={account.external_id} accountName={account.name} latest={degradationResult} onResult={(result) => onDegradationResult(result)} onClear={() => onDegradationResult(null)} disabled={busy || testing || deleting} />
+        <AccountDegradationTestButton showLatest stationID={overview.station.id} accountID={account.external_id} accountName={account.name} latest={degradationResult} onResult={(result) => onDegradationResult(result)} onClear={() => onDegradationResult(null)} onDelete={(results) => onDegradationResult(results[0] ?? null)} disabled={busy || testing || deleting} />
       </div>
       <div className="flex items-center justify-center gap-2 lg:block">
         <span className="text-[11px] text-muted-foreground lg:hidden">缓存命中</span>

@@ -13,7 +13,7 @@ import { defaultDegradationConfig, degradationStatusMeta, type GroupDegradationR
 import { degradationRunKey, startDegradationRun, useDegradationRun } from "@/lib/degradation-runs"
 import { cn } from "@/lib/utils"
 
-function AccountTestForm({ stationID, accountID, onResult, onClear, historyLimit = 20, disabled = false }: { stationID: number; accountID: number; onResult?: (result: GroupDegradationResult) => void; onClear?: () => void; historyLimit?: number; disabled?: boolean }) {
+function AccountTestForm({ stationID, accountID, onResult, onClear, onDelete, historyLimit = 20, disabled = false }: { stationID: number; accountID: number; onResult?: (result: GroupDegradationResult) => void; onClear?: () => void; onDelete?: (results: GroupDegradationResult[]) => void; historyLimit?: number; disabled?: boolean }) {
   const id = useId()
   const [config, setConfig] = useState(defaultDegradationConfig)
   const [models, setModels] = useState<string[]>([])
@@ -34,6 +34,8 @@ function AccountTestForm({ stationID, accountID, onResult, onClear, historyLimit
   const [error, setError] = useState("")
   const [message, setMessage] = useState("")
   const [selected, setSelected] = useState<GroupDegradationResult | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<GroupDegradationResult | null>(null)
+  const [deleting, setDeleting] = useState(false)
   const controller = useRef<AbortController | null>(null)
   const mutation = useRef(false)
   const endpoint = `/relay-stations/${stationID}/accounts/${accountID}/degradation`
@@ -42,7 +44,7 @@ function AccountTestForm({ stationID, accountID, onResult, onClear, historyLimit
     const abort = new AbortController()
     controller.current = abort
     mutation.current = false
-    setLoading(true); setLoaded(false); setError(""); setMessage(""); setSelected(null); setResults([]); setModels([])
+    setLoading(true); setLoaded(false); setError(""); setMessage(""); setSelected(null); setResults([]); setModels([]); setDeleting(false); setDeleteTarget(null)
     setModelsLoading(true); setModelsError("")
     void apiFetch<{ results: GroupDegradationResult[] }>(endpoint, { signal: abort.signal }).then((data) => {
       if (!abort.signal.aborted) { setResults(data.results ?? []); setLoaded(true) }
@@ -82,6 +84,19 @@ function AccountTestForm({ stationID, accountID, onResult, onClear, historyLimit
     } finally { setClearing(false) }
   }
 
+  async function deleteResult() {
+    const target = deleteTarget
+    if (!target || deleting) return
+    setDeleting(true); setError(""); setMessage("")
+    try {
+      const data = await apiFetch<{ results: GroupDegradationResult[] }>(`${endpoint}/history/${target.id}`, { method: "DELETE" })
+      const remaining = data.results ?? []
+      setResults(remaining); setSelected((current) => (current?.id === target.id ? null : current)); setDeleteTarget(null); setMessage("测试记录已删除"); onDelete?.(remaining)
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "删除记录失败")
+    } finally { setDeleting(false) }
+  }
+
   if (loading) return <p role="status" className="flex items-center gap-2 py-6 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />读取测试记录</p>
   if (!loaded) return <div className="space-y-3"><p role="alert" className="text-sm text-danger">{error}</p><Button variant="outline" onClick={() => setVersion((current) => current + 1)}>重新读取记录</Button></div>
   return <div className="space-y-5">
@@ -99,14 +114,15 @@ function AccountTestForm({ stationID, accountID, onResult, onClear, historyLimit
     {message ? <p role="status" className="text-sm text-success">{message}</p> : null}
     <section aria-label="账号降智测试历史" className="space-y-2"><div className="flex items-center justify-between gap-2"><h3 className="text-sm font-medium">测试记录</h3><div className="flex items-center gap-1"><Button variant="ghost" size="sm" className="gap-1.5 text-danger" disabled={running || clearing || !results.length} onClick={() => { setError(""); setClearConfirm(true) }}><Trash2 className="size-3.5" />清空记录</Button><Button variant="ghost" size="sm" disabled={running} onClick={() => setVersion((current) => current + 1)}>刷新记录</Button></div></div><div className="space-y-3">{results.length ? results.map((result) => {
       const meta = degradationStatusMeta[result.status] ?? degradationStatusMeta.inconclusive
-      return <article key={result.id} className="grid min-w-0 gap-3 border-b border-border py-3 sm:grid-cols-[minmax(0,1fr)_160px]"><button type="button" onClick={() => setSelected(result)} className="min-w-0 space-y-2 break-words text-left text-xs"><span className="block truncate font-medium">{result.method === "pelican" ? "鹈鹕测试" : "糖果测试"} · {result.model || "未记录模型"}</span><time className="block text-muted-foreground">{new Date(result.created_at).toLocaleString("zh-CN")}</time><span className={cn("block", meta.tone)}>{meta.label}</span><span className="block text-brand">查看详情</span></button><div className="w-[160px] max-w-full"><ResultFrame result={result} compact /></div></article>
+      return <article key={result.id} className="grid min-w-0 gap-3 border-b border-border py-3 sm:grid-cols-[minmax(0,1fr)_160px]"><div className="min-w-0 space-y-2 text-xs"><button type="button" onClick={() => setSelected(result)} className="min-w-0 space-y-2 break-words text-left"><span className="block truncate font-medium">{result.method === "pelican" ? "鹈鹕测试" : "糖果测试"} · {result.model || "未记录模型"}</span><time className="block text-muted-foreground">{new Date(result.created_at).toLocaleString("zh-CN")}</time><span className={cn("block", meta.tone)}>{meta.label}</span><span className="block text-brand">查看详情</span></button><Button type="button" variant="ghost" size="sm" className="h-7 gap-1 px-2 text-[11px] text-danger" disabled={running || deleting} aria-label={`删除 ${new Date(result.created_at).toLocaleString("zh-CN")} 的测试记录`} onClick={() => { setError(""); setDeleteTarget(result) }}><Trash2 className="size-3" />删除记录</Button></div><div className="w-[160px] max-w-full"><ResultFrame result={result} compact /></div></article>
     }) : <p className="py-4 text-xs text-muted-foreground">暂无测试记录</p>}</div></section>
     <AlertDialog open={clearConfirm} onOpenChange={(open) => { if (!clearing) setClearConfirm(open) }}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>清空测试记录？</AlertDialogTitle><AlertDialogDescription>仅清空该账号的降智测试历史，无法恢复。不影响其他账号、测试标准或分组检测。</AlertDialogDescription></AlertDialogHeader>{error ? <p role="alert" className="text-sm text-danger">{error}</p> : null}<AlertDialogFooter><AlertDialogCancel disabled={clearing}>取消</AlertDialogCancel><Button type="button" variant="destructive" disabled={clearing} onClick={() => void clearHistory()}>{clearing ? <Loader2 className="mr-1.5 size-4 animate-spin" /> : null}确认清空</Button></AlertDialogFooter></AlertDialogContent></AlertDialog>
+    <AlertDialog open={Boolean(deleteTarget)} onOpenChange={(open) => { if (!open && !deleting) setDeleteTarget(null) }}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>删除这条测试记录？</AlertDialogTitle><AlertDialogDescription>{deleteTarget ? `${new Date(deleteTarget.created_at).toLocaleString("zh-CN")} · ${deleteTarget.method === "pelican" ? "鹈鹕测试" : "糖果测试"}，删除后无法恢复。不影响其他记录、测试标准或分组检测。` : ""}</AlertDialogDescription></AlertDialogHeader>{error ? <p role="alert" className="text-sm text-danger">{error}</p> : null}<AlertDialogFooter><AlertDialogCancel disabled={deleting}>取消</AlertDialogCancel><Button type="button" variant="destructive" disabled={deleting} onClick={() => void deleteResult()}>{deleting ? <Loader2 className="mr-1.5 size-4 animate-spin" /> : null}确认删除</Button></AlertDialogFooter></AlertDialogContent></AlertDialog>
     <ResultDialog result={selected} onClose={() => setSelected(null)} />
   </div>
 }
 
-export function AccountDegradationTestButton({ stationID, accountID, accountName, disabled = false, latest, onResult, onClear, showLatest = false }: { stationID: number; accountID: number; accountName: string; disabled?: boolean; latest?: GroupDegradationResult; onResult?: (result: GroupDegradationResult) => void; onClear?: () => void; showLatest?: boolean }) {
+export function AccountDegradationTestButton({ stationID, accountID, accountName, disabled = false, latest, onResult, onClear, onDelete, showLatest = false }: { stationID: number; accountID: number; accountName: string; disabled?: boolean; latest?: GroupDegradationResult; onResult?: (result: GroupDegradationResult) => void; onClear?: () => void; onDelete?: (results: GroupDegradationResult[]) => void; showLatest?: boolean }) {
   const [open, setOpen] = useState(false)
   const run = useDegradationRun(degradationRunKey("account", stationID, accountID))
   const published = useRef(run.finishedAt)
@@ -119,10 +135,10 @@ export function AccountDegradationTestButton({ stationID, accountID, accountName
   }, [run, open, onResult])
   return <Dialog open={open} onOpenChange={setOpen}>
     {showLatest ? <div className="min-w-0 space-y-1">{run.running && latest ? <span role="status" className="inline-flex items-center gap-1 rounded-full border border-brand/30 bg-brand/10 px-2 py-0.5 text-[10px] font-medium text-brand"><Loader2 className="size-3 animate-spin" />正在测试</span> : null}<button type="button" disabled={disabled} onClick={() => setOpen(true)} className="w-full space-y-1 text-left text-xs hover:underline" aria-label={`查看${accountName}降智测试历史`}><span className={cn("block truncate font-medium", latest ? degradationStatusMeta[latest.status]?.tone : "text-muted-foreground")}>{latest ? `${latest.method === "candy" ? "糖果" : "鹈鹕"} · ${latest.model || "未记录模型"}` : run.running ? "正在测试" : "暂无测试"}</span>{latest ? <><span className={cn("block text-[10px]", degradationStatusMeta[latest.status]?.tone)}>{degradationStatusMeta[latest.status]?.label ?? "待确认"}</span><time className="block text-[10px] text-muted-foreground">{new Date(latest.created_at).toLocaleString("zh-CN")}</time></> : null}</button>{latest ? <div className="relative w-[160px] max-w-full"><ResultFrame result={latest} compact /><button type="button" disabled={disabled} onClick={() => setOpen(true)} aria-label={`查看${accountName}${latest.method === "candy" ? "糖果" : "鹈鹕"}测试历史`} className="absolute inset-0 rounded border border-transparent hover:border-brand focus-visible:outline-2 focus-visible:outline-ring" /></div> : null}</div> : <Tooltip delayDuration={200}><TooltipTrigger asChild><Button type="button" variant="outline" size="icon" className="size-8 shrink-0" aria-label={`测试${accountName}降智能力`} disabled={disabled} onClick={() => setOpen(true)}><BrainCircuit className="size-3.5" /></Button></TooltipTrigger><TooltipContent>降智测试与记录</TooltipContent></Tooltip>}
-    {open ? <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl"><DialogHeader className="shrink-0 border-b border-border px-4 py-4 text-left sm:px-6"><DialogTitle>账号降智测试</DialogTitle><DialogDescription className="break-all">{accountName}</DialogDescription></DialogHeader><DialogBody className="px-4 py-4 sm:px-6"><AccountTestForm key={`${stationID}-${accountID}`} stationID={stationID} accountID={accountID} onResult={onResult} onClear={onClear} /></DialogBody></DialogContent> : null}
+    {open ? <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl"><DialogHeader className="shrink-0 border-b border-border px-4 py-4 text-left sm:px-6"><DialogTitle>账号降智测试</DialogTitle><DialogDescription className="break-all">{accountName}</DialogDescription></DialogHeader><DialogBody className="px-4 py-4 sm:px-6"><AccountTestForm key={`${stationID}-${accountID}`} stationID={stationID} accountID={accountID} onResult={onResult} onClear={onClear} onDelete={onDelete} /></DialogBody></DialogContent> : null}
   </Dialog>
 }
 
-export function AccountDegradationTestForm({ stationID, accountID, onResult, onClear, historyLimit = 20, disabled = false }: { stationID: number; accountID: number; onResult?: (result: GroupDegradationResult) => void; onClear?: () => void; historyLimit?: number; disabled?: boolean }) {
-  return <AccountTestForm stationID={stationID} accountID={accountID} onResult={onResult} onClear={onClear} historyLimit={historyLimit} disabled={disabled} />
+export function AccountDegradationTestForm({ stationID, accountID, onResult, onClear, onDelete, historyLimit = 20, disabled = false }: { stationID: number; accountID: number; onResult?: (result: GroupDegradationResult) => void; onClear?: () => void; onDelete?: (results: GroupDegradationResult[]) => void; historyLimit?: number; disabled?: boolean }) {
+  return <AccountTestForm stationID={stationID} accountID={accountID} onResult={onResult} onClear={onClear} onDelete={onDelete} historyLimit={historyLimit} disabled={disabled} />
 }

@@ -34,20 +34,22 @@ func degradationTestRouter() *gin.Engine {
 func TestGroupDegradationRouteContract(t *testing.T) {
 	r := degradationTestRouter()
 	want := map[string]bool{
-		"GET /api/relay-stations/:id/groups/:external_id/degradation":              true,
-		"PUT /api/relay-stations/:id/groups/:external_id/degradation":              true,
-		"POST /api/relay-stations/:id/groups/:external_id/degradation/run":         true,
-		"DELETE /api/relay-stations/:id/groups/:external_id/degradation/history":   true,
-		"GET /api/relay-stations/:id/degradation-prompts":                          true,
-		"PUT /api/relay-stations/:id/degradation-prompts":                          true,
-		"GET /api/public/relay-stations/:id/groups/:external_id/degradation":       true,
-		"GET /api/relay-stations/:id/accounts/:external_id/degradation":            true,
-		"POST /api/relay-stations/:id/accounts/:external_id/degradation/run":       true,
-		"GET /api/relay-stations/:id/accounts/:external_id/degradation/config":     true,
-		"PUT /api/relay-stations/:id/accounts/:external_id/degradation/config":     true,
-		"GET /api/relay-stations/:id/account-degradation/latest":                   true,
-		"DELETE /api/relay-stations/:id/accounts/:external_id/degradation/history": true,
-		"GET /api/relay-stations/:id/degradation-usage":                            true,
+		"GET /api/relay-stations/:id/groups/:external_id/degradation":                         true,
+		"PUT /api/relay-stations/:id/groups/:external_id/degradation":                         true,
+		"POST /api/relay-stations/:id/groups/:external_id/degradation/run":                    true,
+		"DELETE /api/relay-stations/:id/groups/:external_id/degradation/history":              true,
+		"DELETE /api/relay-stations/:id/groups/:external_id/degradation/history/:result_id":   true,
+		"GET /api/relay-stations/:id/degradation-prompts":                                     true,
+		"PUT /api/relay-stations/:id/degradation-prompts":                                     true,
+		"GET /api/public/relay-stations/:id/groups/:external_id/degradation":                  true,
+		"GET /api/relay-stations/:id/accounts/:external_id/degradation":                       true,
+		"POST /api/relay-stations/:id/accounts/:external_id/degradation/run":                  true,
+		"GET /api/relay-stations/:id/accounts/:external_id/degradation/config":                true,
+		"PUT /api/relay-stations/:id/accounts/:external_id/degradation/config":                true,
+		"GET /api/relay-stations/:id/account-degradation/latest":                              true,
+		"DELETE /api/relay-stations/:id/accounts/:external_id/degradation/history":            true,
+		"DELETE /api/relay-stations/:id/accounts/:external_id/degradation/history/:result_id": true,
+		"GET /api/relay-stations/:id/degradation-usage":                                       true,
 	}
 	for _, route := range r.Routes() {
 		key := route.Method + " " + route.Path
@@ -519,6 +521,22 @@ func TestAccountDegradationRunRequestDecoding(t *testing.T) {
 	for _, body := range []string{`{"model":"candidate","fallback_model":null}`, `{"model":"candidate","protocol":null}`, `{"model":"candidate","fallback_model":"a","fallback_model":"b"}`} {
 		if err := decodeDegradationObject(strings.NewReader(body), &request); err == nil {
 			t.Fatalf("accepted invalid request: %s", body)
+		}
+	}
+}
+
+func TestDegradationSingleDeleteRejectsInvalidResultID(t *testing.T) {
+	r := degradationTestRouter()
+	for _, path := range []string{
+		"/api/relay-stations/1/groups/9/degradation/history/abc",
+		"/api/relay-stations/1/groups/9/degradation/history/0",
+		"/api/relay-stations/1/accounts/11/degradation/history/abc",
+		"/api/relay-stations/1/accounts/11/degradation/history/0",
+	} {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, path, nil))
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "检测记录 ID 无效") {
+			t.Fatalf("%s = %d %s", path, w.Code, w.Body.String())
 		}
 	}
 }

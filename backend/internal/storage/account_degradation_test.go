@@ -110,3 +110,16 @@ func TestLatestAccountDegradationSingleResultQuery(t *testing.T) {
 		t.Fatalf("latest=%+v err=%v", latest, err)
 	}
 }
+
+func TestDeleteAccountDegradationResultScopesToStationAndAccount(t *testing.T) {
+	steps := accountDegradationScopeSteps()
+	steps = append(steps, degradationSQLStep{contains: `DELETE FROM "account_degradation_results"`, check: func(query string, args []driver.NamedValue) {
+		if !strings.Contains(query, "id = $1 AND station_id = $2 AND account_external_id = $3") || len(args) != 3 || args[0].Value != int64(42) || args[1].Value != int64(1) || args[2].Value != int64(11) {
+			t.Errorf("unscoped single delete: %s %+v", query, args)
+		}
+	}})
+	repo, _ := newDegradationSQL(t, steps...)
+	if err := repo.DeleteAccountDegradationResult(context.Background(), 1, 11, 42); err != nil {
+		t.Fatalf("delete single account result: %v", err)
+	}
+}

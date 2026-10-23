@@ -69,6 +69,19 @@ func (s *Service) ClearGroupDegradationHistory(ctx context.Context, stationID ui
 	return view, err
 }
 
+// DeleteGroupDegradationResult drops one history row and returns the refreshed
+// admin view, so callers can re-render the list without another round trip.
+func (s *Service) DeleteGroupDegradationResult(ctx context.Context, stationID uint, groupID int64, resultID uint) (storage.GroupDegradationView, error) {
+	if err := s.stations.DeleteGroupDegradationResult(ctx, stationID, groupID, resultID); err != nil {
+		return storage.GroupDegradationView{}, err
+	}
+	view, err := s.stations.GroupDegradationView(ctx, stationID, groupID, false)
+	if err == nil {
+		s.invalidatePublicMonitor(stationID)
+	}
+	return view, err
+}
+
 // acquireDegradationSlot takes one slot from a fixed pool, so no unbounded queue
 // can build up behind a slow upstream.
 func acquireDegradationSlot(pool []sync.Mutex) (func(), bool) {

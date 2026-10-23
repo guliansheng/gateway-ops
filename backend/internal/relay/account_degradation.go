@@ -493,6 +493,15 @@ func (s *Service) ClearAccountDegradationHistory(ctx context.Context, stationID 
 	return s.stations.ClearAccountDegradationHistory(ctx, stationID, accountID)
 }
 
+// DeleteAccountDegradationResult drops one record and returns what is left, so
+// the dialog and the "最近降智检测" column can update without a reload.
+func (s *Service) DeleteAccountDegradationResult(ctx context.Context, stationID uint, accountID int64, resultID uint) ([]storage.AccountDegradationResult, error) {
+	if err := s.stations.DeleteAccountDegradationResult(ctx, stationID, accountID, resultID); err != nil {
+		return nil, err
+	}
+	return s.stations.AccountDegradationHistory(ctx, stationID, accountID)
+}
+
 // DegradationUsage pages through group and account test runs with the charge
 // Sub2API recorded for each of them. Admin-only.
 func (s *Service) DegradationUsage(ctx context.Context, stationID uint, scope string, page, pageSize int) (storage.DegradationUsagePage, error) {

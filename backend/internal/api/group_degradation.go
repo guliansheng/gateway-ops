@@ -24,6 +24,7 @@ func registerGroupDegradation(g *gin.RouterGroup, d *Deps) {
 	g.PUT(groupDegradationRoute, func(c *gin.Context) { putGroupDegradation(c, d) })
 	g.POST(groupDegradationRoute+"/run", func(c *gin.Context) { runGroupDegradation(c, d) })
 	g.DELETE(groupDegradationRoute+"/history", func(c *gin.Context) { clearGroupDegradationHistory(c, d) })
+	g.DELETE(groupDegradationRoute+"/history/:result_id", func(c *gin.Context) { deleteGroupDegradationResult(c, d) })
 	g.GET(degradationPromptsRoute, func(c *gin.Context) { getDegradationPrompts(c, d) })
 	g.PUT(degradationPromptsRoute, func(c *gin.Context) { putDegradationPrompts(c, d) })
 	g.GET("/relay-stations/:id/accounts/:external_id/degradation", func(c *gin.Context) { getAccountDegradation(c, d) })
@@ -32,6 +33,7 @@ func registerGroupDegradation(g *gin.RouterGroup, d *Deps) {
 	g.PUT("/relay-stations/:id/accounts/:external_id/degradation/config", func(c *gin.Context) { putAccountDegradationConfig(c, d) })
 	g.GET("/relay-stations/:id/account-degradation/latest", func(c *gin.Context) { getLatestAccountDegradation(c, d) })
 	g.DELETE("/relay-stations/:id/accounts/:external_id/degradation/history", func(c *gin.Context) { clearAccountDegradationHistory(c, d) })
+	g.DELETE("/relay-stations/:id/accounts/:external_id/degradation/history/:result_id", func(c *gin.Context) { deleteAccountDegradationResult(c, d) })
 	g.GET("/relay-stations/:id/degradation-usage", func(c *gin.Context) { getDegradationUsage(c, d) })
 }
 
@@ -240,6 +242,24 @@ func clearGroupDegradationHistory(c *gin.Context, d *Deps) {
 	c.JSON(http.StatusOK, gin.H{"data": view})
 }
 
+func deleteGroupDegradationResult(c *gin.Context, d *Deps) {
+	stationID, groupID, ok := groupDegradationParams(c, d)
+	if !ok {
+		return
+	}
+	resultID, err := uintParam(c, "result_id")
+	if err != nil || resultID == 0 {
+		fail(c, http.StatusBadRequest, errors.New("检测记录 ID 无效"))
+		return
+	}
+	view, err := d.Relay.DeleteGroupDegradationResult(c.Request.Context(), stationID, groupID, resultID)
+	if err != nil {
+		failGroupDegradation(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": view})
+}
+
 func getAccountDegradation(c *gin.Context, d *Deps) {
 	stationID, accountID, ok := groupDegradationParams(c, d)
 	if !ok {
@@ -338,6 +358,24 @@ func clearAccountDegradationHistory(c *gin.Context, d *Deps) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{"results": []storage.AccountDegradationResult{}}})
+}
+
+func deleteAccountDegradationResult(c *gin.Context, d *Deps) {
+	stationID, accountID, ok := groupDegradationParams(c, d)
+	if !ok {
+		return
+	}
+	resultID, err := uintParam(c, "result_id")
+	if err != nil || resultID == 0 {
+		fail(c, http.StatusBadRequest, errors.New("检测记录 ID 无效"))
+		return
+	}
+	results, err := d.Relay.DeleteAccountDegradationResult(c.Request.Context(), stationID, accountID, resultID)
+	if err != nil {
+		failGroupDegradation(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"results": results}})
 }
 
 func getDegradationUsage(c *gin.Context, d *Deps) {

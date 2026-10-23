@@ -672,3 +672,26 @@ func TestGroupDegradationHistoryMigrationPreservesPositiveChoices(t *testing.T) 
 		})
 	}
 }
+
+func TestDeleteGroupDegradationResultScopesToStationAndGroup(t *testing.T) {
+	steps := degradationScopeSteps(false)
+	steps = append(steps, degradationSQLStep{contains: `DELETE FROM "group_degradation_results"`, check: func(query string, args []driver.NamedValue) {
+		if !strings.Contains(query, "id = $1 AND station_id = $2 AND group_external_id = $3") || len(args) != 3 || args[0].Value != int64(42) || args[1].Value != int64(1) || args[2].Value != int64(9) {
+			t.Errorf("unscoped single delete: %s %+v", query, args)
+		}
+	}})
+	repo, _ := newDegradationSQL(t, steps...)
+	if err := repo.DeleteGroupDegradationResult(context.Background(), 1, 9, 42); err != nil {
+		t.Fatalf("delete single result: %v", err)
+	}
+}
+
+func TestDeleteGroupDegradationResultRejectsUnknownScope(t *testing.T) {
+	steps := degradationScopeSteps(false)
+	steps = steps[:1]
+	steps[0].rows = nil
+	repo, state := newDegradationSQL(t, steps...)
+	if err := repo.DeleteGroupDegradationResult(context.Background(), 1, 9, 42); !errors.Is(err, gorm.ErrRecordNotFound) || state.commits != 0 || state.rollbacks != 0 {
+		t.Fatalf("delete outside scope err=%v state=%+v", err, state)
+	}
+}
