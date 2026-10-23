@@ -182,7 +182,9 @@ try {
   const candyPreview = page.locator("[data-radix-popper-content-wrapper]").last()
   await candyPreview.getByTitle("candy-model").waitFor()
   assert.match(await candyPreview.innerText(), /糖果答案 42/)
-  assert.doesNotMatch(await candyPreview.innerText(), /必须隐藏的评审理由|正常|通过检测/)
+  assert.doesNotMatch(await candyPreview.innerText(), /必须隐藏的评审理由|通过检测/)
+  const hint = "悬浮预览，点击查看详情"
+  assert.equal(await candyCard.getByText(hint, { exact: true }).count(), 1)
   await candyBar.click()
   await page.getByRole("dialog").getByText("糖果答案 42",{exact:true}).waitFor()
   await page.getByRole("button",{name:"Close",exact:true}).click()
@@ -193,7 +195,7 @@ try {
   const pelicanPreview = page.locator("[data-radix-popper-content-wrapper]").last()
   await pelicanPreview.getByTitle("pelican-model").waitFor()
   assert.equal(await pelicanPreview.locator("iframe").count(),1)
-  assert.doesNotMatch(await pelicanPreview.innerText(),/必须隐藏的评审理由|疑似降智|未通过检测/)
+  assert.doesNotMatch(await pelicanPreview.innerText(),/必须隐藏的评审理由|未通过检测/)
   const pelicanCentering = await pelicanPreview.frameLocator("iframe").locator("html").evaluate(() => {
     const box = document.body.querySelector("p").getBoundingClientRect()
     return { dx: Math.abs(box.left + box.width / 2 - window.innerWidth / 2), dy: Math.abs(box.top + box.height / 2 - window.innerHeight / 2) }
@@ -202,6 +204,8 @@ try {
   console.log("PASS: pelican preview content is centered on both axes")
   const hiddenCard = page.locator("article").filter({has:page.getByRole("heading",{name:"可用率50%",exact:true})})
   assert.doesNotMatch(await hiddenCard.getByLabel("降智检测").innerText(),/糖果答案 42|candy-model/)
+  assert.equal(await hiddenCard.getByText(hint, { exact: true }).count(), 0)
+  console.log("PASS: degradation hint only appears when public results are shown")
   const cardLayout = await page.locator("article").evaluateAll((cards) => cards.slice(0, 4).map((card) => {
     const bounds = card.getBoundingClientRect()
     const header = card.querySelector("header").getBoundingClientRect()

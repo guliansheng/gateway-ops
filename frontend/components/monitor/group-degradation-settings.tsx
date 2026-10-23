@@ -93,7 +93,7 @@ export function GroupDegradationStatus({ stationID, groupID }: { stationID: numb
   const results = rawResults.filter((result) => result.status !== "error")
   const showResults = view.config.result_visibility !== "hide"
   return <section className="mt-4 border-t border-border/70 pt-3" aria-label="降智检测">
-    <h3 className="text-xs font-semibold">降智检测</h3>
+    <div className="flex items-baseline justify-between gap-2"><h3 className="text-xs font-semibold">降智检测</h3>{showResults && results.length ? <span className="shrink-0 text-[10px] text-muted-foreground">悬浮预览，点击查看详情</span> : null}</div>
     <div className="mt-2 flex gap-1" aria-label="最近检测记录，从早到晚">
       {[...results].slice(0, 18).reverse().map((result) => {
         const state = degradationStatusMeta[result.status] ?? degradationStatusMeta.inconclusive
