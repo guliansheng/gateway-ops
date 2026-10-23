@@ -296,6 +296,19 @@ func (r *RelayStations) SaveGroupDegradationConfig(ctx context.Context, stationI
 				candyNext = &t
 			}
 		}
+		if config.Enabled && !current.Enabled {
+			// A group that is only now enabled has no cadence to keep: make the
+			// first check due right away instead of one whole interval later.
+			now := time.Now()
+			if degradationMethodEnabled(config.Method, "pelican") {
+				first := now
+				pelicanNext = &first
+			}
+			if degradationMethodEnabled(config.Method, "candy") {
+				first := now
+				candyNext = &first
+			}
+		}
 		next := earliestSelectedDegradationRun(config.Method, pelicanNext, candyNext)
 		if err := tx.Model(&current).Updates(map[string]any{
 			"enabled": config.Enabled, "method": config.Method, "model": config.Model,
@@ -592,8 +605,16 @@ func selectDegradationMethod(selection string, pelican, candy *time.Time, now ti
 	}
 	return "", false
 }
+
+// advanceDegradationRun moves one method's slot forward. A run that starts
+// before a pending slot (a manual 「立即检测」 or an early tick) must not consume
+// it, otherwise every manual test pushes the next automatic check a whole
+// interval further away.
 func advanceDegradationRun(previous *time.Time, now time.Time, interval int) *time.Time {
 	step := time.Duration(interval) * time.Minute
+	if previous != nil && previous.After(now) {
+		return previous
+	}
 	next := now.Add(step)
 	if previous != nil {
 		next = previous.Add(step)

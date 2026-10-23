@@ -75,3 +75,17 @@ func TestDegradationMethodSelectionGate(t *testing.T) {
 		t.Fatalf("candy-only next=%v", next)
 	}
 }
+
+// A manual 「立即检测」 must not borrow the next automatic slot: only a due slot
+// rolls forward, a pending one stays where it is.
+func TestDegradationEarlyClaimKeepsPendingSlot(t *testing.T) {
+	now := time.Now().Truncate(time.Minute)
+	pending := now.Add(56 * time.Minute)
+	if got := advanceDegradationRun(&pending, now, 60); got == nil || !got.Equal(pending) {
+		t.Fatalf("early claim consumed pending slot: %v", got)
+	}
+	due := now.Add(-4 * time.Minute)
+	if got := advanceDegradationRun(&due, now, 60); got == nil || !got.Equal(due.Add(time.Hour)) {
+		t.Fatalf("due slot did not advance: %v", got)
+	}
+}

@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -236,6 +238,39 @@ func TestGroupDegradationClaimDisabledAndActiveLease(t *testing.T) {
 	}
 }
 
+func TestGroupDegradationManualClaimKeepsPendingSchedule(t *testing.T) {
+	pending := time.Now().Add(56 * time.Minute).Truncate(time.Microsecond)
+	step := degradationSQLStep{
+		columns: []string{"id", "station_id", "group_external_id", "enabled", "method", "model", "judge_model", "effort", "interval_minutes", "preview_mode", "result_visibility", "lease_token", "lease_until", "history_limit", "pelican_interval_minutes", "candy_interval_minutes", "pelican_next_run_at", "candy_next_run_at"},
+		rows:    [][]driver.Value{{int64(7), int64(1), int64(9), true, "pelican", "candidate", "", "medium", int64(60), "hover", "show", "", nil, int64(20), int64(60), int64(30), pending, nil}},
+	}
+	step.contains = "FOR UPDATE"
+	update := degradationSQLStep{contains: `UPDATE "group_degradation_configs"`, check: func(query string, args []driver.NamedValue) {
+		kept := 0
+		for _, arg := range args {
+			value, ok := arg.Value.(time.Time)
+			if !ok {
+				continue
+			}
+			if value.Equal(pending.Add(time.Hour)) {
+				t.Errorf("manual claim pushed the pending slot to %v", value)
+			}
+			if value.Equal(pending) {
+				kept++
+			}
+		}
+		if kept != 2 {
+			t.Errorf("pending slot written %d times, want next_run_at and pelican_next_run_at", kept)
+		}
+	}}
+	steps := append(degradationScopeSteps(true), step, update)
+	repo, state := newDegradationSQL(t, steps...)
+	config, err := repo.ClaimGroupDegradation(context.Background(), 1, 9, 5*time.Minute)
+	if err != nil || state.commits != 1 || config.NextRunAt == nil || !config.NextRunAt.Equal(pending) {
+		t.Fatalf("claim err=%v commits=%d next=%v", err, state.commits, config.NextRunAt)
+	}
+}
+
 func TestGroupDegradationDueClaimUsesSkipLockedAndLease(t *testing.T) {
 	step := degradationConfigStep(true, nil)
 	step.contains = "FOR UPDATE SKIP LOCKED"
@@ -291,6 +326,20 @@ func TestGroupDegradationLostLeaseDoesNotSave(t *testing.T) {
 	}
 }
 
+// degradationUpdateArg returns the value bound to one column of a GORM map
+// update, so assertions do not depend on argument order or on updated_at.
+func degradationUpdateArg(args []driver.NamedValue, query, column string) (driver.Value, bool) {
+	match := regexp.MustCompile(`"` + regexp.QuoteMeta(column) + `"\s*=\s*\$(\d+)`).FindStringSubmatch(query)
+	if match == nil {
+		return nil, false
+	}
+	index, err := strconv.Atoi(match[1])
+	if err != nil || index < 1 || index > len(args) {
+		return nil, false
+	}
+	return args[index-1].Value, true
+}
+
 func TestGroupDegradationSaveFirstEnableAndInterval(t *testing.T) {
 	for _, previouslyEnabled := range []bool{false, true} {
 		t.Run(fmt.Sprint(previouslyEnabled), func(t *testing.T) {
@@ -304,14 +353,21 @@ func TestGroupDegradationSaveFirstEnableAndInterval(t *testing.T) {
 					t.Errorf("incomplete config update: %s", query)
 				}
 				wantNext := lastRun.Add(30 * time.Minute)
-				foundNext := false
-				for _, arg := range args {
-					if value, ok := arg.Value.(time.Time); ok && value.Equal(wantNext) {
-						foundNext = true
-					}
+				next, ok := degradationUpdateArg(args, query, "next_run_at")
+				if !ok {
+					t.Fatalf("no next_run_at in update: %s", query)
 				}
-				if foundNext != previouslyEnabled {
-					t.Errorf("next-run scheduling: found=%v previous-enabled=%v", foundNext, previouslyEnabled)
+				nextAt, isTime := next.(time.Time)
+				if !isTime {
+					t.Fatalf("next_run_at is %T, want time", next)
+				}
+				if previouslyEnabled {
+					if !nextAt.Equal(wantNext) {
+						t.Errorf("interval change next=%v want=%v", nextAt, wantNext)
+					}
+				} else if nextAt.Before(time.Now().Add(-time.Minute)) || nextAt.After(time.Now().Add(time.Minute)) {
+					// A first enable is scheduled right away instead of one interval later.
+					t.Errorf("first enable next=%v, want now", nextAt)
 				}
 			}}
 			steps := append(degradationScopeSteps(true), degradationSQLStep{contains: "ON CONFLICT", columns: []string{"id"}, rows: [][]driver.Value{{int64(7)}}}, current, update, degradationPruneStep(t, 1, 9, 20))
