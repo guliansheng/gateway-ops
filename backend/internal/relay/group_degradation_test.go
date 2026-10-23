@@ -133,6 +133,7 @@ func TestGroupDegradationInvalidHTMLRetainedWithoutJudge(t *testing.T) {
 }
 
 func TestGroupDegradationJudgeFailurePreservesOutputAndRedacts(t *testing.T) {
+	withFastDegradationRetry(t)
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++

@@ -249,11 +249,16 @@ func TestDegradationTransportReasoningStreamFitsJudgeBudget(t *testing.T) {
 	}
 }
 
-func TestDegradationTransportHTTPClassificationAndNoRetries(t *testing.T) {
+func TestDegradationTransportHTTPClassificationAndRetryPolicy(t *testing.T) {
+	withFastDegradationRetry(t)
 	for _, tc := range []struct {
-		status int
-		want   string
-	}{{401, "认证失败"}, {403, "无访问权限"}, {404, "端点不存在"}, {429, "请求受限"}, {408, "超时"}, {504, "超时"}, {502, "上游服务异常"}, {307, "禁止重定向"}} {
+		status  int
+		want    string
+		retried bool
+	}{
+		{401, "认证失败", false}, {403, "无访问权限", false}, {404, "端点不存在", false},
+		{429, "请求受限", true}, {408, "超时", true}, {504, "超时", true}, {502, "上游服务异常", true}, {307, "禁止重定向", false},
+	} {
 		t.Run(fmt.Sprint(tc.status), func(t *testing.T) {
 			calls := 0
 			s := &Service{client: &http.Client{Transport: degradationTestTransport(func(*http.Request) (*http.Response, error) {
@@ -261,8 +266,15 @@ func TestDegradationTransportHTTPClassificationAndNoRetries(t *testing.T) {
 				return &http.Response{StatusCode: tc.status, Body: io.NopCloser(strings.NewReader("local-secret raw upstream body"))}, nil
 			})}}
 			_, err := s.degradationChat(context.Background(), "https://offline.invalid", "local-secret", "gpt-6-astra", "none", "", "prompt", time.Second, 64, "")
-			if err == nil || calls != 1 || !strings.Contains(err.Error(), fmt.Sprintf("HTTP %d", tc.status)) || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "local-secret") || strings.Contains(err.Error(), "raw upstream body") {
+			wantCalls := 1
+			if tc.retried {
+				wantCalls = degradationRetryAttempts
+			}
+			if err == nil || calls != wantCalls || !strings.Contains(err.Error(), fmt.Sprintf("HTTP %d", tc.status)) || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "local-secret") || strings.Contains(err.Error(), "raw upstream body") {
 				t.Fatalf("calls=%d error=%v", calls, err)
+			}
+			if retried := strings.Contains(err.Error(), "已重试"); retried != tc.retried {
+				t.Fatalf("retry marker=%v error=%v", retried, err)
 			}
 		})
 	}
@@ -273,6 +285,7 @@ type degradationTestReader func([]byte) (int, error)
 func (f degradationTestReader) Read(p []byte) (int, error) { return f(p) }
 
 func TestDegradationTransportStopsAtCompletionAndHidesReadErrors(t *testing.T) {
+	withFastDegradationRetry(t)
 	for _, protocol := range []string{"chat", "responses"} {
 		body := degradationTestResponseCompleted("answer")
 		if protocol == "chat" {

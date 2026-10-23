@@ -23,7 +23,27 @@ var (
 	errDegradationEmpty      = errors.New("模型返回空内容，不能用于能力判定")
 	errDegradationRefused    = errors.New("模型拒绝回答或内容被过滤，不能用于能力判定")
 	errDegradationUpstream   = errors.New("模型上游返回错误事件（上游错误详情已隐藏）")
+	errDegradationConnection = errors.New("模型网关连接失败（上游错误详情已隐藏）")
+	errDegradationRead       = errors.New("读取模型响应失败（上游错误详情已隐藏）")
 )
+
+const (
+	degradationRetryAttempts     = 3
+	degradationRetryMinRemaining = 30 * time.Second
+)
+
+// degradationRetryBackoff is the wait before each retry. Tests shorten it so
+// transport assertions stay fast.
+var degradationRetryBackoff = []time.Duration{2 * time.Second, 6 * time.Second}
+
+// degradationStatusError keeps the numeric status so retries can tell a transient
+// gateway failure (502/503/504) from a deterministic client error (401/404).
+type degradationStatusError struct {
+	Status  int
+	Message string
+}
+
+func (e degradationStatusError) Error() string { return e.Message }
 
 func degradationProtocol(model, protocol string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(protocol)) {
@@ -53,6 +73,11 @@ func degradationProtocol(model, protocol string) (string, error) {
 
 // degradationChat never exposes transport errors, URLs, or raw upstream bodies.
 // Both protocols request streams, but JSON-only compatible gateways also work.
+//
+// Transient gateway failures (502/503/504, connection resets, mid-stream read
+// errors) are retried: one upstream hiccup should not waste a scheduled run or a
+// paid manual test. Deterministic failures (auth, format, refusal, timeout) are
+// returned immediately.
 func (s *Service) degradationChat(ctx context.Context, baseURL, key, model, effort, system, prompt string, timeout time.Duration, limit int, protocol string) (string, error) {
 	protocol, err := degradationProtocol(model, protocol)
 	if err != nil {
@@ -61,6 +86,22 @@ func (s *Service) degradationChat(ctx context.Context, baseURL, key, model, effo
 	if limit <= 0 || limit > groupDegradationOutputLimit {
 		return "", errors.New("模型输出大小上限无效")
 	}
+	for attempt := 1; ; attempt++ {
+		output, err := s.degradationChatAttempt(ctx, baseURL, key, model, effort, system, prompt, timeout, limit, protocol)
+		if err == nil {
+			return output, nil
+		}
+		if attempt >= degradationRetryAttempts || !degradationRetryable(err) || !degradationRetryWait(ctx, attempt) {
+			if attempt > 1 {
+				return "", fmt.Errorf("%w；已重试 %d 次", err, attempt-1)
+			}
+			return "", err
+		}
+	}
+}
+
+// degradationChatAttempt performs exactly one paid model call.
+func (s *Service) degradationChatAttempt(ctx context.Context, baseURL, key, model, effort, system, prompt string, timeout time.Duration, limit int, protocol string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	messages := []map[string]string{}
@@ -110,7 +151,7 @@ func (s *Service) degradationChat(ctx context.Context, baseURL, key, model, effo
 		if ctx.Err() != nil {
 			return "", degradationContextError(ctx)
 		}
-		return "", errors.New("模型网关连接失败（上游错误详情已隐藏）")
+		return "", errDegradationConnection
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -136,7 +177,7 @@ func (s *Service) degradationChat(ctx context.Context, baseURL, key, model, effo
 				return "", safe
 			}
 		}
-		return "", errors.New("读取模型响应失败（上游错误详情已隐藏）")
+		return "", errDegradationRead
 	}
 	return output, nil
 }
@@ -166,7 +207,48 @@ func degradationHTTPError(status int) error {
 	case status >= 500:
 		category = "上游服务异常"
 	}
-	return fmt.Errorf("模型网关返回 HTTP %d（%s；上游错误详情已隐藏）", status, category)
+	return degradationStatusError{Status: status, Message: fmt.Sprintf("模型网关返回 HTTP %d（%s；上游错误详情已隐藏）", status, category)}
+}
+
+// degradationRetryable reports whether a failed call may succeed when repeated.
+// Only transport-level hiccups are retried: a 401/404, a malformed response or a
+// refusal will answer the same way on a second paid call.
+func degradationRetryable(err error) bool {
+	var status degradationStatusError
+	if errors.As(err, &status) {
+		switch {
+		case status.Status == http.StatusRequestTimeout, status.Status == http.StatusTooManyRequests, status.Status == http.StatusTooEarly:
+			return true
+		case status.Status >= 500 && status.Status <= 599:
+			return true
+		}
+		return false
+	}
+	return errors.Is(err, errDegradationConnection) || errors.Is(err, errDegradationRead)
+}
+
+// degradationRetryWait sleeps before the next attempt. A retry that cannot
+// finish inside the remaining run budget is skipped so the run still records a
+// result instead of being killed by the lease.
+func degradationRetryWait(ctx context.Context, attempt int) bool {
+	wait := time.Duration(0)
+	if len(degradationRetryBackoff) > 0 {
+		wait = degradationRetryBackoff[min(attempt-1, len(degradationRetryBackoff)-1)]
+	}
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < wait+degradationRetryMinRemaining {
+		return false
+	}
+	if wait <= 0 {
+		return ctx.Err() == nil
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 type degradationChatReply struct {
