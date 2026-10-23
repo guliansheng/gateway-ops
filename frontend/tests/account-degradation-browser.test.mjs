@@ -103,7 +103,12 @@ try {
 
 	await page.getByRole("button",{name:"配置正常账号降智测试",exact:true}).click()
 	let dialog = page.getByRole("dialog",{name:"账号降智测试配置",exact:true})
-	await dialog.getByRole("combobox",{name:"账号降智测试方式",exact:true}).selectOption("both")
+	const methodPelican = dialog.getByRole("checkbox",{name:"启用鹈鹕测试",exact:true})
+	const methodCandy = dialog.getByRole("checkbox",{name:"启用糖果测试",exact:true})
+	if (!(await methodPelican.isChecked())) await methodPelican.check()
+	if (!(await methodCandy.isChecked())) await methodCandy.check()
+	assert.equal(await methodPelican.isChecked(),true)
+	assert.equal(await methodCandy.isChecked(),true)
 	await dialog.getByRole("combobox",{name:"调用模型",exact:true}).first().click()
 	await page.getByRole("option",{name:"candidate",exact:true}).click()
 	await dialog.getByLabel("鹈鹕检测间隔（分钟）").fill("45")

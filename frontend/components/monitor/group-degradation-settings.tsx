@@ -4,7 +4,8 @@ import { useEffect, useId, useMemo, useRef, useState } from "react"
 import { Download, Eye, Loader2, Play, Save, Settings2, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Dialog, DialogBody, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
@@ -38,12 +39,12 @@ function downloadHTML(result: GroupDegradationResult) {
 
 export function ResultDialog({ result, onClose, minimal = false }: { result: GroupDegradationResult | null; onClose: () => void; minimal?: boolean }) {
   return <Dialog open={Boolean(result)} onOpenChange={(open) => { if (!open) onClose() }}>
-    <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-auto sm:max-w-4xl">
-      <DialogHeader><DialogTitle>{result?.method === "candy" ? "糖果测试结果" : "鹈鹕 HTML 测试结果"}</DialogTitle><DialogDescription>{result ? `${formatTime(result.created_at)} · ${result.model}` : ""}</DialogDescription></DialogHeader>
-      {result ? <>{result.method === "candy" ? result.answer ? <ResultFrame result={result} large /> : null : result.html ? <ResultFrame result={result} large /> : null}{minimal ? null : <><p className="text-sm leading-6 text-muted-foreground">{result.reason}</p>{result.html ? <Button type="button" variant="outline" className="w-fit gap-2" onClick={() => downloadHTML(result)}><Download className="size-4" />下载原始 HTML</Button> : null}</>}</> : null}
+    <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
+      <DialogHeader className="shrink-0 border-b border-border px-4 py-4 text-left sm:px-6"><DialogTitle>{result?.method === "candy" ? "糖果测试结果" : "鹈鹕 HTML 测试结果"}</DialogTitle><DialogDescription>{result ? `${formatTime(result.created_at)} · ${result.model}` : ""}</DialogDescription></DialogHeader>
+      <DialogBody className="space-y-3 px-4 py-4 sm:px-6">{result ? <>{result.method === "candy" ? result.answer ? <ResultFrame result={result} large /> : null : result.html ? <ResultFrame result={result} large /> : null}{minimal ? null : <><p className="text-sm leading-6 text-muted-foreground">{result.reason}</p>{result.html ? <Button type="button" variant="outline" className="w-fit gap-2" onClick={() => downloadHTML(result)}><Download className="size-4" />下载原始 HTML</Button> : null}</>}</> : null}</DialogBody>
     </DialogContent>
   </Dialog>
-} 
+}
 
 /**
  * Group counterpart of the account list's latest test cell: method, model,
@@ -214,24 +215,52 @@ export function GroupDegradationSettings({ stationID, groupID, groupName, onSave
   if (loading) return <p className="flex items-center gap-2 py-8 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />正在读取{groupName}配置</p>
   if (!loaded) return <div className="space-y-3 py-4"><p role="alert" className="text-sm text-danger">{error || "配置读取失败"}</p><Button type="button" variant="outline" onClick={() => setLoadVersion((value) => value + 1)}>重新读取配置</Button></div>
   const busy = saving || running || clearing
+  const methodSelection = { pelican: config.method !== "candy", candy: config.method !== "pelican" }
+  function toggleMethod(kind: "pelican" | "candy", checked: boolean) {
+    const next = { pelican: kind === "pelican" ? checked : methodSelection.pelican, candy: kind === "candy" ? checked : methodSelection.candy }
+    if (!next.pelican && !next.candy) return
+    update({ method: next.pelican && next.candy ? "both" : next.pelican ? "pelican" : "candy" })
+  }
   return <div className="space-y-5">
     <div className="flex items-center justify-between gap-3 border-b border-border pb-4"><h3 className="font-semibold">{groupName}</h3><label htmlFor={`${id}-enabled`} className="flex items-center gap-2"><Switch id={`${id}-enabled`} checked={config.enabled} disabled={busy} onCheckedChange={(enabled) => update({ enabled })} />{config.enabled ? "已开启" : "未开启"}</label></div>
-    <fieldset disabled={busy} className="grid gap-4 sm:grid-cols-2">
-      <label className="space-y-2 text-xs font-medium"><span>测试方式</span><select aria-label="分组降智测试方式" className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm" value={config.method} onChange={e=>update({method:e.target.value as GroupDegradationConfig["method"]})}><option value="pelican">仅鹈鹕</option><option value="candy">仅糖果</option><option value="both">鹈鹕和糖果</option></select></label>
-      <label className="space-y-2 text-xs font-medium" htmlFor={`${id}-pelican-interval`}><span>鹈鹕检测间隔（分钟）</span><Input id={`${id}-pelican-interval`} type="number" min={5} max={1440} step={1} value={config.pelican_interval_minutes} onChange={e=>update({pelican_interval_minutes:Number(e.target.value)})}/></label>
-      <label className="space-y-2 text-xs font-medium" htmlFor={`${id}-model`}><span>调用模型</span><Input id={`${id}-model`} list={`${id}-models`} value={config.model} onChange={(e) => update({ model: e.target.value })} placeholder="选择或输入模型名称" maxLength={256} /></label>
-      <label className="space-y-2 text-xs font-medium" htmlFor={`${id}-judge`}><span>评审模型</span><Input id={`${id}-judge`} list={`${id}-models`} value={config.judge_model ?? ""} onChange={(e) => update({ judge_model: e.target.value })} placeholder="留空沿用调用模型" maxLength={256} /></label>
-      <datalist id={`${id}-models`}>{models.map((model) => <option key={model} value={model} />)}</datalist>
-      <label className="space-y-2 text-xs font-medium" htmlFor={`${id}-effort`}><span>思考强度</span><select id={`${id}-effort`} className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm" value={config.effort} onChange={(e) => update({ effort: e.target.value as GroupDegradationConfig["effort"] })}><option value="none">模型默认值</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option></select></label>
-      <label className="space-y-2 text-xs font-medium" htmlFor={`${id}-candy-interval`}><span>糖果检测间隔（分钟）</span><Input id={`${id}-candy-interval`} type="number" min={5} max={1440} step={1} value={config.candy_interval_minutes} onChange={e=>update({candy_interval_minutes:Number(e.target.value)})}/></label>
-      <label className="space-y-2 text-xs font-medium" htmlFor={`${id}-history-limit`}><span>历史最多保留（条）</span><Input id={`${id}-history-limit`} aria-label="历史最多保留（条）" type="number" min={1} max={1000} step={1} value={config.history_limit} onChange={(e) => update({ history_limit: Number(e.target.value) })} /><span className="block text-[11px] font-normal leading-5 text-muted-foreground">1–1000 条。调小并保存后会移除超出上限的旧记录。</span></label>
-      <label className="space-y-2 text-xs font-medium" htmlFor={`${id}-visibility`}><span>公开测试结果</span><select id={`${id}-visibility`} className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm" value={config.result_visibility} onChange={(e) => update({ result_visibility: e.target.value as GroupDegradationConfig["result_visibility"], preview_mode: "hover" })}><option value="hide">不展示 · 仅悬浮说明通过情况</option><option value="show">展示 · 悬浮预览，点击展开详情</option></select></label>
+    <fieldset disabled={busy} className="space-y-5">
+      <section className="space-y-3">
+        <h4 className="border-b border-border pb-2 text-xs font-semibold text-foreground">检测项目</h4>
+        <div className="space-y-2">
+          <span className="text-xs font-medium">测试方式（可多选）</span>
+          <div className="flex flex-wrap items-center gap-5">
+            <label className="flex items-center gap-2 text-xs"><Checkbox checked={methodSelection.pelican} disabled={busy || config.method === "pelican"} onCheckedChange={(checked) => toggleMethod("pelican", checked === true)} aria-label="启用鹈鹕测试" />鹈鹕测试</label>
+            <label className="flex items-center gap-2 text-xs"><Checkbox checked={methodSelection.candy} disabled={busy || config.method === "candy"} onCheckedChange={(checked) => toggleMethod("candy", checked === true)} aria-label="启用糖果测试" />糖果测试</label>
+          </div>
+          <p className="text-[11px] leading-5 text-muted-foreground">至少保留一项；两项都启用时按各自间隔独立计时。</p>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <label className="space-y-2 text-xs font-medium" htmlFor={`${id}-pelican-interval`}><span>鹈鹕检测间隔（分钟）</span><Input id={`${id}-pelican-interval`} type="number" min={5} max={1440} step={1} value={config.pelican_interval_minutes} onChange={e=>update({pelican_interval_minutes:Number(e.target.value)})}/></label>
+          <label className="space-y-2 text-xs font-medium" htmlFor={`${id}-candy-interval`}><span>糖果检测间隔（分钟）</span><Input id={`${id}-candy-interval`} type="number" min={5} max={1440} step={1} value={config.candy_interval_minutes} onChange={e=>update({candy_interval_minutes:Number(e.target.value)})}/></label>
+        </div>
+      </section>
+      <section className="space-y-3">
+        <h4 className="border-b border-border pb-2 text-xs font-semibold text-foreground">模型与评审</h4>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <label className="space-y-2 text-xs font-medium" htmlFor={`${id}-model`}><span>调用模型</span><Input id={`${id}-model`} list={`${id}-models`} value={config.model} onChange={(e) => update({ model: e.target.value })} placeholder="选择或输入模型名称" maxLength={256} /></label>
+          <label className="space-y-2 text-xs font-medium" htmlFor={`${id}-judge`}><span>评审模型</span><Input id={`${id}-judge`} list={`${id}-models`} value={config.judge_model ?? ""} onChange={(e) => update({ judge_model: e.target.value })} placeholder="留空沿用调用模型" maxLength={256} /></label>
+          <label className="space-y-2 text-xs font-medium" htmlFor={`${id}-effort`}><span>思考强度</span><select id={`${id}-effort`} className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm" value={config.effort} onChange={(e) => update({ effort: e.target.value as GroupDegradationConfig["effort"] })}><option value="none">模型默认值</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option></select></label>
+        </div>
+        <datalist id={`${id}-models`}>{models.map((model) => <option key={model} value={model} />)}</datalist>
+      </section>
+      <section className="space-y-3">
+        <h4 className="border-b border-border pb-2 text-xs font-semibold text-foreground">历史与公开</h4>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <label className="space-y-2 text-xs font-medium" htmlFor={`${id}-history-limit`}><span>历史最多保留（条）</span><Input id={`${id}-history-limit`} aria-label="历史最多保留（条）" type="number" min={1} max={1000} step={1} value={config.history_limit} onChange={(e) => update({ history_limit: Number(e.target.value) })} /><span className="block text-[11px] font-normal leading-5 text-muted-foreground">1–1000 条。调小并保存后会移除超出上限的旧记录。</span></label>
+          <label className="space-y-2 text-xs font-medium" htmlFor={`${id}-visibility`}><span>公开测试结果</span><select id={`${id}-visibility`} className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm" value={config.result_visibility} onChange={(e) => update({ result_visibility: e.target.value as GroupDegradationConfig["result_visibility"], preview_mode: "hover" })}><option value="hide">不展示 · 仅悬浮说明通过情况</option><option value="show">展示 · 悬浮预览，点击展开详情</option></select></label>
+        </div>
+      </section>
     </fieldset>
     <p className="border-l-2 border-brand pl-3 text-xs leading-5 text-muted-foreground">两种测试独立计时，同一分组不会并行测试。同轮到期优先运行鹈鹕，糖果跳过本轮并等待下个周期。</p>
     <p className="text-xs leading-5 text-muted-foreground">{config.result_visibility === "hide" ? "公开监控页仅显示通过情况，不提供答案或 HTML；管理员仍可查看保留范围内的完整历史。" : "公开监控页可悬浮预览生成内容，点击检测记录展开完整结果。"}</p>
     <p className="rounded-md border border-warning/30 bg-warning/5 px-3 py-2 text-xs leading-5 text-muted-foreground">开启后将按间隔产生真实模型调用和费用。生成结果由评审模型判断；最多保留 {config.history_limit || 20} 条检测历史。请求健康监控仍为被动统计。</p>
     {error && !clearConfirm ? <p role="alert" className="text-sm text-danger">{error}</p> : null}{message ? <p role="status" className="text-sm text-success">{message}</p> : null}
-	<div className="flex flex-wrap items-center gap-2"><Select value={runMethod} onValueChange={(value)=>setRunMethod(value as "pelican"|"candy")} disabled={busy||dirty||!config.enabled}><SelectTrigger className="h-9 w-32 text-xs" aria-label="立即检测方式"><SelectValue /></SelectTrigger><SelectContent>{config.method !== "candy" ? <SelectItem value="pelican">鹈鹕测试</SelectItem> : null}{config.method !== "pelican" ? <SelectItem value="candy">糖果测试</SelectItem> : null}</SelectContent></Select><Button type="button" disabled={busy || !dirty || !validHistoryLimit || !validIntervals} className="gap-2" onClick={() => void save()}>{saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}保存配置</Button><Button type="button" variant="outline" disabled={busy || dirty || !config.enabled || !config.model.trim()} className="gap-2" title={running ? "检测在后台运行，关闭弹窗不会中断" : undefined} onClick={() => void run()}>{running ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}{running ? "检测中" : "立即检测"}</Button></div>
+	<div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 border-t border-border bg-background/95 pt-3 pb-1 backdrop-blur"><Select value={runMethod} onValueChange={(value)=>setRunMethod(value as "pelican"|"candy")} disabled={busy||dirty||!config.enabled}><SelectTrigger className="h-9 w-32 text-xs" aria-label="立即检测方式"><SelectValue /></SelectTrigger><SelectContent>{config.method !== "candy" ? <SelectItem value="pelican">鹈鹕测试</SelectItem> : null}{config.method !== "pelican" ? <SelectItem value="candy">糖果测试</SelectItem> : null}</SelectContent></Select><Button type="button" disabled={busy || !dirty || !validHistoryLimit || !validIntervals} className="gap-2" onClick={() => void save()}>{saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}保存配置</Button><Button type="button" variant="outline" disabled={busy || dirty || !config.enabled || !config.model.trim()} className="gap-2" title={running ? "检测在后台运行，关闭弹窗不会中断" : undefined} onClick={() => void run()}>{running ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}{running ? "检测中" : "立即检测"}</Button></div>
     <div data-degradation-history className="space-y-2 border-t border-border pt-4"><div className="flex items-center justify-between gap-2"><h4 className="text-sm font-medium">检测历史</h4><Button type="button" variant="outline" size="sm" className="gap-1.5 text-danger" disabled={busy || dirty || !results.length} title={dirty ? "请先保存配置" : undefined} onClick={() => { setError(""); setClearConfirm(true) }}><Trash2 className="size-3.5" />清空历史</Button></div>{!results.length ? <p className="text-xs text-muted-foreground">暂无检测记录</p> : results.map((result) => { const meta = degradationStatusMeta[result.status] ?? degradationStatusMeta.inconclusive; return <button key={result.id} type="button" disabled={busy} onClick={() => setSelected(result)} className="flex w-full items-center justify-between gap-3 rounded-md border border-border px-3 py-2 text-left text-xs hover:bg-muted"><span className="min-w-0 break-words"><time>{formatTime(result.created_at)}</time><span className="ml-2 text-muted-foreground">{result.method === "pelican" ? "鹈鹕" : "糖果"} · {result.model}</span>{result.used_account_name ? <span className="ml-2 text-muted-foreground">调用账号 {result.used_account_name}</span> : null}</span><span className={cn("shrink-0", meta.tone)}>{meta.label}</span></button> })}</div>
     <AlertDialog open={clearConfirm} onOpenChange={(open) => { if (!clearing) setClearConfirm(open) }}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>清空检测历史？</AlertDialogTitle><AlertDialogDescription>仅清空“{groupName}”的检测记录，无法恢复。不影响其他分组、检测配置或定时计划。</AlertDialogDescription></AlertDialogHeader>{error ? <p role="alert" className="text-sm text-danger">{error}</p> : null}<AlertDialogFooter><AlertDialogCancel disabled={clearing}>取消</AlertDialogCancel><Button type="button" variant="destructive" disabled={clearing} onClick={() => void clearHistory()}>{clearing ? <Loader2 className="mr-1.5 size-4 animate-spin" /> : null}确认清空</Button></AlertDialogFooter></AlertDialogContent></AlertDialog>
     <ResultDialog result={selected} onClose={() => setSelected(null)} />
@@ -334,9 +363,11 @@ export function GroupDegradationSettingsButton({ stationID, groupID, groupName, 
       </TooltipTrigger>
       <TooltipContent side="top">降智监测配置</TooltipContent>
     </Tooltip>
-    {open ? <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-auto sm:max-w-3xl">
-      <DialogHeader><DialogTitle>分组降智监测配置</DialogTitle><DialogDescription>仅修改“{groupName}”分组的检测与公开结果设置。</DialogDescription></DialogHeader>
-      <GroupDegradationSettings key={`${stationID}-${groupID}`} stationID={stationID} groupID={groupID} groupName={groupName} onSaved={onSaved} onResults={onResults} />
+    {open ? <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
+      <DialogHeader className="shrink-0 border-b border-border px-4 py-4 text-left sm:px-6"><DialogTitle>分组降智监测配置</DialogTitle><DialogDescription>仅修改“{groupName}”分组的检测与公开结果设置。</DialogDescription></DialogHeader>
+      <DialogBody className="px-4 py-4 sm:px-6">
+        <GroupDegradationSettings key={`${stationID}-${groupID}`} stationID={stationID} groupID={groupID} groupName={groupName} onSaved={onSaved} onResults={onResults} />
+      </DialogBody>
     </DialogContent> : null}
   </Dialog>
 }
