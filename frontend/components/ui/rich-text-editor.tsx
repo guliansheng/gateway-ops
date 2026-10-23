@@ -1,10 +1,9 @@
 "use client"
 
-import { useEffect, useState } from "react"
-import "@wangeditor-next/editor/dist/css/style.css"
-import { Editor, Toolbar } from "@wangeditor-next/editor-for-react"
-import type { IDomEditor, IEditorConfig, IToolbarConfig } from "@wangeditor-next/editor"
+import { Fragment, useCallback, useLayoutEffect, useMemo, useRef, type CSSProperties, type ReactNode } from "react"
 import { cn } from "@/lib/utils"
+import { sanitizeHelpHtml } from "@/lib/help-html"
+import { buildHelpDocument } from "@/lib/help-document"
 
 interface RichTextEditorProps {
   value: string
@@ -14,98 +13,132 @@ interface RichTextEditorProps {
   className?: string
 }
 
-/**
- * 正文展示样式：右侧预览和公开页复用。
- * 逐项对齐 wangEditor 编辑区的默认样式（字号、间距、浅底代码块、表格边框等），
- * 两边观感一致；表格统一铺满可用宽度。底色和基础文字色由外层面板提供
- * （预览面板为白底 #333，与编辑区相同），这里只描述元素本身。
- */
+/** 正文展示样式：后台安全预览和公开页面共用。 */
 export const richTextContentClass = cn(
-  "text-sm leading-[1.5] break-words",
-  // 段落 / 标题：间距 15px / 20px，em 相对字号，700 加粗
-  "[&_p]:my-[15px]",
-  "[&_h1]:my-[20px] [&_h1]:text-[2em] [&_h1]:font-bold",
-  "[&_h2]:my-[20px] [&_h2]:text-[1.5em] [&_h2]:font-bold",
-  "[&_h3]:my-[20px] [&_h3]:text-[1.17em] [&_h3]:font-bold",
-  // h4 与 h3 同号 1.17em（wangEditor 默认 h4=1em，按需求改大；编辑区同步覆盖）
-  "[&_h4]:my-[20px] [&_h4]:text-[1.17em] [&_h4]:font-bold",
-  "[&_h5]:my-[20px] [&_h5]:text-[0.83em] [&_h5]:font-bold",
-  "[&_h6]:my-[20px] [&_h6]:text-[0.67em] [&_h6]:font-bold",
-  // 列表：浏览器默认序号 / 圆点 + 40px 缩进（编辑器为 list-style:revert，效果等价）
-  "[&_ol]:my-[15px] [&_ol]:pl-10 [&_ol]:list-decimal",
-  "[&_ul]:my-[15px] [&_ul]:pl-10 [&_ul]:list-disc",
-  "[&_li]:my-0 [&_li]:leading-[1.5]",
-  // 引用：浅底 + 蓝色粗左边框；浅底上固定深色字，暗色模式也清晰
-  "[&_blockquote]:my-[10px] [&_blockquote]:border-l-8 [&_blockquote]:border-[#b4d5ff] [&_blockquote]:bg-[#f5f2f0] [&_blockquote]:p-[10px] [&_blockquote]:text-[#333]",
-  // 行内 code：浅底小圆角 + 等宽字体（编辑器为 monospace）
-  "[&_code]:rounded-[3px] [&_code]:bg-[#f5f2f0] [&_code]:p-[3px] [&_code]:text-[#333] [&_code]:[font-family:monospace]",
-  // 代码块：盒子在 pre>code 上（浅底、细边框、14px 等宽、超宽横向滚动），与编辑器一致
-  "[&_pre]:whitespace-pre-wrap [&_pre]:leading-[1.5] [&_pre]:[font-family:monospace]",
-  "[&_pre>code]:my-[0.5em] [&_pre>code]:block [&_pre>code]:overflow-auto [&_pre>code]:whitespace-pre [&_pre>code]:break-normal [&_pre>code]:rounded-[4px] [&_pre>code]:border [&_pre>code]:border-[#e8e8e8] [&_pre>code]:bg-[#f5f2f0] [&_pre>code]:p-[1em] [&_pre>code]:text-left [&_pre>code]:text-[14px] [&_pre>code]:text-[#333] [&_pre>code]:leading-[1.5] [&_pre>code]:[font-family:Consolas,Monaco,'Andale_Mono','Ubuntu_Mono',monospace] [&_pre>code]:[tab-size:4] [&_pre>code]:[text-shadow:0_1px_#fff]",
-  // 表格：细灰边框、单元格 3px/5px、表头浅底居中加粗；全部铺满可用宽度
-  "[&_table]:mt-[10px] [&_table]:w-full [&_table]:border-collapse [&_table]:table-fixed",
-  "[&_td]:min-w-[30px] [&_td]:overflow-hidden [&_td]:border [&_td]:border-[#ccc] [&_td]:px-[5px] [&_td]:py-[3px] [&_td]:leading-[1.5] [&_td]:break-words [&_td]:break-all [&_td]:[white-space:pre-wrap]",
-  "[&_th]:min-w-[30px] [&_th]:overflow-hidden [&_th]:border [&_th]:border-[#ccc] [&_th]:bg-[#f5f2f0] [&_th]:px-[5px] [&_th]:py-[3px] [&_th]:text-center [&_th]:font-bold [&_th]:leading-[1.5] [&_th]:break-words [&_th]:break-all [&_th]:[white-space:pre-wrap] [&_th]:text-[#333]",
-  // 链接：保持品牌色 + 下划线（编辑区同步加了同款样式，两边一致）
-  "[&_a]:text-brand [&_a]:underline [&_a]:underline-offset-2",
-  // 图片：编辑器中为行内显示、无圆角边距
-  "[&_img]:inline [&_img]:max-w-full [&_img]:min-h-[20px] [&_img]:min-w-[20px]",
+  "text-sm leading-[1.7] break-words text-[#333]",
+  "[&_p]:my-4 [&_h1]:my-5 [&_h1]:text-2xl [&_h1]:font-bold",
+  "[&_h2]:mb-4 [&_h2]:mt-8 [&_h2]:border-b [&_h2]:border-[#e5e7eb] [&_h2]:pb-2 [&_h2]:text-xl [&_h2]:font-bold",
+  "[&_h3]:mb-3 [&_h3]:mt-6 [&_h3]:text-lg [&_h3]:font-semibold [&_h4]:my-4 [&_h4]:font-semibold",
+  "[&_h5]:my-4 [&_h5]:font-semibold [&_h6]:my-4 [&_h6]:font-semibold",
+  "[&_ol]:my-4 [&_ol]:list-decimal [&_ol]:pl-6 [&_ul]:my-4 [&_ul]:list-disc [&_ul]:pl-6 [&_li]:my-1",
+  "[&_blockquote]:my-4 [&_blockquote]:border-l-4 [&_blockquote]:border-[#65b9a9] [&_blockquote]:bg-[#eaf6f2] [&_blockquote]:px-4 [&_blockquote]:py-2 [&_blockquote]:text-[#315a57]",
+  "[&_code]:rounded [&_code]:bg-[#f1f5f9] [&_code]:px-1 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-[0.9em]",
+  "[&_pre]:my-4 [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:border [&_pre]:border-[#dbe3ee] [&_pre]:bg-[#f8fafc] [&_pre]:p-4",
+  "[&_pre>code]:block [&_pre>code]:whitespace-pre [&_pre>code]:break-normal [&_pre>code]:bg-transparent [&_pre>code]:p-0 [&_pre>code]:text-[13px] [&_pre>code]:leading-6",
+  "[&_table]:my-4 [&_table]:w-full [&_table]:table-fixed [&_table]:border-collapse [&_table]:text-[13px]",
+  "[&_td]:border [&_td]:border-[#dbe3ee] [&_td]:px-3 [&_td]:py-2 [&_td]:align-top [&_td]:[overflow-wrap:anywhere]",
+  "[&_th]:border [&_th]:border-[#dbe3ee] [&_th]:bg-[#eef6f7] [&_th]:px-3 [&_th]:py-2 [&_th]:text-left [&_th]:font-semibold [&_th]:[overflow-wrap:anywhere]",
+  "[&_a]:text-[#1674b8] [&_a]:underline [&_a]:underline-offset-2 [&_a]:[overflow-wrap:anywhere] [&_img]:h-auto [&_img]:max-w-full",
+  "[&_details]:my-4 [&_details]:rounded [&_details]:border [&_details]:border-[#dbe3ee] [&_details]:p-3 [&_summary]:cursor-pointer [&_summary]:font-medium [&_hr]:my-6 [&_hr]:border-[#e5e7eb]",
 )
 
-/**
- * 富文本编辑器（wangEditor）：上工具栏固定，只有正文区滚动。
- * 输出为 HTML，与预览 / 公开页渲染同一套样式。
- */
+const htmlTokenPattern = /(<!--[\s\S]*?(?:-->|$)|<\/?[a-z](?:"[^"]*"|'[^']*'|[^'">])*>|<![^>]*>)/gi
+const htmlTagPattern = /^(<\/?)([\w:-]+)([\s\S]*?)(\/?>)$/
+const htmlAttributePattern = /(\s+)([\w:-]+)(\s*=\s*)("[^"]*"|'[^']*'|[^\s>]+)/g
+
+function highlightTag(token: string, keyPrefix: string) {
+  const match = htmlTagPattern.exec(token)
+  if (!match) return <span key={keyPrefix} className="text-[#b45309]">{token}</span>
+  const [, bracket, name, attributes, close] = match
+  const pieces: ReactNode[] = [<span key={`${keyPrefix}-open`} className="text-[#64748b]">{bracket}</span>, <span key={`${keyPrefix}-tag`} className="text-[#7c3aed]">{name}</span>]
+  let lastIndex = 0
+  htmlAttributePattern.lastIndex = 0
+  let attribute = htmlAttributePattern.exec(attributes)
+  let index = 0
+  while (attribute) {
+    if (attribute.index > lastIndex) pieces.push(<span key={`${keyPrefix}-space-${index}`}>{attributes.slice(lastIndex, attribute.index)}</span>)
+    pieces.push(<span key={`${keyPrefix}-attr-${index}`} className="text-[#2563eb]">{attribute[1]}{attribute[2]}</span>)
+    pieces.push(<span key={`${keyPrefix}-equals-${index}`} className="text-[#64748b]">{attribute[3]}</span>)
+    pieces.push(<span key={`${keyPrefix}-value-${index}`} className="text-[#15803d]">{attribute[4]}</span>)
+    lastIndex = attribute.index + attribute[0].length
+    index += 1
+    attribute = htmlAttributePattern.exec(attributes)
+  }
+  if (lastIndex < attributes.length) pieces.push(<span key={`${keyPrefix}-tail`}>{attributes.slice(lastIndex)}</span>)
+  pieces.push(<span key={`${keyPrefix}-close`} className="text-[#64748b]">{close}</span>)
+  return <Fragment key={keyPrefix}>{pieces}</Fragment>
+}
+
+function highlightHtml(source: string) {
+  return source.split(htmlTokenPattern).filter(Boolean).map((token, index) => {
+    if (token.startsWith("<!--")) return <span key={index} className="text-[#64748b]">{token}</span>
+    if (token.startsWith("<")) return highlightTag(token, `tag-${index}`)
+    return <span key={index} className="text-[#334155]">{token}</span>
+  })
+}
+
+// 两层必须使用完全相同的字体、间距和不折行规则，避免光标与高亮错位。
+const sourceTextStyle: CSSProperties = {
+  fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
+  fontSize: 13,
+  fontWeight: 400,
+  fontStyle: "normal",
+  fontVariantLigatures: "none",
+  lineHeight: "24px",
+  letterSpacing: 0,
+  tabSize: 2,
+  padding: 16,
+  margin: 0,
+  border: 0,
+  boxSizing: "border-box",
+  whiteSpace: "pre",
+  overflowWrap: "normal",
+  wordBreak: "normal",
+}
+
+/** 原生 textarea 保留选区、撤销和输入法行为；高亮层仅显示转义后的 React 文本。 */
 export function RichTextEditor({ value, onChange, placeholder, disabled = false, className }: RichTextEditorProps) {
-  const [editor, setEditor] = useState<IDomEditor | null>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const highlightRef = useRef<HTMLPreElement>(null)
+  const highlighted = useMemo(() => highlightHtml(value), [value])
 
-  // 项目没有图片 / 视频上传后端，隐藏相关菜单（未知 key 会被忽略，安全）。
-  const toolbarConfig: Partial<IToolbarConfig> = {
-    excludeKeys: ["group-image", "group-video", "insertImage", "uploadImage", "insertVideo", "uploadVideo"],
-  }
-  const editorConfig: Partial<IEditorConfig> = {
-    placeholder: placeholder ?? "开始撰写帮助文档…",
-  }
+  const syncHighlightScroll = useCallback(() => {
+    const textarea = textareaRef.current
+    const highlight = highlightRef.current
+    if (!textarea || !highlight) return
+    highlight.scrollTop = textarea.scrollTop
+    highlight.scrollLeft = textarea.scrollLeft
+  }, [])
 
-  useEffect(() => {
-    if (!editor) return
-    if (disabled) editor.disable()
-    else editor.enable()
-  }, [editor, disabled])
-
-  // 外部 value 变化（打开弹窗加载、查找替换、删除重置）同步进编辑器；
-  // 编辑器自身输入触发的 onChange 与 value 已一致，不会回写。
-  useEffect(() => {
-    if (!editor) return
-    if (value !== editor.getHtml()) editor.setHtml(value || "")
-  }, [editor, value])
+  useLayoutEffect(syncHighlightScroll, [syncHighlightScroll, value])
 
   return (
-    <div className={cn("flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-border bg-card", className)}>
-      <div className="shrink-0 border-b border-border bg-muted/40 [&_.w-e-toolbar]:flex-wrap [&_.w-e-toolbar]:bg-transparent">
-        <Toolbar editor={editor} defaultConfig={toolbarConfig} mode="default" />
+    <div className={cn("flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-border bg-card focus-within:ring-2 focus-within:ring-ring/40", disabled && "opacity-60", className)}>
+      <div className="flex shrink-0 items-center justify-between border-b border-border bg-muted/40 px-3 py-2">
+        <span className="text-xs font-medium text-foreground">HTML 源码</span>
+        <span className="font-mono text-[11px] text-muted-foreground">HTML</span>
       </div>
-      <div className="min-h-0 flex-1 overflow-hidden [&_.w-e-text-container]:h-full [&_.w-e-text-container]:text-sm [&_.w-e-text-container_a]:text-brand [&_.w-e-text-container_a]:underline [&_.w-e-text-container_a]:underline-offset-2 [&_.w-e-text-container_[data-slate-editor]_h4]:text-[1.17em] [&_.w-e-text-container_table]:w-full">
-        <Editor
+      <div className="relative min-h-0 flex-1 overflow-hidden bg-[#fbfcfe]">
+        <pre ref={highlightRef} aria-hidden="true" style={sourceTextStyle} className="pointer-events-none absolute inset-0 overflow-hidden forced-colors:hidden"><code className="block w-max min-w-full [font:inherit]">{highlighted}{"\n"}</code></pre>
+        <textarea
+          ref={textareaRef}
+          aria-label="帮助文档 HTML 源码"
+          wrap="off"
+          spellCheck={false}
+          autoCapitalize="off"
+          autoComplete="off"
+          autoCorrect="off"
+          disabled={disabled}
           value={value}
-          defaultConfig={editorConfig}
-          mode="default"
-          style={{ height: "100%" }}
-          onCreated={(instance) => setEditor(instance)}
-          onChange={(instance) => onChange(instance.getHtml())}
+          onChange={(event) => onChange(event.target.value)}
+          onScroll={syncHighlightScroll}
+          placeholder={placeholder ?? "输入帮助文档 HTML…"}
+          style={sourceTextStyle}
+          className="absolute inset-0 z-10 size-full resize-none overflow-auto bg-transparent text-transparent caret-slate-900 outline-none placeholder:text-slate-400 selection:bg-blue-200/70 disabled:cursor-not-allowed forced-colors:text-[CanvasText]"
         />
       </div>
     </div>
   )
 }
 
-/** 预览区 / 公开页渲染富文本 HTML 的容器。 */
+/** 预览区与公开页都只渲染允许列表清洗后的 HTML。 */
 export function RichTextBody({ html, className }: { html: string; className?: string }) {
-  return (
-    <div
-      className={cn(richTextContentClass, className)}
-      // 正文来自管理员编辑器输出或后端清洗后的 HTML。
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
-  )
+  const safeHtml = useMemo(() => sanitizeHelpHtml(html), [html])
+  return <div className={cn(richTextContentClass, className)} dangerouslySetInnerHTML={{ __html: safeHtml }} />
+}
+
+/** 完整文档保留自身 CSS 和目录；不共享父页面 origin 或权限。 */
+export function HelpDocumentFrame({ html, className, title = "帮助文档", transparentBackground = false, hideDocumentHeader = false }: { html: string; className?: string; title?: string; transparentBackground?: boolean; hideDocumentHeader?: boolean }) {
+  const source = useMemo(() => buildHelpDocument(html, transparentBackground, hideDocumentHeader), [html, transparentBackground, hideDocumentHeader])
+  return <iframe title={title} srcDoc={source} sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox" referrerPolicy="no-referrer" className={cn("block size-full min-h-0 border-0", transparentBackground ? "bg-transparent" : "bg-[#f4f7f9]", className)} />
 }

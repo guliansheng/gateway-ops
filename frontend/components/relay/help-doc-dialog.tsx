@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
-import { ExternalLink, Loader2, MessageSquare, Save, Trash2 } from "lucide-react"
+import { Download, ExternalLink, FileCode2, Loader2, MessageSquare, Save, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { useConfirm } from "@/components/ui/confirm-dialog"
@@ -12,20 +12,21 @@ import { Switch } from "@/components/ui/switch"
 import { Checkbox } from "@/components/ui/checkbox"
 import { cn } from "@/lib/utils"
 import { HelpFindReplaceBar } from "@/components/relay/help-find-replace"
-import { RichTextBody, RichTextEditor } from "@/components/ui/rich-text-editor"
+import { HelpDocumentFrame, RichTextEditor } from "@/components/ui/rich-text-editor"
+import { defaultHelpDocumentContent, renderHelpTemplate } from "@/lib/help-html"
+import { downloadHelpHtml } from "@/lib/help-document"
 import { apiFetch } from "@/lib/api"
 import type { HelpComment, HelpDocument } from "@/lib/api-types"
 
 interface HelpDocDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  station: { id: number; name: string }
+  station: { id: number; name: string; base_url: string }
 }
 
 /**
- * 中转站帮助文档编辑弹窗：所有功能都在这个弹窗里完成。
- * 左侧富文本编辑、右侧实时预览，可切换是否发布到公共页面、
- * 查看 / 删除（支持多选批量删除）访客留言、打开公共文档页面、保存和删除。
+ * 中转站帮助文档编辑弹窗：左侧 HTML 源码编辑与轻量语法高亮，右侧实时预览。
+ * 支持发布、留言管理、打开公共页面、保存和删除。
  */
 export function HelpDocDialog({ open, onOpenChange, station }: HelpDocDialogProps) {
   const { confirm, dialog: confirmDialog } = useConfirm()
@@ -60,8 +61,8 @@ export function HelpDocDialog({ open, onOpenChange, station }: HelpDocDialogProp
     try {
       const doc = await apiFetch<HelpDocument | null>(`/help/stations/${station.id}/document`)
       setDocumentID(doc?.id ?? null)
-      setTitle(doc?.title ?? "")
-      setContent(doc?.content ?? "")
+      setTitle(doc?.title ?? "帮助文档")
+      setContent(doc?.content ?? defaultHelpDocumentContent)
       setEnabled(doc?.enabled ?? false)
       setDirty(false)
       void loadComments(doc?.id ?? null)
@@ -70,7 +71,7 @@ export function HelpDocDialog({ open, onOpenChange, station }: HelpDocDialogProp
     } finally {
       setLoading(false)
     }
-  }, [station.id])
+  }, [station.id, station.name])
 
   useEffect(() => {
     if (open) void load()
@@ -105,6 +106,7 @@ export function HelpDocDialog({ open, onOpenChange, station }: HelpDocDialogProp
       })
       setDocumentID(doc.id)
       setTitle(doc.title)
+      setContent(doc.content)
       setDirty(false)
       toast.success(enabled ? "帮助文档已保存并发布" : "帮助文档已保存")
     } catch (error) {
@@ -126,8 +128,8 @@ export function HelpDocDialog({ open, onOpenChange, station }: HelpDocDialogProp
     try {
       await apiFetch(`/help/documents/${documentID}`, { method: "DELETE" })
       setDocumentID(null)
-      setTitle("")
-      setContent("")
+      setTitle("帮助文档")
+      setContent(defaultHelpDocumentContent)
       setEnabled(false)
       setDirty(false)
       setComments([])
@@ -194,10 +196,10 @@ export function HelpDocDialog({ open, onOpenChange, station }: HelpDocDialogProp
         <DialogContent className="flex h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] max-w-[min(1680px,calc(100vw-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-[1680px]">
           <DialogHeader className="shrink-0 border-b border-border px-5 py-4 text-left sm:px-6">
             <DialogTitle className="flex min-w-0 items-center gap-2">
-              <span className="truncate">帮助文档 · {station.name}</span>
+              <span className="truncate">帮助文档</span>
               {dirty ? <span className="shrink-0 rounded bg-warning/10 px-1.5 py-0.5 text-[11px] font-medium text-warning">未保存</span> : null}
             </DialogTitle>
-            <DialogDescription>左侧编辑富文本，右侧实时预览；开启发布后访客可通过公共文档页面查看。</DialogDescription>
+            <DialogDescription>左侧编辑 HTML 源码（支持语法高亮），右侧实时预览；名称和地址取自中转站配置。开启发布后访客可通过公共文档页面查看。</DialogDescription>
           </DialogHeader>
 
           <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border px-5 py-3 sm:px-6">
@@ -228,6 +230,8 @@ export function HelpDocDialog({ open, onOpenChange, station }: HelpDocDialogProp
               />
             </div>
             <div className="flex items-center gap-2">
+              <Button type="button" variant="outline" size="sm" className="gap-1.5" disabled={loading || saving} onClick={() => { void confirm({ title: "载入参照页完整模板？", description: "将替换编辑区的全部 HTML，包括目录和样式；保存前不影响已发布文档。", confirmLabel: "载入模板" }).then((accepted) => { if (accepted) { setTitle("帮助文档"); setContent(defaultHelpDocumentContent); setDirty(true) } }) }}><FileCode2 className="size-3.5" />载入完整模板</Button>
+              <Button type="button" variant="outline" size="sm" className="gap-1.5" disabled={loading || !content} onClick={() => downloadHelpHtml(renderHelpTemplate(content, station.name, station.base_url))}><Download className="size-3.5" />下载 HTML</Button>
               {documentID != null ? (
                 <Button type="button" variant="ghost" size="sm" className="gap-1.5 text-danger hover:text-danger" onClick={() => void remove()} disabled={loading || saving}>
                   <Trash2 className="size-3.5" />
@@ -290,19 +294,14 @@ export function HelpDocDialog({ open, onOpenChange, station }: HelpDocDialogProp
                     setContent(html)
                     setDirty(true)
                   }}
-                  placeholder="开始撰写帮助文档…"
+                  placeholder="编辑帮助文档 HTML 源码…"
                   className="min-h-0 flex-1"
                 />
               )}
             </div>
-            {/* 白底 #333，与左侧 wangEditor 编辑区底色/文字色一致，预览即所见 */}
-            <div className="min-h-0 overflow-y-auto bg-white p-4 text-[#333] sm:p-6">
-              <p className="mb-3 text-xs font-medium text-[#6b7280]">预览（与公共文档页面一致）</p>
-              {content ? (
-                <RichTextBody html={content} />
-              ) : (
-                <p className="text-sm text-[#6b7280]">暂无内容，开始编辑后这里会实时预览。</p>
-              )}
+            <div className="flex min-h-0 flex-col bg-[#f4f7f9]">
+              <p className="shrink-0 border-b border-border bg-white px-4 py-2 text-xs font-medium text-[#6b7280]">完整 HTML 预览（含左侧导航）</p>
+              {content ? <HelpDocumentFrame html={renderHelpTemplate(content, station.name, station.base_url)} className="flex-1" /> : <p className="p-6 text-sm text-[#6b7280]">暂无内容，开始编辑后这里会实时预览。</p>}
             </div>
           </div>
         </DialogContent>
@@ -311,7 +310,7 @@ export function HelpDocDialog({ open, onOpenChange, station }: HelpDocDialogProp
       <Dialog open={commentsOpen} onOpenChange={setCommentsOpen}>
         <DialogContent className="flex h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] max-w-[min(760px,calc(100vw-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-[760px]">
           <DialogHeader className="shrink-0 border-b border-border px-5 py-4 text-left sm:px-6">
-            <DialogTitle>留言管理 · {station.name}</DialogTitle>
+            <DialogTitle>留言管理</DialogTitle>
             <DialogDescription>勾选多条可批量删除；删除后公开页面立即不再显示，且无法恢复。</DialogDescription>
           </DialogHeader>
           <div className={cn("flex shrink-0 items-center gap-3 border-b px-5 py-2.5 sm:px-6", selected.length > 0 ? "border-brand/20 bg-brand/5" : "border-border")}>

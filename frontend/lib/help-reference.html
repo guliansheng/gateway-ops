@@ -1,0 +1,971 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{station_name}} AI 接入文档</title>
+  <style>
+    :root { color-scheme: light; --ink: #183442; --muted: #60747d; --line: #d9e3e8; --accent: #087f77; --accent-soft: #e8f5f2; --page: #f4f7f9; }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; background: var(--page); color: #293e47; font: 15px/1.72 -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; }
+    header { position: sticky; top: 0; z-index: 5; min-height: 62px; display: flex; align-items: center; background: rgba(255,255,255,.98); border-bottom: 1px solid var(--line); padding: 11px 30px; }
+    header strong { font-size: 19px; color: var(--ink); letter-spacing: 0; }
+    header span { margin-left: 14px; color: var(--muted); font-size: 13px; }
+    main { max-width: 1480px; margin: 0 auto; padding: 28px 30px 80px; display: grid; grid-template-columns: 258px minmax(0, 1040px); justify-content: center; gap: 40px; }
+    .sidebar { position: sticky; top: 82px; align-self: start; height: calc(100vh - 100px); min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); padding: 4px 20px 4px 0; }
+    .sidebar-title { color: var(--ink); font-weight: 750; font-size: 14px; margin: 0 0 10px; }
+    .search-label { color: var(--muted); font-size: 12px; font-weight: 650; margin-bottom: 5px; }
+    #toc-search { width: 100%; height: 42px; border: 1px solid #b8cdc7; border-radius: 8px; background: #fff; color: #203b36; padding: 0 12px; outline: none; font: inherit; }
+    #toc-search:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(15,118,110,.12); }
+    nav { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 14px 8px 20px 0; }
+    nav a { display: block; color: #5a706b; text-decoration: none; padding: 8px 10px; margin: 2px 0; border-left: 3px solid transparent; border-radius: 7px; line-height: 1.4; transition: background .15s,color .15s,border-color .15s; }
+    nav a:hover { background: #eaf2f4; color: #174d59; }
+    nav a.active { background: #e1f1ee; border-left-color: var(--accent); color: #075f5a; font-weight: 700; }
+    nav a.toc-section { margin-top: 7px; font-weight: 650; color: #334f59; }
+    nav a.toc-sub { padding: 6px 10px 6px 22px; font-size: 13px; }
+    #toc-empty { color: #7b8d89; font-size: 13px; padding: 14px 10px; }
+    nav::-webkit-scrollbar { width: 8px; }
+    nav::-webkit-scrollbar-thumb { background: #b9c9c4; border-radius: 8px; }
+    nav::-webkit-scrollbar-track { background: transparent; }
+    article { min-width: 0; max-width: 1040px; }
+    .quick-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0 0 24px; }
+    .quick-card { min-width: 0; min-height: 148px; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 16px; border: 1px solid; border-radius: 8px; }
+    .quick-card strong { font-size: 17px; line-height: 1.35; }
+    .quick-card code { width: fit-content; max-width: 100%; overflow-wrap: anywhere; font-size: 13px; }
+    .quick-card small { color: #4b6075; line-height: 1.5; }
+    .quick-number { font: 700 11px/1.3 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: 0; }
+    .quick-card-blue { background: #eef6ff; border-color: #b9d7f2; color: #18578a; }
+    .quick-card-teal { background: #edf9f7; border-color: #b7e2d8; color: #17675d; }
+    .quick-card-orange { background: #fff6eb; border-color: #f0d0a7; color: #9b5a1f; }
+    .quick-card-canvas { background: #f3efff; border-color: #cfc2f0; color: #5d478f; }
+    .status-strip { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 18px; }
+    .status-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid; border-radius: 999px; padding: 5px 10px; font-size: 13px; line-height: 1.25; }
+    .status-chip b { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .status-red { color: #a23b44; background: #fff0f1; border-color: #efb8be; }
+    .status-amber { color: #8b5b13; background: #fff8e8; border-color: #efd18d; }
+    .status-orange { color: #a2591b; background: #fff2e6; border-color: #efc29a; }
+    .status-blue { color: #24608b; background: #eef6ff; border-color: #b9d7f2; }
+    .status-gray { color: #536273; background: #f1f4f7; border-color: #ccd5df; }
+    h1 { font-size: 34px; line-height: 1.25; margin: 0 0 10px; color: var(--ink); border-bottom: 0; padding-bottom: 0; letter-spacing: 0; }
+    h2 { font-size: 23px; line-height: 1.4; margin: 42px 0 16px; padding: 15px 0 0 13px; border-top: 1px solid var(--line); border-left: 4px solid var(--accent); color: var(--ink); scroll-margin-top: 88px; }
+    h3 { font-size: 18px; line-height: 1.45; margin: 28px 0 10px; color: #126b61; scroll-margin-top: 88px; }
+    p { margin: 10px 0 16px; }
+    #content > h1 + p { font-size: 16px; color: #52666f; margin: 0 0 8px; }
+    .endpoint-panel { margin: 18px 0 26px; padding: 20px; background: #fff; border: 1px solid var(--line); border-top: 3px solid var(--accent); border-radius: 8px; }
+    .endpoint-heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 15px; }
+    .eyebrow { display: block; margin-bottom: 4px; color: var(--accent); font-size: 11px; font-weight: 750; }
+    .endpoint-heading strong { display: block; color: var(--ink); font-size: 19px; line-height: 1.35; }
+    .endpoint-heading p { max-width: 360px; margin: 0; color: var(--muted); font-size: 13px; }
+    .endpoint-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .endpoint-item { min-width: 0; min-height: 108px; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 6px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 7px; }
+    .endpoint-item > span { color: var(--muted); font-size: 12px; font-weight: 700; }
+    .endpoint-item code, .endpoint-item a { max-width: 100%; overflow-wrap: anywhere; font-size: 13px; }
+    .endpoint-item small { color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .endpoint-canvas { background: #f4f7f9; }
+    .endpoint-primary { background: #eaf6f3; border-color: #bfdfd7; }
+    .endpoint-backup { background: #fff5eb; border-color: #eed3b8; }
+    .endpoint-note { margin: 14px 0 0 !important; padding-top: 12px; border-top: 1px solid var(--line); color: #52666f; font-size: 13px; }
+    .doc-meta { color: #73838a; font-size: 12px; margin: 0 0 20px; }
+    .setup-steps { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 0; margin: 14px 0 18px; list-style: none; counter-reset: setup; }
+    .setup-steps li { min-width: 0; position: relative; min-height: 86px; margin: 0; padding: 13px 14px 12px 46px; background: #fff; border: 1px solid var(--line); border-radius: 7px; counter-increment: setup; }
+    .setup-steps li::before { content: counter(setup, decimal-leading-zero); position: absolute; top: 13px; left: 13px; color: var(--accent); font: 750 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .setup-steps b { display: block; color: var(--ink); }
+    .setup-steps span { display: block; margin-top: 3px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+    .model-check { display: flex; flex-direction: column; gap: 3px; margin: 18px 0 0; padding: 13px 16px; background: #eaf6f3; border-left: 3px solid var(--accent); }
+    .model-check strong { color: #145e58; }
+    .model-check span { color: #52666f; font-size: 13px; }
+    ul, ol { padding-left: 25px; }
+    li { margin: 5px 0; }
+    a { color: #1674b8; text-underline-offset: 2px; }
+    code { background: #edf3f7; color: #154b63; border-radius: 4px; padding: 2px 6px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .92em; }
+    pre { position: relative; background: #f7fbfd; border: 1px solid #cfe0ea; border-radius: 8px; padding: 18px; overflow: auto; box-shadow: 0 3px 12px rgba(30,70,95,.06); }
+    pre code { background: transparent; padding: 0; color: #0f172a; white-space: pre; }
+    .table-scroll { position: relative; max-width: 100%; overflow-x: auto; margin: 18px 0 24px; border: 1px solid #dbe3ee; border-radius: 10px; background: #fff; }
+    table { width: 100%; min-width: 660px; border-collapse: separate; border-spacing: 0; margin: 0; border: 0; }
+    th, td { border: 0; border-bottom: 1px solid #e5e7eb; padding: 12px 14px; text-align: left; vertical-align: top; }
+    th { background: #e9f4f7; color: #174b61; font-size: 14px; }
+    tr:last-child td { border-bottom: 0; }
+    td:first-child { width: 118px; font-weight: 700; color: #c26c2b; white-space: nowrap; }
+    blockquote { border-left: 4px solid #65b9a9; margin: 18px 0; padding: 11px 16px; background: #eaf6f2; color: #315a57; }
+    .table-scroll::-webkit-scrollbar { height: 8px; }
+    .table-scroll::-webkit-scrollbar-thumb { background: #b8c7d6; border-radius: 8px; }
+    .table-scroll::-webkit-scrollbar-track { background: #edf2f6; }
+    .copy { position: absolute; right: 9px; top: 9px; border: 1px solid #cbd5e1; background: #fff; color: #475569; border-radius: 5px; padding: 3px 9px; cursor: pointer; }
+    .copy:hover { background: #e8f3ff; color: #1769aa; }
+    @media (max-width: 1120px) { main { grid-template-columns: 230px minmax(0, 1fr); gap: 28px; } .quick-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .endpoint-grid { grid-template-columns: 1fr; } .endpoint-item { min-height: 82px; } }
+    @media (max-width: 760px) { header { min-height: 56px; padding: 11px 17px; } header span { display: none; } main { display: block; padding: 18px 16px 48px; } .sidebar { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); padding: 0 0 14px; margin-bottom: 24px; } nav { max-height: 230px; display: block; padding: 8px 2px 8px 0; } nav a.toc-section { margin-top: 2px; } nav a.toc-sub { display: block; } h1 { font-size: 29px; } h2 { font-size: 21px; } .quick-grid, .setup-steps { grid-template-columns: 1fr; } .quick-card { min-height: 0; } .endpoint-heading { display: block; } .endpoint-heading p { margin-top: 6px; } .endpoint-grid { grid-template-columns: 1fr; } pre { padding: 14px; font-size: 12px; } .table-scroll { margin-left: 0; margin-right: 0; } .table-scroll::after { content: "左右滑动查看"; position: sticky; left: 8px; display: block; width: max-content; margin: 0 0 0 8px; padding: 3px 7px; color: #60747d; background: #f4f7f9; border-top: 1px solid #dbe3ee; font-size: 11px; } table { font-size: 13px; } th, td { padding: 9px 10px; } td:first-child { width: 76px; white-space: normal; } }
+  </style>
+</head>
+<body>
+  <header><strong>{{station_name}} AI · 接入文档</strong><span>OpenAI / Claude / Gemini 兼容接口</span></header>
+  <main>
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-title">文档导航</div>
+      <label class="search-label" for="toc-search">搜索文档</label>
+      <input id="toc-search" type="search" placeholder="搜索地址、工具或错误码" autocomplete="off">
+      <nav id="toc" aria-label="目录">
+        <a href="#section-0" class="toc-section" data-search="快速开始">快速开始</a>
+        <a href="#section-0-topic-0" class="toc-sub" data-search="四步完成首次接入">四步完成首次接入</a>
+        <a href="#section-0-topic-1" class="toc-sub" data-search="先确认模型名和能力">先确认模型名和能力</a>
+        <a href="#section-0-topic-2" class="toc-sub" data-search="快速排查">快速排查</a>
+        <a href="#section-1" class="toc-section" data-search="api 接入">API 接入</a>
+        <a href="#section-1-topic-0" class="toc-sub" data-search="账户与 api key">账户与 API Key</a>
+        <a href="#section-1-topic-1" class="toc-sub" data-search="协议怎么选">协议怎么选</a>
+        <a href="#section-1-topic-2" class="toc-sub" data-search="工具配置总表">工具配置总表</a>
+        <a href="#section-1-topic-3" class="toc-sub" data-search="国产工具：统一填写">国产工具：统一填写</a>
+        <a href="#section-1-topic-4" class="toc-sub" data-search="海外工具：openai 兼容">海外工具：OpenAI 兼容</a>
+        <a href="#section-1-topic-5" class="toc-sub" data-search="continue 示例">Continue 示例</a>
+        <a href="#section-1-topic-6" class="toc-sub" data-search="opencode 示例">OpenCode 示例</a>
+        <a href="#section-1-topic-7" class="toc-sub" data-search="claude code / anthropic">Claude Code / Anthropic</a>
+        <a href="#section-1-topic-8" class="toc-sub" data-search="gemini 原生与 antigravity">Gemini 原生与 Antigravity</a>
+        <a href="#section-1-topic-9" class="toc-sub" data-search="cc switch（ccs）">CC Switch（CCS）</a>
+        <a href="#section-2" class="toc-section" data-search="模型与高级能力">模型与高级能力</a>
+        <a href="#section-2-topic-0" class="toc-sub" data-search="接口与高级能力">接口与高级能力</a>
+        <a href="#section-3" class="toc-section" data-search="故障排查">故障排查</a>
+        <a href="#section-3-topic-0" class="toc-sub" data-search="4xx：优先检查请求、认证与权限">4xx：优先检查请求、认证与权限</a>
+        <a href="#section-3-topic-1" class="toc-sub" data-search="5xx：优先检查服务、上游与超时">5xx：优先检查服务、上游与超时</a>
+        <a href="#section-3-topic-2" class="toc-sub" data-search="推荐排查顺序">推荐排查顺序</a>
+        <a href="#section-3-topic-3" class="toc-sub" data-search="cloudflare、网络与反代">Cloudflare、网络与反代</a>
+        <a href="#section-4" class="toc-section" data-search="安全与验收">安全与验收</a>
+        <a href="#section-4-topic-0" class="toc-sub" data-search="使用注意事项">使用注意事项</a>
+        <a href="#section-4-topic-1" class="toc-sub" data-search="接入完成检查">接入完成检查</a>
+      </nav>
+      <div id="toc-empty" hidden>没有找到相关章节</div>
+    </aside>
+    <article id="content"><h1>{{station_name}} AI 接入文档</h1>
+<p>按快速开始创建 API Key 并验证模型列表，再根据客户端选择接口协议。</p>
+<div class="doc-meta">最后更新：2026-10-20 · 推荐地址 {{station_url}}</div>
+
+<h2 id="section-0">快速开始</h2>
+<div class="quick-grid">
+  <div class="quick-card quick-card-blue"><span class="quick-number">01 · 聊天与编程工具</span><strong>OpenAI 兼容</strong><code>{{station_url}}/v1</code></div>
+  <div class="quick-card quick-card-teal"><span class="quick-number">02 · Claude 客户端</span><strong>Claude / Anthropic</strong><code>{{station_url}}</code></div>
+  <div class="quick-card quick-card-orange"><span class="quick-number">03 · Gemini 原生接口</span><strong>Gemini API</strong><code>{{station_url}}/v1beta</code></div>
+</div>
+
+<h3 id="section-0-topic-0">四步完成首次接入</h3>
+<ol class="setup-steps">
+  <li><b>创建本站 API Key</b><span>在“API 密钥”页面创建；登录密码和卡密都不能代替 API Key。</span></li>
+  <li><b>选择协议并填写地址</b><span>按客户端类型使用上方对应地址，留意是否需要 /v1 或 /v1beta。</span></li>
+  <li><b>获取并复制模型</b><span>使用客户端的模型列表或下方命令，模型名称照返回结果填写。</span></li>
+  <li><b>先发普通文本</b><span>先关闭工具调用等高级选项，确认基础请求成功后再逐项启用。</span></li>
+</ol>
+
+<div class="model-check"><strong>先确认 Key 能读取模型</strong><span>把 <code>YOUR_API_KEY</code> 替换成本站 API Key；从返回的 <code>id</code> 复制模型名称。</span></div>
+<pre><code>curl {{station_url}}/v1/models \
+  -H "Authorization: Bearer YOUR_API_KEY"</code></pre>
+
+<h3 id="section-0-topic-1">先确认模型名和能力</h3>
+<p>模型名称请从 <code>/v1/models</code> 返回的 <code>id</code> 原样复制。图片生成请选择本站已开放且支持生图的模型；不要把图片模型当作视频模型使用。获取模型列表成功只代表地址、Key 和模型列表接口可访问，不代表每种生成能力都已开通。</p>
+<h3 id="section-0-topic-2">快速排查</h3>
+<div class="status-strip"><span class="status-chip status-red"><b>401</b> 认证</span><span class="status-chip status-amber"><b>404</b> 路径</span><span class="status-chip status-orange"><b>429</b> 频率/额度</span><span class="status-chip status-blue"><b>502/503/504</b> 服务端</span><span class="status-chip status-gray"><b>524</b> 源站连接</span></div>
+
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>现象</th>
+<th>先做什么</th>
+<th>不要做什么</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>401</td>
+<td>重新复制 Key，核对认证头</td>
+<td>不要把卡密或登录密码当 Key</td>
+</tr>
+<tr>
+<td>404</td>
+<td>看最终 URL；OpenAI 到 /v1，Claude 不加 /v1</td>
+<td>不要同时改协议、路径和模型</td>
+</tr>
+<tr>
+<td>429</td>
+<td>降低并发，查余额，等待后有限重试</td>
+<td>不要连续刷新、无限重试</td>
+</tr>
+<tr>
+<td>502/503/504</td>
+<td>等 10–30 秒后重试，必要时换模型</td>
+<td>不要重复创建 Key</td>
+</tr>
+<tr>
+<td>524</td>
+<td>等待片刻后有限重试；持续失败时记录时间和请求路径，联系站点管理员</td>
+<td>不要高频刷新或持续并发请求</td>
+</tr>
+<tr>
+<td>模型列表为空</td>
+<td>检查 Base URL、Key、分组和模型权限</td>
+<td>不要将帮助页面地址填入 API Base URL</td>
+</tr>
+<tr>
+<td>页面空白</td>
+<td>Ctrl + F5，直接打开 /help</td>
+<td>不要把 /help 当 API 地址</td>
+</tr>
+</tbody></table></div>
+<h2 id="section-1">API 接入</h2>
+<h3 id="section-1-topic-0">账户与 API Key</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>功能</th>
+<th>位置</th>
+<th>操作要点</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>购买卡密/订阅</td>
+<td>站内“充值/订阅”</td>
+<td>付款后保存订单号</td>
+</tr>
+<tr>
+<td>兑换卡密</td>
+<td>登录后“兑换”</td>
+<td>去掉前后空格，确认一次即可</td>
+</tr>
+<tr>
+<td>查看到账</td>
+<td>余额/订阅/用量</td>
+<td>刷新后核对额度</td>
+</tr>
+<tr>
+<td>创建 Key</td>
+<td>“API 密钥” → 创建</td>
+<td>每个软件单独一个 Key</td>
+</tr>
+<tr>
+<td>泄露处理</td>
+<td>API 密钥列表</td>
+<td>立即停用并新建</td>
+</tr>
+</tbody></table></div>
+<blockquote>
+<p><strong>安全底线：</strong> Key 不要放网页前端、截图、群聊、公开仓库或共享配置。</p>
+</blockquote>
+<h3 id="section-1-topic-1">协议怎么选</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>客户端选项</th>
+<th>请选择</th>
+<th>地址</th>
+<th>适用</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>OpenAI / OpenAI Compatible / Custom OpenAI</td>
+<td>OpenAI Compatible</td>
+<td><a href="{{station_url}}/v1" target="_blank" rel="noopener noreferrer">{{station_url}}/v1</a></td>
+<td>大多数聊天、编程、知识库工具</td>
+</tr>
+<tr>
+<td>Anthropic / Claude / Claude Code</td>
+<td>Anthropic</td>
+<td><a href="{{station_url}}" target="_blank" rel="noopener noreferrer">{{station_url}}</a></td>
+<td>Claude Code、Anthropic SDK</td>
+</tr>
+<tr>
+<td>Google / Gemini API / Vertex</td>
+<td>仅在有 Custom Endpoint 时使用</td>
+<td><a href="{{station_url}}/v1beta" target="_blank" rel="noopener noreferrer">{{station_url}}/v1beta</a></td>
+<td>Gemini 原生 REST/SDK</td>
+</tr>
+</tbody></table></div>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>常见误填</th>
+<th>正确值</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Claude 填到 /v1</td>
+<td>只填主域名</td>
+</tr>
+<tr>
+<td>OpenAI 只填主域名</td>
+<td>填到 /v1</td>
+</tr>
+<tr>
+<td>自动拼接出现 /v1/v1</td>
+<td>删除重复的一段</td>
+</tr>
+<tr>
+<td>使用服务器 IP 或 http://</td>
+<td>使用 HTTPS 域名</td>
+</tr>
+<tr>
+<td>使用猜测模型</td>
+<td>从模型列表复制</td>
+</tr>
+</tbody></table></div>
+<h3 id="section-1-topic-2">工具配置总表</h3>
+<p>“支持自定义地址”以软件当前版本为准；没有自定义字段时，改用 OpenCode、CC Switch 或其他兼容客户端。</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>工具</th>
+<th>官方入口</th>
+<th>协议</th>
+<th>地址支持</th>
+<th>配置入口</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Cherry Studio</td>
+<td><a href="https://cherry-ai.com/" target="_blank" rel="noopener noreferrer">官网</a></td>
+<td>OpenAI</td>
+<td>支持</td>
+<td>设置 → 模型服务 → 添加</td>
+</tr>
+<tr>
+<td>Chatbox</td>
+<td><a href="https://chatboxai.app/" target="_blank" rel="noopener noreferrer">官网</a></td>
+<td>OpenAI/Custom</td>
+<td>支持</td>
+<td>设置 → 模型提供商</td>
+</tr>
+<tr>
+<td>Cursor</td>
+<td><a href="https://www.cursor.com/" target="_blank" rel="noopener noreferrer">官网</a></td>
+<td>OpenAI Compatible</td>
+<td>支持</td>
+<td>Settings → Models → Override Base URL</td>
+</tr>
+<tr>
+<td>Cline</td>
+<td><a href="https://github.com/cline/cline" target="_blank" rel="noopener noreferrer">GitHub</a></td>
+<td>OpenAI Compatible</td>
+<td>支持</td>
+<td>Provider → OpenAI Compatible</td>
+</tr>
+<tr>
+<td>Roo Code</td>
+<td><a href="https://github.com/RooCodeInc/Roo-Code" target="_blank" rel="noopener noreferrer">GitHub</a></td>
+<td>OpenAI Compatible</td>
+<td>支持</td>
+<td>API Configuration</td>
+</tr>
+<tr>
+<td>OpenCode</td>
+<td><a href="https://opencode.ai/" target="_blank" rel="noopener noreferrer">官网</a></td>
+<td>OpenAI/Anthropic/Gemini</td>
+<td>支持</td>
+<td>opencode.json 或 /connect</td>
+</tr>
+<tr>
+<td>Windsurf</td>
+<td><a href="https://windsurf.com/" target="_blank" rel="noopener noreferrer">官网</a></td>
+<td>OpenAI Compatible</td>
+<td>视版本</td>
+<td>Settings → Models / Provider</td>
+</tr>
+<tr>
+<td>Zed</td>
+<td><a href="https://zed.dev/" target="_blank" rel="noopener noreferrer">官网</a></td>
+<td>OpenAI Compatible</td>
+<td>支持</td>
+<td>Settings → Language Models</td>
+</tr>
+<tr>
+<td>Open WebUI</td>
+<td><a href="https://openwebui.com/" target="_blank" rel="noopener noreferrer">官网</a></td>
+<td>OpenAI Compatible</td>
+<td>支持</td>
+<td>Admin → Connections → OpenAI</td>
+</tr>
+<tr>
+<td>LobeChat</td>
+<td><a href="https://lobechat.com/" target="_blank" rel="noopener noreferrer">官网</a></td>
+<td>OpenAI Compatible</td>
+<td>支持</td>
+<td>设置 → 语言模型 → OpenAI</td>
+</tr>
+<tr>
+<td>NextChat</td>
+<td><a href="https://github.com/ChatGPTNextWeb/NextChat" target="_blank" rel="noopener noreferrer">GitHub</a></td>
+<td>OpenAI Compatible</td>
+<td>支持</td>
+<td>设置 → API</td>
+</tr>
+<tr>
+<td>SillyTavern</td>
+<td><a href="https://github.com/SillyTavern/SillyTavern" target="_blank" rel="noopener noreferrer">GitHub</a></td>
+<td>OpenAI Compatible</td>
+<td>支持</td>
+<td>API Connections → Custom/OpenAI</td>
+</tr>
+<tr>
+<td>Dify</td>
+<td><a href="https://dify.ai/" target="_blank" rel="noopener noreferrer">官网</a></td>
+<td>OpenAI Compatible</td>
+<td>支持</td>
+<td>模型供应商 → OpenAI-API-compatible</td>
+</tr>
+<tr>
+<td>Continue</td>
+<td><a href="https://www.continue.dev/" target="_blank" rel="noopener noreferrer">官网</a></td>
+<td>OpenAI Compatible</td>
+<td>支持</td>
+<td>config.yaml / config.json</td>
+</tr>
+<tr>
+<td>Apifox</td>
+<td><a href="https://www.apifox.cn/" target="_blank" rel="noopener noreferrer">官网</a></td>
+<td>HTTP</td>
+<td>支持</td>
+<td>新建 POST 请求</td>
+</tr>
+<tr>
+<td>Postman</td>
+<td><a href="https://www.postman.com/" target="_blank" rel="noopener noreferrer">官网</a></td>
+<td>HTTP</td>
+<td>支持</td>
+<td>New Request</td>
+</tr>
+<tr>
+<td>Codex CLI</td>
+<td><a href="https://github.com/openai/codex" target="_blank" rel="noopener noreferrer">GitHub</a></td>
+<td>Responses</td>
+<td>支持</td>
+<td>~/.codex/config.toml</td>
+</tr>
+<tr>
+<td>Claude Code</td>
+<td><a href="https://docs.anthropic.com/en/docs/claude-code" target="_blank" rel="noopener noreferrer">官方文档</a></td>
+<td>Anthropic</td>
+<td>支持</td>
+<td>环境变量 / settings.json</td>
+</tr>
+<tr>
+<td>Gemini CLI</td>
+<td><a href="https://github.com/google-gemini/gemini-cli" target="_blank" rel="noopener noreferrer">GitHub</a></td>
+<td>Gemini 原生</td>
+<td>视版本</td>
+<td>需要 Custom Endpoint</td>
+</tr>
+<tr>
+<td>Grok CLI</td>
+<td><a href="https://docs.x.ai/docs" target="_blank" rel="noopener noreferrer">xAI 文档</a></td>
+<td>Responses</td>
+<td>支持</td>
+<td>~/.grok/config.toml</td>
+</tr>
+<tr>
+<td>OpenClaw</td>
+<td><a href="https://github.com/openclaw/openclaw" target="_blank" rel="noopener noreferrer">GitHub</a></td>
+<td>OpenAI Compatible</td>
+<td>视版本</td>
+<td>Provider / URL / Key / Model</td>
+</tr>
+<tr>
+<td>Claude Desktop</td>
+<td><a href="https://claude.ai/download" target="_blank" rel="noopener noreferrer">官方下载</a></td>
+<td>Anthropic</td>
+<td>通常不提供</td>
+<td>官方登录页不能直接填本站地址</td>
+</tr>
+</tbody></table></div>
+<h3 id="section-1-topic-3">国产工具：统一填写</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>字段</th>
+<th>填写</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Provider / 类型</td>
+<td>OpenAI 或 OpenAI Compatible</td>
+</tr>
+<tr>
+<td>Base URL</td>
+<td><a href="{{station_url}}/v1" target="_blank" rel="noopener noreferrer">{{station_url}}/v1</a></td>
+</tr>
+<tr>
+<td>API Key</td>
+<td>本站“API 密钥”创建的 Key</td>
+</tr>
+<tr>
+<td>Model / Model ID</td>
+<td>/v1/models 返回的完整 id</td>
+</tr>
+<tr>
+<td>API Type</td>
+<td>Chat Completions（如果有）</td>
+</tr>
+<tr>
+<td>Stream</td>
+<td>首次关闭，文本成功后再开启</td>
+</tr>
+</tbody></table></div>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>软件</th>
+<th>操作路径</th>
+<th>第一次测试</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Cherry Studio</td>
+<td>设置 → 模型服务 → 添加 → OpenAI</td>
+<td>新建对话发“你好”</td>
+</tr>
+<tr>
+<td>Chatbox</td>
+<td>设置 → 模型提供商 → Custom/OpenAI</td>
+<td>发送短消息</td>
+</tr>
+<tr>
+<td>Cursor</td>
+<td>Settings → Models → Override Base URL</td>
+<td>先关闭自动 Agent</td>
+</tr>
+<tr>
+<td>Cline / Roo Code</td>
+<td>Provider / API Configuration</td>
+<td>先做只读小任务</td>
+</tr>
+<tr>
+<td>Apifox / Postman</td>
+<td>URL + Bearer + JSON</td>
+<td>看状态码和响应正文</td>
+</tr>
+</tbody></table></div>
+<h3 id="section-1-topic-4">海外工具：OpenAI 兼容</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>工具</th>
+<th>必填字段</th>
+<th>最短配置</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>OpenCode</td>
+<td>baseURL、Key、Model</td>
+<td>~/.config/opencode/opencode.json</td>
+</tr>
+<tr>
+<td>Windsurf / Zed</td>
+<td>URL、Key、Model</td>
+<td>只有 Custom/Override 才能填写</td>
+</tr>
+<tr>
+<td>Open WebUI</td>
+<td>URL、Key</td>
+<td>URL 填到 /v1</td>
+</tr>
+<tr>
+<td>LobeChat / NextChat</td>
+<td>API URL、Key、Model</td>
+<td>检查是否自动拼路径</td>
+</tr>
+<tr>
+<td>Dify</td>
+<td>API Base、Key、Model</td>
+<td>先创建文本模型</td>
+</tr>
+<tr>
+<td>Continue</td>
+<td>provider、apiBase、Key、Model</td>
+<td>见示例</td>
+</tr>
+<tr>
+<td>OpenClaw</td>
+<td>Provider、URL、Key、Model</td>
+<td>版本需支持自定义 provider</td>
+</tr>
+</tbody></table></div>
+<h3 id="section-1-topic-5">Continue 示例</h3>
+<pre><code>models:
+  - name: "{{station_name}}"
+    provider: openai
+    model: YOUR_MODEL
+    apiBase: {{station_url}}/v1
+    apiKey: YOUR_API_KEY</code></pre>
+
+<h3 id="section-1-topic-6">OpenCode 示例</h3>
+<pre><code>{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "relay": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "{{station_name}} OpenAI Compatible",
+      "options": { "baseURL": "{{station_url}}/v1", "apiKey": "YOUR_API_KEY" },
+      "models": { "YOUR_MODEL": { "name": "YOUR_MODEL" } }
+    }
+  }
+}</code></pre>
+
+<h3 id="section-1-topic-7">Claude Code / Anthropic</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>项目</th>
+<th>填写</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Base URL</td>
+<td><code><a href="{{station_url}}" target="_blank" rel="noopener noreferrer">{{station_url}}</a></code>（不要加 <code>/v1</code>）</td>
+</tr>
+<tr>
+<td>Key 字段</td>
+<td>ANTHROPIC_AUTH_TOKEN 或 Auth Token</td>
+</tr>
+<tr>
+<td>请求路径</td>
+<td>客户端自动调用 /v1/messages</td>
+</tr>
+<tr>
+<td>Model</td>
+<td>账户已开放的 Claude 模型</td>
+</tr>
+</tbody></table></div>
+<p>macOS/Linux：</p>
+<pre><code>export ANTHROPIC_BASE_URL="{{station_url}}"
+export ANTHROPIC_AUTH_TOKEN="YOUR_API_KEY"
+claude</code></pre>
+
+<p>Windows PowerShell：</p>
+<pre><code>$env:ANTHROPIC_BASE_URL = "{{station_url}}"
+$env:ANTHROPIC_AUTH_TOKEN = "YOUR_API_KEY"
+claude</code></pre>
+
+<p>官方 Claude Desktop 通常不提供任意 Base URL；需要本站时优先使用 Claude Code、Anthropic SDK、CCS 或支持自定义地址的客户端。</p>
+<h3 id="section-1-topic-8">Gemini 原生与 Antigravity</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>项目</th>
+<th>Gemini 原生</th>
+<th>Antigravity 专用分组</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Base URL</td>
+<td><code><a href="{{station_url}}/v1beta" target="_blank" rel="noopener noreferrer">{{station_url}}/v1beta</a></code></td>
+<td>Claude：<code><a href="{{station_url}}/antigravity/v1" target="_blank" rel="noopener noreferrer">{{station_url}}/antigravity/v1</a></code>；Gemini：<code><a href="{{station_url}}/antigravity/v1beta" target="_blank" rel="noopener noreferrer">{{station_url}}/antigravity/v1beta</a></code></td>
+</tr>
+<tr>
+<td>认证</td>
+<td>x-goog-api-key: YOUR_API_KEY</td>
+<td>按对应协议认证</td>
+</tr>
+<tr>
+<td>模型列表</td>
+<td>GET /v1beta/models</td>
+<td>GET /antigravity/v1beta/models</td>
+</tr>
+<tr>
+<td>生成</td>
+<td>POST /v1beta/models/MODEL:generateContent</td>
+<td>按上列专用路径</td>
+</tr>
+</tbody></table></div>
+<pre><code>curl "{{station_url}}/v1beta/models/MODEL:generateContent" \
+  -H "x-goog-api-key: YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"contents":[{"parts":[{"text":"你好"}]}]}'</code></pre>
+
+<p>Gemini CLI 若只有 Google 登录、GEMINI_API_KEY 或 Vertex 配置而没有 Custom Endpoint，不能直接套用本站地址。普通 Claude 分组与 Antigravity 分组不要混用。</p>
+<h3 id="section-1-topic-9">CC Switch（CCS）</h3>
+<p><strong>官网：</strong> <a href="https://ccswitch.io/" target="_blank" rel="noopener noreferrer">ccswitch.io</a>　<strong>GitHub：</strong> <a href="https://github.com/farion1231/cc-switch" target="_blank" rel="noopener noreferrer">farion1231/cc-switch</a>　<strong>下载：</strong> <a href="https://github.com/farion1231/cc-switch/releases" target="_blank" rel="noopener noreferrer">Releases</a></p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>CCS 字段</th>
+<th>OpenAI / Codex</th>
+<th>Claude Code</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Provider</td>
+<td>OpenAI / OpenAI Compatible</td>
+<td>Anthropic / Claude</td>
+</tr>
+<tr>
+<td>Base URL</td>
+<td><a href="{{station_url}}/v1" target="_blank" rel="noopener noreferrer">{{station_url}}/v1</a></td>
+<td><a href="{{station_url}}" target="_blank" rel="noopener noreferrer">{{station_url}}</a></td>
+</tr>
+<tr>
+<td>API Key</td>
+<td>本站 API Key</td>
+<td>API Key / Auth Token</td>
+</tr>
+<tr>
+<td>Model</td>
+<td>/v1/models 的名称</td>
+<td>账户已开放的 Claude 模型</td>
+</tr>
+</tbody></table></div>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>顺序</th>
+<th>操作</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1</td>
+<td>Add Provider，建立“{{station_name}}”配置</td>
+</tr>
+<tr>
+<td>2</td>
+<td>选择配置 → Enable</td>
+</tr>
+<tr>
+<td>3</td>
+<td>完全重开终端/工具</td>
+</tr>
+<tr>
+<td>4</td>
+<td>回官方时选择 Official Login</td>
+</tr>
+</tbody></table></div>
+<p>CCS 只负责切换配置，不负责购买、兑换或创建本站 Key；只从官网或官方 GitHub 下载。</p>
+<h2 id="section-2">模型与高级能力</h2>
+<h3 id="section-2-topic-0">接口与高级能力</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>能力</th>
+<th>方法</th>
+<th>路径</th>
+<th>前置条件</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>模型列表</td>
+<td>GET</td>
+<td>/v1/models</td>
+<td>有效 Key</td>
+</tr>
+<tr>
+<td>Chat</td>
+<td>POST</td>
+<td>/v1/chat/completions</td>
+<td>OpenAI 兼容分组</td>
+</tr>
+<tr>
+<td>Responses</td>
+<td>POST</td>
+<td>/v1/responses</td>
+<td>客户端支持 Responses</td>
+</tr>
+<tr>
+<td>Anthropic Messages</td>
+<td>POST</td>
+<td>/v1/messages</td>
+<td>Anthropic 分组</td>
+</tr>
+<tr>
+<td>用量</td>
+<td>GET</td>
+<td>/v1/usage</td>
+<td>账户权限开放</td>
+</tr>
+<tr>
+<td>Embeddings</td>
+<td>POST</td>
+<td>/v1/embeddings</td>
+<td>分组已开放</td>
+</tr>
+<tr>
+<td>图片</td>
+<td>POST</td>
+<td>/v1/images/generations、/v1/images/edits</td>
+<td>图像模型/额度</td>
+</tr>
+<tr>
+<td>异步图片</td>
+<td>POST/GET</td>
+<td>/v1/images/generations/async、/v1/images/tasks/:task_id</td>
+<td>支持轮询</td>
+</tr>
+<tr>
+<td>Gemini</td>
+<td>GET/POST</td>
+<td>/v1beta/models、/v1beta/models/:model:generateContent</td>
+<td>Gemini 认证头</td>
+</tr>
+<tr>
+<td>Web/X Search</td>
+<td>POST</td>
+<td>/v1/web_search、/v1/x_search</td>
+<td>Grok 分组/权限</td>
+</tr>
+<tr>
+<td>语音</td>
+<td>POST</td>
+<td>/v1/tts、/v1/stt</td>
+<td>Grok 分组/权限</td>
+</tr>
+</tbody></table></div>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>功能</th>
+<th>建议开启顺序</th>
+<th>出错先关闭</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>流式 SSE</td>
+<td>非流式文本成功后再开</td>
+<td>stream</td>
+</tr>
+<tr>
+<td>图片/附件</td>
+<td>小文件、短提示开始</td>
+<td>图片参数</td>
+</tr>
+<tr>
+<td>工具/Agent</td>
+<td>普通文本成功后逐个开</td>
+<td>tools / Agent</td>
+</tr>
+<tr>
+<td>长上下文</td>
+<td>分段增加历史</td>
+<td>附件、旧消息</td>
+</tr>
+<tr>
+<td>视频</td>
+<td>暂不纳入当前接入流程</td>
+<td>暂不提交生成任务</td>
+</tr>
+<tr>
+<td>WebSocket</td>
+<td>HTTP/SSE 正常后再开</td>
+<td>WS 优先连接</td>
+</tr>
+</tbody></table></div>
+
+<h2 id="section-3">故障排查</h2>
+<h3 id="section-3-topic-0">4xx：优先检查请求、认证与权限</h3>
+<p>4xx 通常说明请求在进入模型前被拒绝，但也可能来自网关策略、分组设置或上游限制，不能只凭状态码判断责任方。</p>
+<ul>
+<li><strong>400 Bad Request：</strong> 检查 JSON、参数名、模型能力和请求参数。</li>
+<li><strong>401 Unauthorized：</strong> 检查 Key 是否完整、是否启用，以及认证头格式。</li>
+<li><strong>403 Forbidden：</strong> 检查 Key 分组、模型权限、来源限制和上游账号状态。</li>
+<li><strong>404 Not Found：</strong> 检查协议与路径，尤其是是否出现 <code>/v1/v1</code>；也可能是当前分组不支持该接口。</li>
+<li><strong>413 Payload Too Large：</strong> 减小图片、附件、上下文或一次生成数量。</li>
+<li><strong>429 Rate Limit：</strong> 降低并发并检查余额、配额和上游限流，等待后再有限重试。</li>
+</ul>
+<h3 id="section-3-topic-1">5xx：优先检查服务、上游与超时</h3>
+<ul>
+<li><strong>500 Internal Server Error：</strong> 服务端或上游处理异常；保留响应内容与请求时间。</li>
+<li><strong>502 Bad Gateway：</strong> 网关没有获得有效上游响应，稍后重试或切换可用模型。</li>
+<li><strong>503 Service Unavailable：</strong> 服务过载、维护或上游暂不可用。</li>
+<li><strong>504 Gateway Timeout：</strong> 请求处理超过网关等待时间；先降低请求复杂度并避免重复提交。</li>
+<li><strong>524 Origin Connect Timeout：</strong> Cloudflare 未能及时连接源站；等待后重试，并检查源站与网络状态。</li>
+</ul>
+<h3 id="section-3-topic-2">推荐排查顺序</h3>
+<pre><code>1. GET  /v1/models                    验证 Key、DNS 和网络
+2. POST /v1/chat/completions          stream=false 的普通文本
+3. 用模型列表中的 id 重试
+4. 再开 stream、图片、工具或 Agent</code></pre>
+
+<h3 id="section-3-topic-3">Cloudflare、网络与反代</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>场景</th>
+<th>检查</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>推荐地址</td>
+<td>OpenAI 使用 <code>{{station_url}}/v1</code>；Claude 使用 <code>{{station_url}}</code>；Gemini 使用 <code>{{station_url}}/v1beta</code></td>
+</tr>
+<tr>
+<td>遇到 524</td>
+<td>等待片刻后有限重试，持续失败时记录时间和请求路径</td>
+</tr>
+<tr>
+<td>DNS / Cloudflare</td>
+<td>A 记录指向当前服务器；修改后等待缓存；API 使用 HTTPS</td>
+</tr>
+<tr>
+<td>橙云 SSL</td>
+<td>Full 或 Full (strict)，源站证书模式保持一致</td>
+</tr>
+<tr>
+<td>API 超时</td>
+<td>同时检查 Cloudflare、反代读取超时和上游响应时间</td>
+</tr>
+<tr>
+<td>本地代理</td>
+<td>不改写 Host、Authorization、Content-Type、SSE 或请求体</td>
+</tr>
+<tr>
+<td>Nginx</td>
+<td>需要下划线请求头时在 http 块设置 underscores_in_headers on;</td>
+</tr>
+<tr>
+<td>Caddy/Nginx SSE</td>
+<td>关闭缓冲；WebSocket 需要透传 Upgrade/Connection</td>
+</tr>
+<tr>
+<td>网页与 API</td>
+<td>/help 是网页；/v1、/v1beta 才是接口</td>
+</tr>
+</tbody></table></div>
+<h2 id="section-4">安全与验收</h2>
+<h3 id="section-4-topic-0">使用注意事项</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>事项</th>
+<th>做法</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Key</td>
+<td>每个软件单独一个；泄露立即停用</td>
+</tr>
+<tr>
+<td>卡密</td>
+<td>只在兑换页使用，不是 API Key</td>
+</tr>
+<tr>
+<td>重试</td>
+<td>只对 429/502/503/504/524 有限退避；400/401/403/404/413 先修请求、凭据或权限</td>
+</tr>
+<tr>
+<td>浏览器</td>
+<td>自建网页不要把 Key 写死在前端，避免在截图或分享中泄露</td>
+</tr>
+<tr>
+<td>软件下载</td>
+<td>CCS 和客户端只从官网/官方仓库获取</td>
+</tr>
+<tr>
+<td>隐私</td>
+<td>上传图片、代码、提示词前确认组织权限和服务条款</td>
+</tr>
+<tr>
+<td>客服信息</td>
+<td>提供时间、版本、协议、路径、状态码；不要发密码/卡密/完整 Key</td>
+</tr>
+</tbody></table></div>
+<h3 id="section-4-topic-1">接入完成检查</h3>
+<pre><code>[ ] 卡密已兑换，余额/额度可见
+[ ] Key 来自“API 密钥”页面且未泄露
+[ ] OpenAI 使用 {{station_url}}/v1
+[ ] Claude 使用 {{station_url}}（不加 /v1）
+[ ] Gemini 使用 /v1beta + x-goog-api-key
+[ ] Model 从模型列表复制
+[ ] 普通文本 stream=false 成功
+[ ] 高级功能逐项开启
+[ ] CCS 只从官网或官方 GitHub 下载</code></pre>
+</article>
+  </main>
+</body>
+</html>

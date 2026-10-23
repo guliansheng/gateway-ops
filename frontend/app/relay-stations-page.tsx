@@ -2140,7 +2140,7 @@ export default function RelayStationsPage() {
     </Dialog>
     <AccountAdjustmentSelectionDialog state={accountAdjustmentDialog} selections={accountAdjustmentSelections} busy={busy} groupsByID={groupsByID} onSelectionChange={updateAccountAdjustmentSelection} onCancel={() => finishAccountAdjustmentDialog(null)} onConfirm={() => finishAccountAdjustmentDialog(accountAdjustmentSelections)} />
     {currentOverview ? <DynamicMonitorDialog open={dynamicMonitorOpen} busy={busy} config={dynamicMonitor} state={dynamicMonitorState} accounts={currentOverview.accounts} groups={currentOverview.groups} onOpenChange={setDynamicMonitorOpen} onSave={(config) => void saveDynamicMonitor(config)} /> : null}
-    {currentOverview ? <HelpDocDialog key={currentOverview.station.id} open={helpDocOpen} onOpenChange={setHelpDocOpen} station={{ id: currentOverview.station.id, name: currentOverview.station.name }} /> : null}
+    {currentOverview ? <HelpDocDialog key={currentOverview.station.id} open={helpDocOpen} onOpenChange={setHelpDocOpen} station={{ id: currentOverview.station.id, name: currentOverview.station.name, base_url: currentOverview.station.base_url }} /> : null}
     {confirmDialog}
   </section>
 }

@@ -245,9 +245,10 @@ func publicHelp(c *gin.Context, d *Deps) {
 		return
 	}
 	station, _ := d.RelayStations.FindByID(stationID)
-	stationName := ""
+	stationName, stationURL := "", ""
 	if station != nil {
 		stationName = station.Name
+		stationURL = station.BaseURL
 	}
 	// 公开页只给遮蔽后的名称；完整邮箱属于管理端视图。
 	for i := range comments {
@@ -257,6 +258,7 @@ func publicHelp(c *gin.Context, d *Deps) {
 		"document_id":  document.ID,
 		"station_id":   stationID,
 		"station_name": stationName,
+		"station_url":  stationURL,
 		"title":        document.Title,
 		"content":      document.Content,
 		"updated_at":   document.UpdatedAt,
