@@ -149,13 +149,14 @@ type relayAccountBatchCloneInput struct {
 }
 
 type relayGroupUpdateInput struct {
-	Name           *string   `json:"name"`
-	Description    *string   `json:"description"`
-	RateMultiplier *float64  `json:"rate_multiplier"`
-	IsExclusive    *bool     `json:"is_exclusive"`
-	Status         *string   `json:"status"`
-	ModelTypes     *[]string `json:"model_types"`
-	MonitorEnabled *bool     `json:"monitor_enabled"`
+	Name                *string   `json:"name"`
+	Description         *string   `json:"description"`
+	RateMultiplier      *float64  `json:"rate_multiplier"`
+	IsExclusive         *bool     `json:"is_exclusive"`
+	Status              *string   `json:"status"`
+	ModelTypes          *[]string `json:"model_types"`
+	MonitorEnabled      *bool     `json:"monitor_enabled"`
+	ModelPricingEnabled *bool     `json:"model_pricing_enabled"`
 }
 
 type relayGroupSortOrderInput struct {
@@ -321,22 +322,23 @@ type monitorChannelOption struct {
 }
 
 type relayGroupView struct {
-	ID                 uint               `json:"id"`
-	ExternalID         int64              `json:"external_id"`
-	Name               string             `json:"name"`
-	Description        string             `json:"description,omitempty"`
-	Platform           string             `json:"platform,omitempty"`
-	Status             string             `json:"status,omitempty"`
-	IsExclusive        bool               `json:"is_exclusive"`
-	RequireOAuthOnly   bool               `json:"require_oauth_only"`
-	SortOrder          int                `json:"sort_order"`
-	AccountTypes       []string           `json:"account_types"`
-	ModelTypes         []string           `json:"model_types"`
-	RateMultiplier     float64            `json:"rate_multiplier"`
-	MonitorEnabled     bool               `json:"monitor_enabled"`
-	AccountCount       int                `json:"account_count"`
-	PricedAccountCount int                `json:"priced_account_count"`
-	Channels           []relayChannelView `json:"channels"`
+	ID                  uint               `json:"id"`
+	ExternalID          int64              `json:"external_id"`
+	Name                string             `json:"name"`
+	Description         string             `json:"description,omitempty"`
+	Platform            string             `json:"platform,omitempty"`
+	Status              string             `json:"status,omitempty"`
+	IsExclusive         bool               `json:"is_exclusive"`
+	RequireOAuthOnly    bool               `json:"require_oauth_only"`
+	SortOrder           int                `json:"sort_order"`
+	AccountTypes        []string           `json:"account_types"`
+	ModelTypes          []string           `json:"model_types"`
+	RateMultiplier      float64            `json:"rate_multiplier"`
+	MonitorEnabled      bool               `json:"monitor_enabled"`
+	ModelPricingEnabled bool               `json:"model_pricing_enabled"`
+	AccountCount        int                `json:"account_count"`
+	PricedAccountCount  int                `json:"priced_account_count"`
+	Channels            []relayChannelView `json:"channels"`
 }
 
 type relayChannelView struct {
@@ -545,7 +547,7 @@ func updateRelayGroup(c *gin.Context, d *Deps) {
 	group, err := d.Relay.UpdateGroup(c.Request.Context(), stationID, externalID, relay.GroupUpdateInput{
 		Name: in.Name, Description: in.Description, RateMultiplier: in.RateMultiplier,
 		IsExclusive: in.IsExclusive, Status: in.Status,
-		ModelTypes: in.ModelTypes, MonitorEnabled: in.MonitorEnabled,
+		ModelTypes: in.ModelTypes, MonitorEnabled: in.MonitorEnabled, ModelPricingEnabled: in.ModelPricingEnabled,
 	})
 	if err != nil {
 		fail(c, http.StatusBadGateway, err)
@@ -1264,7 +1266,7 @@ func relayStationOverview(c *gin.Context, d *Deps) {
 		if strings.TrimSpace(group.ModelTypesJSON) != "" {
 			_ = json.Unmarshal([]byte(group.ModelTypesJSON), &modelTypes)
 		}
-		view := relayGroupView{ID: group.ID, ExternalID: group.ExternalID, Name: group.Name, Description: group.Description, Platform: group.Platform, Status: group.Status, IsExclusive: group.IsExclusive, RequireOAuthOnly: group.RequireOAuthOnly, SortOrder: group.SortOrder, AccountTypes: accountTypes, ModelTypes: modelTypes, RateMultiplier: group.RateMultiplier, MonitorEnabled: group.MonitorEnabled, Channels: []relayChannelView{}}
+		view := relayGroupView{ID: group.ID, ExternalID: group.ExternalID, Name: group.Name, Description: group.Description, Platform: group.Platform, Status: group.Status, IsExclusive: group.IsExclusive, RequireOAuthOnly: group.RequireOAuthOnly, SortOrder: group.SortOrder, AccountTypes: accountTypes, ModelTypes: modelTypes, RateMultiplier: group.RateMultiplier, MonitorEnabled: group.MonitorEnabled, ModelPricingEnabled: group.ModelPricingEnabled, Channels: []relayChannelView{}}
 		for _, link := range links {
 			if link.RelayGroupID != group.ID {
 				continue

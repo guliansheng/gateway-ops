@@ -1,244 +1,182 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
-import { BadgeDollarSign, Building2, Database, Filter, Layers3, RefreshCw, Search, Tags } from "lucide-react"
+"use client"
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { BadgeDollarSign, Building2, Check, Copy, Database, Search, X } from "lucide-react"
 import { useParams } from "react-router-dom"
-import alibabaCloudIcon from "@lobehub/icons-static-svg/icons/alibabacloud-color.svg"
-import anthropicIcon from "@lobehub/icons-static-svg/icons/anthropic.svg"
-import awsIcon from "@lobehub/icons-static-svg/icons/aws-color.svg"
-import baichuanIcon from "@lobehub/icons-static-svg/icons/baichuan-color.svg"
-import baiduIcon from "@lobehub/icons-static-svg/icons/baidu-color.svg"
-import byteDanceIcon from "@lobehub/icons-static-svg/icons/bytedance-color.svg"
-import cohereIcon from "@lobehub/icons-static-svg/icons/cohere-color.svg"
-import deepSeekIcon from "@lobehub/icons-static-svg/icons/deepseek-color.svg"
-import googleIcon from "@lobehub/icons-static-svg/icons/google-color.svg"
-import huaweiIcon from "@lobehub/icons-static-svg/icons/huawei-color.svg"
-import iflytekIcon from "@lobehub/icons-static-svg/icons/iflytekcloud-color.svg"
-import metaIcon from "@lobehub/icons-static-svg/icons/meta-color.svg"
-import microsoftIcon from "@lobehub/icons-static-svg/icons/microsoft-color.svg"
-import miniMaxIcon from "@lobehub/icons-static-svg/icons/minimax-color.svg"
-import mistralIcon from "@lobehub/icons-static-svg/icons/mistral-color.svg"
-import moonshotIcon from "@lobehub/icons-static-svg/icons/moonshot.svg"
-import nvidiaIcon from "@lobehub/icons-static-svg/icons/nvidia-color.svg"
 import openAIIcon from "@lobehub/icons-static-svg/icons/openai.svg"
-import senseNovaIcon from "@lobehub/icons-static-svg/icons/sensenova-color.svg"
-import stepFunIcon from "@lobehub/icons-static-svg/icons/stepfun-color.svg"
-import tencentIcon from "@lobehub/icons-static-svg/icons/tencent-color.svg"
-import xAIIcon from "@lobehub/icons-static-svg/icons/xai.svg"
-import xiaomiIcon from "@lobehub/icons-static-svg/icons/xiaomimimo.svg"
-import zeroOneIcon from "@lobehub/icons-static-svg/icons/zeroone-color.svg"
+import anthropicIcon from "@lobehub/icons-static-svg/icons/anthropic.svg"
+import googleIcon from "@lobehub/icons-static-svg/icons/google-color.svg"
+import deepSeekIcon from "@lobehub/icons-static-svg/icons/deepseek-color.svg"
+import qwenIcon from "@lobehub/icons-static-svg/icons/alibabacloud-color.svg"
 import zhipuIcon from "@lobehub/icons-static-svg/icons/zhipu-color.svg"
-import { apiFetch } from "@/lib/api"
-import type { PublicModelPricingItem, PublicModelPricingView } from "@/lib/api-types"
-import { cn } from "@/lib/utils"
+import moonshotIcon from "@lobehub/icons-static-svg/icons/moonshot.svg"
+import miniMaxIcon from "@lobehub/icons-static-svg/icons/minimax-color.svg"
+import tencentIcon from "@lobehub/icons-static-svg/icons/tencent-color.svg"
+// Verified against the published @lobehub/icons-static-svg@1.94.0 SVGs on jsDelivr.
+import stepFunIcon from "@lobehub/icons-static-svg/icons/stepfun-color.svg"
+import xiaomiIcon from "@lobehub/icons-static-svg/icons/xiaomimimo.svg"
+import xAIIcon from "@lobehub/icons-static-svg/icons/xai.svg"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { PublicPageHeader } from "@/components/public/public-page-header"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { apiFetch } from "@/lib/api"
+import type { PublicModelPricingItem, PublicModelPricingView, PublicPricingGroup } from "@/lib/api-types"
+import { effectivePricingLabel, formatModelPrice, pricingColumns, pricingKind, pricingReferences, pricingValue, publicPricingGroups, publicPricingItems, referenceLabel, type PricingKind } from "@/lib/model-pricing"
+import { cn } from "@/lib/utils"
 
-const tokenPriceScale = 1_000_000
-const browserCacheTTL = 60 * 60 * 1000
-const browserCacheVersion = 1
+const cacheVersion = 8
+const refreshMS = 10 * 60 * 1000
+const companyOrder = ["OpenAI", "Anthropic", "Google", "xAI", "DeepSeek", "阿里云", "智谱 AI", "月之暗面", "MiniMax", "腾讯"]
+const kindLabels: Record<PricingKind, string> = { token: "按量付费", request: "按次付费" }
+const companyIcons: Record<string, string> = { openai: openAIIcon, anthropic: anthropicIcon, google: googleIcon, xai: xAIIcon, deepseek: deepSeekIcon, 阿里云: qwenIcon, "智谱 ai": zhipuIcon, 月之暗面: moonshotIcon, minimax: miniMaxIcon, 腾讯: tencentIcon, 阶跃星辰: stepFunIcon, 小米: xiaomiIcon }
+const tones = ["border-l-violet-500 bg-violet-50 text-violet-800", "border-l-emerald-500 bg-emerald-50 text-emerald-800", "border-l-blue-500 bg-blue-50 text-blue-800", "border-l-amber-500 bg-amber-50 text-amber-800"]
 
-type BrowserPricingCache = {
-  version: number
-  cached_at: number
-  data: PublicModelPricingView
-}
-
-function browserCacheKey(stationID: number) {
-  return `gatewayops:model-pricing:v${browserCacheVersion}:${stationID}`
-}
-
-function readBrowserCache(stationID: number): BrowserPricingCache | null {
-  if (typeof window === "undefined" || !Number.isInteger(stationID) || stationID <= 0) return null
-  try {
-    const raw = window.localStorage.getItem(browserCacheKey(stationID))
-    if (!raw) return null
-    const cached = JSON.parse(raw) as BrowserPricingCache
-    if (cached.version !== browserCacheVersion || cached.data?.station_id !== stationID || !Number.isFinite(cached.cached_at) || !Array.isArray(cached.data?.items)) return null
-    return cached
-  } catch {
-    return null
-  }
-}
-
-function writeBrowserCache(stationID: number, data: PublicModelPricingView, cachedAt: number) {
-  if (typeof window === "undefined") return
-  try {
-    window.localStorage.setItem(browserCacheKey(stationID), JSON.stringify({ version: browserCacheVersion, cached_at: cachedAt, data } satisfies BrowserPricingCache))
-  } catch {
-    // Storage can be unavailable in private browsing; the page still works without persistence.
-  }
-}
-
-const sourceLabels: Record<PublicModelPricingItem["price_source"], string> = {
-  system_default: "系统默认",
-  channel_override: "渠道定价",
-  channel_override_with_default: "渠道覆盖 + 默认补全",
-  group_image_pricing: "分组生图定价",
-  unavailable: "价格不完整",
-}
-
-const billingModeLabels: Record<string, string> = {
-  token: "Token 计费",
-  per_request: "按次计费",
-}
-
-const companyIcons: Record<string, { src: string; invertOnDark?: boolean }> = {
-  "amazon": { src: awsIcon },
-  "anthropic": { src: anthropicIcon, invertOnDark: true },
-  "baidu": { src: baiduIcon },
-  "cohere": { src: cohereIcon },
-  "deepseek": { src: deepSeekIcon },
-  "google": { src: googleIcon },
-  "meta": { src: metaIcon },
-  "microsoft": { src: microsoftIcon },
-  "minimax": { src: miniMaxIcon },
-  "mistral ai": { src: mistralIcon },
-  "nvidia": { src: nvidiaIcon },
-  "openai": { src: openAIIcon, invertOnDark: true },
-  "xai": { src: xAIIcon, invertOnDark: true },
-  "商汤": { src: senseNovaIcon },
-  "字节跳动": { src: byteDanceIcon },
-  "科大讯飞": { src: iflytekIcon },
-  "腾讯": { src: tencentIcon },
-  "小米": { src: xiaomiIcon, invertOnDark: true },
-  "华为": { src: huaweiIcon },
-  "百度": { src: baiduIcon },
-  "百川智能": { src: baichuanIcon },
-  "阶跃星辰": { src: stepFunIcon },
-  "零一万物": { src: zeroOneIcon },
-  "智谱 ai": { src: zhipuIcon },
-  "月之暗面": { src: moonshotIcon, invertOnDark: true },
-  "阿里云": { src: alibabaCloudIcon },
-}
-
-const companyOrder = ["openai", "anthropic", "xai", "google", "meta", "mistral ai", "cohere", "amazon", "microsoft", "nvidia", "deepseek", "阿里云", "字节跳动", "腾讯", "百度", "华为", "智谱 ai", "月之暗面", "minimax", "小米", "百川智能", "阶跃星辰", "零一万物", "科大讯飞", "商汤"]
-const companyRank = new Map(companyOrder.map((name, index) => [name, index]))
-
-function normalizedCompanyName(company: string) {
-  return company.trim().toLowerCase()
-}
+type PriceItem = PublicModelPricingItem
+type ModelEntry = { key: string; model: string; company: string; kind: PricingKind; items: PriceItem[] }
 
 function compareCompanies(left: string, right: string) {
-  const leftRank = companyRank.get(normalizedCompanyName(left)) ?? Number.MAX_SAFE_INTEGER
-  const rightRank = companyRank.get(normalizedCompanyName(right)) ?? Number.MAX_SAFE_INTEGER
-  return leftRank - rightRank || left.localeCompare(right, "zh-CN")
+  const rank = (name: string) => { const index = companyOrder.indexOf(name); return index < 0 ? 999 : index }
+  return rank(left) - rank(right) || left.localeCompare(right, "zh-CN")
 }
 
-function formatPrice(value: number | null | undefined, perRequest = false) {
-  if (value == null || !Number.isFinite(value)) return "-"
-  const normalized = perRequest ? value : value * tokenPriceScale
-  return normalized.toLocaleString("zh-CN", { maximumFractionDigits: 6, minimumFractionDigits: 0 })
-}
-
-function PriceCell({ label, value, perRequest = false }: { label: string; value?: number | null; perRequest?: boolean }) {
-  return <div className="min-w-0 border-l-2 border-border pl-3"><p className="text-xs font-medium leading-5 text-foreground/70">{label}</p><p className="mt-0.5 truncate font-mono text-sm font-semibold leading-5 tabular-nums text-foreground" title={formatPrice(value, perRequest)}>{formatPrice(value, perRequest)}</p></div>
+function cacheKey(stationID: number) { return `gatewayops:model-pricing:v${cacheVersion}:${stationID}` }
+function readCache(stationID: number): PublicModelPricingView | null {
+  try {
+    const cached = JSON.parse(window.localStorage.getItem(cacheKey(stationID)) || "null") as { at: number; data: PublicModelPricingView } | null
+    return cached?.data?.station_id === stationID && Array.isArray(cached.data.items) && Array.isArray(cached.data.public_groups) && Date.now() - cached.at < (cached.data.warnings?.length ? 30_000 : refreshMS) ? cached.data : null
+  } catch { return null }
 }
 
 function CompanyLogo({ company }: { company: string }) {
-  const icon = companyIcons[normalizedCompanyName(company)]
-  if (!icon) return <Building2 className="size-5 text-brand" aria-hidden="true" />
-  return <img src={icon.src} alt="" className={cn("size-5 shrink-0 object-contain", icon.invertOnDark && "dark:invert")} aria-hidden="true" />
+  const source = companyIcons[company.toLowerCase()]
+  return source ? <img src={source} alt="" className="size-5 shrink-0 object-contain" /> : <Building2 className="size-5 shrink-0 text-[#657889]" />
 }
 
-function PricingBadges({ items }: { items: PublicModelPricingItem[] }) {
-  const sources = [...new Set(items.map((item) => item.price_source))]
-  const modes = [...new Set(items.map((item) => item.billing_mode || "token"))]
-  return <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
-    {sources.map((source) => <span key={source} className={cn("rounded border px-2 py-1 text-[11px] font-semibold", source === "channel_override" || source === "group_image_pricing" ? "border-brand/20 bg-brand/10 text-brand" : source === "channel_override_with_default" ? "border-warning/20 bg-warning/10 text-warning" : source === "unavailable" ? "border-danger/20 bg-danger/10 text-danger" : "border-border bg-background text-foreground/70")}>{sourceLabels[source]}</span>)}
-    {modes.map((mode) => <span key={mode} className="rounded border border-border bg-background px-2 py-1 text-[11px] font-semibold text-foreground/70">{billingModeLabels[mode] || mode}</span>)}
-  </div>
-}
+function Counter({ value }: { value: number }) { return <span className="shrink-0 text-[10px] tabular-nums text-[#8996ad]">{value}</span> }
 
-function ChannelPricing({ item }: { item: PublicModelPricingItem }) {
-  const details = Boolean(item.intervals?.length || item.time_pricing || item.fast_multiplier || item.flex_multiplier)
-  const resolutionImagePricing = item.image_price_1k != null || item.image_price_2k != null || item.image_price_4k != null
-  const showChannel = item.channel_id > 0 && (item.price_source === "channel_override" || item.price_source === "channel_override_with_default" || item.price_source === "group_image_pricing")
-  return <section className="px-5 py-5">
-    {resolutionImagePricing ? <div className="grid grid-cols-3 gap-x-4"><PriceCell label="1K / 次" value={item.image_price_1k} perRequest /><PriceCell label="2K / 次" value={item.image_price_2k} perRequest /><PriceCell label="4K / 次" value={item.image_price_4k} perRequest /></div> : <div className="grid grid-cols-2 gap-x-4 gap-y-4 sm:grid-cols-4"><PriceCell label="输入 / 1M tokens" value={item.input_price} /><PriceCell label="输出 / 1M tokens" value={item.output_price} /><PriceCell label="缓存写入 / 1M" value={item.cache_write_price} /><PriceCell label="缓存读取 / 1M" value={item.cache_read_price} /><PriceCell label="图片输入 / 1M" value={item.image_input_price} /><PriceCell label="图片输出 / 1M" value={item.image_output_price} /><PriceCell label="按次" value={item.per_request_price} perRequest /></div>}
-    <div className="mt-4 flex min-w-0 flex-wrap items-center gap-1.5 border-t border-border/80 pt-3">{showChannel ? <span className="max-w-full truncate rounded border border-brand/20 bg-brand/10 px-2 py-1 text-[11px] font-semibold text-brand" title={item.channel_name}>渠道：{item.channel_name}</span> : null}{item.billing_model && item.billing_model !== item.model ? <span className="max-w-full truncate rounded border border-warning/25 bg-warning/10 px-2 py-1 text-[11px] font-semibold text-warning" title={item.billing_model}>计费模型：{item.billing_model}</span> : null}{item.provider ? <span className="max-w-full truncate rounded border border-border bg-muted px-2 py-1 text-[11px] font-semibold text-foreground/75" title={item.provider}>Provider：{item.provider}</span> : null}{item.groups?.length ? <span className="max-w-full truncate rounded border border-success/25 bg-success/10 px-2 py-1 text-[11px] font-semibold text-success" title={item.groups.join("、")}>分组：{item.groups.join("、")}</span> : null}</div>
-    {details ? <details className="mt-4 text-xs text-foreground/70"><summary className="cursor-pointer font-medium transition-colors hover:text-foreground">高级定价规则</summary><div className="mt-2 space-y-2 rounded-md bg-muted/60 p-3">{item.fast_multiplier ? <p>Fast 倍率：<span className="font-mono">{item.fast_multiplier}</span></p> : null}{item.flex_multiplier ? <p>Flex 倍率：<span className="font-mono">{item.flex_multiplier}</span></p> : null}{item.intervals?.length ? <pre className="max-h-40 overflow-auto font-mono text-xs">{JSON.stringify(item.intervals, null, 2)}</pre> : null}{item.time_pricing ? <pre className="max-h-40 overflow-auto font-mono text-xs">{JSON.stringify(item.time_pricing, null, 2)}</pre> : null}</div></details> : null}
-  </section>
-}
+function ModelMatrix({ entry, groups, currency, toneByGroup }: { entry: ModelEntry; groups: PublicPricingGroup[]; currency: "USD" | "CNY"; toneByGroup: Map<string, number> }) {
+  const [copied, setCopied] = useState(false)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current) }, [])
+  const columns = pricingColumns(entry.items)
+  const referenceRows = pricingReferences(entry.items)
+  const rows = groups.flatMap((group) => {
+    const matching = entry.items.filter((item) => item.groups?.includes(group.name))
+    const unique = matching.filter((item, index) => matching.findIndex((other) => JSON.stringify([columns.map(({ key }) => other[key]), other.billing_model, other.intervals, other.time_pricing]) === JSON.stringify([columns.map(({ key }) => item[key]), item.billing_model, item.intervals, item.time_pricing])) === index)
+    return unique.map((item) => ({ group, item, multiple: unique.length > 1 }))
+  })
+  const advanced = entry.items.filter((item) => item.intervals?.length || item.time_pricing || item.fast_multiplier != null || item.flex_multiplier != null)
+  const unit = `${currency} / ${entry.kind === "token" ? "百万 Token" : "次"}`
 
-function ModelPricingCard({ model, items }: { model: string; items: PublicModelPricingItem[] }) {
-  return <article className="overflow-hidden rounded-md border border-border bg-card shadow-sm transition-[border-color,box-shadow] duration-200 hover:border-brand/50 hover:shadow-md">
-    <header className="flex min-h-14 flex-wrap items-center justify-between gap-3 border-b border-border bg-muted/60 px-5 py-3.5">
-      <h3 className="min-w-0 truncate text-base font-bold text-foreground" title={model}>{model}</h3>
-      <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">{items.length > 1 ? <span className="shrink-0 rounded-md border border-border bg-background px-2 py-1 text-xs font-semibold text-foreground/70">{items.length} 个渠道</span> : null}<PricingBadges items={items} /></div>
-    </header>
-    <div className="divide-y divide-border">{items.map((item, index) => <ChannelPricing key={`${item.station_id}-${item.channel_id}-${item.billing_model}-${index}`} item={item} />)}</div>
+  async function copyModel() {
+    try {
+      await navigator.clipboard.writeText(entry.model)
+      setCopied(true)
+      timer.current = setTimeout(() => setCopied(false), 1600)
+    } catch { setCopied(false) }
+  }
+
+  return <article className="grid min-w-0 gap-3 border-b border-[#e5eaf2] bg-white px-4 py-4 last:border-b-0 xl:grid-cols-[minmax(12rem,0.29fr)_minmax(0,1fr)] xl:gap-6 xl:px-5 xl:py-5">
+    <div className="min-w-0"><div className="flex items-start gap-2"><h3 className="break-all font-mono text-[13px] font-semibold leading-6 text-[#315077]">{entry.model}</h3><button type="button" aria-label={`复制模型 ${entry.model}`} title={copied ? "已复制" : "复制模型名称"} className="mt-1 shrink-0 rounded p-0.5 text-[#94a3b8] hover:text-[#4c5bd4] focus-visible:outline-2 focus-visible:outline-[#6e55e5]" onClick={() => void copyModel()}>{copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}</button></div><p className="mt-1 text-[11px] text-[#8996ad]">{unit}</p>{entry.items.some((item) => item.billing_model && item.billing_model !== entry.model) ? <p className="mt-2 break-all text-[11px] text-[#8996ad]">计费模型：{[...new Set(entry.items.map((item) => item.billing_model).filter(Boolean))].join("、")}</p> : null}</div>
+    <div className="min-w-0 overflow-x-auto"><table className="w-full min-w-[550px] border-separate border-spacing-y-1.5 text-left text-xs" aria-label={`${entry.model}公开分组价格`}><thead><tr className="text-[#8c9aab]"><th scope="col" className="min-w-44 px-3 pb-1 font-semibold">分组 / 价格来源</th>{columns.map((column) => <th scope="col" key={column.key} className="px-3 pb-1 text-right font-semibold">{column.label}</th>)}</tr></thead><tbody>
+      {referenceRows.map((item, index) => <tr key={`reference-${index}`} className="bg-[#f4f7f8] text-[#50656e]"><th scope="row" className="rounded-l-md border-l-[3px] border-l-[#c5d1d6] px-3 py-2.5 font-medium"><span className="block">{referenceLabel(item)}</span>{item.official_pricing_source === "channel_pricing" || referenceRows.length > 1 ? <span className="mt-0.5 block text-[10px] text-[#83959c]">{[item.official_pricing_source === "channel_pricing" ? item.channel_name : "", item.billing_model || item.model].filter(Boolean).join(" · ")}</span> : null}</th>{columns.map(({ key, perRequest }, cell) => <td key={key} className={cn("px-3 py-2.5 text-right font-mono text-sm font-semibold tabular-nums", cell === columns.length - 1 && "rounded-r-md")}>{formatModelPrice(pricingValue(item, key), perRequest, currency)}</td>)}</tr>)}
+      {rows.map(({ group, item, multiple }, index) => <tr key={`${group.name}-${item.channel_id}-${index}`} className={tones[(toneByGroup.get(group.name) ?? 0) % tones.length]}><th scope="row" className="rounded-l-md border-l-[3px] border-l-inherit px-3 py-2.5 font-semibold"><span>{group.name}</span>{item.price_source !== "group_image_pricing" ? <span className="ml-1.5 text-[10px] font-normal opacity-70">×{group.rate_multiplier}</span> : null}<span className="mt-0.5 block text-[10px] font-normal opacity-65">{effectivePricingLabel(item)}{multiple ? ` · ${item.channel_name}` : ""}</span></th>{columns.map(({ key, perRequest }, cell) => <td key={key} className={cn("px-3 py-2.5 text-right font-mono text-sm font-semibold tabular-nums", cell === columns.length - 1 && "rounded-r-md")}>{formatModelPrice(pricingValue(item, key, group), perRequest, currency)}</td>)}</tr>)}
+    </tbody></table>{rows.some(({ item }) => item.price_source === "unavailable") ? <p className="mt-1 text-[11px] text-[#a17832]">价格待更新：此模型已公开，尚未取得有效单价。</p> : null}
+    {advanced.length ? <details className="mt-2 text-[11px] text-[#718099]"><summary className="cursor-pointer hover:text-[#4c5bd4]">查看阶梯、时段与高级定价规则</summary><div className="mt-2 space-y-3 rounded-md border border-[#e1e6ef] bg-[#f8faff] p-3">{advanced.map((item, index) => <div key={index}><p className="mb-1 font-semibold">{item.channel_name || "系统定价"}</p>{item.fast_multiplier != null ? <p>Fast 倍率：{item.fast_multiplier}</p> : null}{item.flex_multiplier != null ? <p>Flex 倍率：{item.flex_multiplier}</p> : null}{item.intervals?.length ? <pre className="mt-1 max-h-48 overflow-auto">{JSON.stringify(item.intervals, null, 2)}</pre> : null}{item.time_pricing ? <pre className="mt-1 max-h-48 overflow-auto">{JSON.stringify(item.time_pricing, null, 2)}</pre> : null}</div>)}</div></details> : null}</div>
   </article>
+}
+
+function PricingContent({ stationID }: { stationID: number }) {
+  const [data, setData] = useState<PublicModelPricingView | null>(() => readCache(stationID))
+  const [loading, setLoading] = useState(!data)
+  const [refreshing, setRefreshing] = useState(false)
+  const [error, setError] = useState("")
+  const [query, setQuery] = useState("")
+  const [selectedGroup, setSelectedGroup] = useState("all")
+  const [selectedCompany, setSelectedCompany] = useState("all")
+  const [selectedKind, setSelectedKind] = useState<PricingKind | "all">("all")
+  const controller = useRef<AbortController | null>(null)
+
+  const load = useCallback(async () => {
+    controller.current?.abort()
+    const abort = new AbortController()
+    controller.current = abort
+    setRefreshing(true)
+    try {
+      const next = await apiFetch<PublicModelPricingView>(`/public/relay-stations/${stationID}/model-pricing`, { skipAuthErrorHandler: true, signal: abort.signal })
+      if (abort.signal.aborted) return
+      setData(next); setError("")
+      try { window.localStorage.setItem(cacheKey(stationID), JSON.stringify({ at: Date.now(), data: next })) } catch { /* persistence is optional */ }
+    } catch (requestError) {
+      if (!abort.signal.aborted) setError(requestError instanceof Error ? requestError.message : "价格读取失败")
+    } finally {
+      if (!abort.signal.aborted) { setLoading(false); setRefreshing(false) }
+    }
+  }, [stationID])
+
+  useEffect(() => {
+    void load()
+    const timer = window.setInterval(() => { if (!document.hidden) void load() }, refreshMS)
+    return () => { controller.current?.abort(); window.clearInterval(timer) }
+  }, [load])
+  useEffect(() => { document.title = "模型价格" }, [])
+
+  const groups = useMemo(() => data ? publicPricingGroups(data) : [], [data])
+  const items = useMemo(() => data ? publicPricingItems(data) : [], [data])
+  const toneByGroup = useMemo(() => new Map(groups.map((group, index) => [group.name, index])), [groups])
+  const allModels = useMemo(() => {
+    const map = new Map<string, ModelEntry>()
+    for (const item of items) {
+      const kind = pricingKind(item)
+      const company = item.company || item.provider || "其他"
+      const key = `${company}\u0000${item.model}\u0000${kind}`
+      const entry = map.get(key)
+      if (entry) entry.items.push(item)
+      else map.set(key, { key, model: item.model, company, kind, items: [item] })
+    }
+    return [...map.values()].sort((left, right) => compareCompanies(left.company, right.company) || left.model.localeCompare(right.model, "zh-CN", { numeric: true }) || left.kind.localeCompare(right.kind))
+  }, [items])
+  const filtered = useMemo(() => {
+    const search = query.trim().toLowerCase()
+    return allModels.filter((entry) => (selectedCompany === "all" || entry.company === selectedCompany) && (selectedKind === "all" || entry.kind === selectedKind) && (selectedGroup === "all" || entry.items.some((item) => item.groups?.includes(selectedGroup))) && (!search || [entry.model, entry.company, ...entry.items.flatMap((item) => [item.billing_model, item.provider, ...(item.groups ?? [])])].some((value) => value?.toLowerCase().includes(search))))
+  }, [allModels, query, selectedCompany, selectedGroup, selectedKind])
+  const grouped = useMemo(() => {
+    const map = new Map<string, ModelEntry[]>()
+    for (const entry of filtered) map.set(entry.company, [...(map.get(entry.company) ?? []), entry])
+    return [...map.entries()]
+  }, [filtered])
+  const companies = useMemo(() => [...new Set(allModels.map((entry) => entry.company))].sort(compareCompanies), [allModels])
+  const visibleGroups = selectedGroup === "all" ? groups : groups.filter((group) => group.name === selectedGroup)
+  const uniqueCount = (list: ModelEntry[]) => new Set(list.map((entry) => entry.model)).size
+  const totalModels = uniqueCount(allModels)
+  const reset = () => { setQuery(""); setSelectedGroup("all"); setSelectedCompany("all"); setSelectedKind("all") }
+  const hasFilter = Boolean(query || selectedGroup !== "all" || selectedCompany !== "all" || selectedKind !== "all")
+  const currency = data?.currency ?? "USD"
+
+  return <main data-public-page className="min-h-screen min-w-0 bg-transparent text-[#29415f]"><div className="w-full min-w-0">
+    <PublicPageHeader icon={BadgeDollarSign} title="模型价格" description={`${totalModels} 个模型 · ${groups.length} 个分组 · ${currency === "USD" ? "美元" : "人民币"}计价`} updatedAt={data?.updated_at} refreshing={refreshing} refreshLabel="刷新模型价格" onRefresh={() => void load()} />
+    <div className="grid items-start gap-4 2xl:grid-cols-[220px_minmax(0,1fr)]">
+		<aside className="sticky top-5 hidden max-h-[calc(100dvh-2.5rem)] overflow-y-auto rounded-lg border border-[#dbe4f2] bg-[#f8faff] p-3 2xl:block" aria-label="价格筛选">
+			<div className="mb-5 flex items-center justify-between"><h2 className="text-sm font-bold">筛选</h2><button type="button" className="text-xs text-[#0f9488] hover:underline" onClick={reset}>重置</button></div>
+			<div className="mb-5"><label htmlFor="pricing-search" className="mb-2 block text-[11px] font-semibold text-[#8292ad]">模型搜索</label><div className="relative"><Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-[#9aa8be]" /><Input id="pricing-search" value={query} onChange={(event) => setQuery(event.target.value)} className="h-9 border-[#dbe4f2] bg-white pl-8 text-xs" placeholder="名称、模型、分组" /></div></div>
+			<h3 className="mb-2 border-t border-[#e4eaf4] pt-4 text-[11px] font-semibold text-[#8292ad]">计费方式</h3><div className="mb-5 grid grid-cols-2 gap-1.5">{(["all", "token", "request"] as const).map((kind) => <button key={kind} type="button" aria-pressed={selectedKind === kind} onClick={() => setSelectedKind(kind)} className={cn("rounded-md border px-2 py-2 text-xs", selectedKind === kind ? "border-violet-300 bg-violet-50 font-semibold text-violet-700" : "border-[#dce5f3] bg-white text-[#657b9b] hover:border-violet-200")}><span className="block">{kind === "all" ? "全部" : kindLabels[kind]}</span><Counter value={uniqueCount(kind === "all" ? allModels : allModels.filter((entry) => entry.kind === kind))} /></button>)}</div>
+			<h3 className="mb-2 border-t border-[#e4eaf4] pt-4 text-[11px] font-semibold text-[#8292ad]">公开分组</h3><div className="mb-5 space-y-1.5"><button type="button" aria-pressed={selectedGroup === "all"} onClick={() => setSelectedGroup("all")} className={cn("flex w-full items-center justify-between rounded-md border px-2.5 py-2 text-left text-xs", selectedGroup === "all" ? "border-teal-400 bg-teal-50 font-semibold text-teal-700" : "border-[#dce5f3] bg-white")}><span>全部分组</span><Counter value={totalModels} /></button>{groups.map((group) => <button key={group.name} type="button" aria-pressed={selectedGroup === group.name} onClick={() => setSelectedGroup(group.name)} className={cn("flex w-full items-center justify-between gap-1 rounded-md border px-2.5 py-2 text-left text-xs", selectedGroup === group.name ? "border-teal-400 bg-teal-50 font-semibold text-teal-700" : "border-[#dce5f3] bg-white hover:border-teal-200")}><span className="min-w-0"><span className="block truncate" title={group.name}>{group.name}</span><span className="mt-0.5 block text-[10px] font-normal text-[#8996ad]">×{group.rate_multiplier}</span></span><Counter value={uniqueCount(allModels.filter((entry) => entry.items.some((item) => item.groups?.includes(group.name))))} /></button>)}</div>
+			<h3 className="mb-2 border-t border-[#e4eaf4] pt-4 text-[11px] font-semibold text-[#8292ad]">模型厂商</h3><button type="button" onClick={() => setSelectedCompany("all")} aria-pressed={selectedCompany === "all"} className={cn("mb-1 flex w-full items-center justify-between rounded px-2 py-2 text-xs", selectedCompany === "all" && "bg-violet-50 font-semibold text-violet-700")}><span>全部厂商</span><Counter value={totalModels} /></button>{companies.map((company) => <button type="button" key={company} aria-pressed={selectedCompany === company} onClick={() => setSelectedCompany(company)} className={cn("flex w-full items-center gap-2 rounded px-2 py-2.5 text-left text-xs hover:bg-white", selectedCompany === company && "bg-violet-50 font-semibold text-violet-700")}><CompanyLogo company={company} /><span className="min-w-0 flex-1 truncate">{company}</span><Counter value={uniqueCount(allModels.filter((entry) => entry.company === company))} /></button>)}
+		</aside>
+		<section className="min-w-0" aria-label="模型价格目录">
+			<div className="mb-3 rounded-lg border border-[#dbe4f2] bg-white p-3 2xl:hidden"><div className="mb-2 flex gap-2"><Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索模型、厂商或分组" aria-label="搜索模型" /><Button variant="outline" size="icon" disabled={!hasFilter} onClick={reset} aria-label="清除筛选"><X className="size-4" /></Button></div><div className="grid gap-2 sm:grid-cols-3"><select aria-label="筛选计费方式" value={selectedKind} onChange={(event) => setSelectedKind(event.target.value as PricingKind | "all")} className="h-10 rounded-md border border-[#dbe4f2] bg-white px-2 text-xs"><option value="all">全部计费方式</option>{Object.entries(kindLabels).map(([key, label]) => <option value={key} key={key}>{label}</option>)}</select><select aria-label="筛选公开分组" value={selectedGroup} onChange={(event) => setSelectedGroup(event.target.value)} className="h-10 rounded-md border border-[#dbe4f2] bg-white px-2 text-xs"><option value="all">全部公开分组</option>{groups.map((group) => <option value={group.name} key={group.name}>{group.name}</option>)}</select><select aria-label="筛选模型厂商" value={selectedCompany} onChange={(event) => setSelectedCompany(event.target.value)} className="h-10 rounded-md border border-[#dbe4f2] bg-white px-2 text-xs"><option value="all">全部厂商</option>{companies.map((company) => <option key={company}>{company}</option>)}</select></div></div>
+			<div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs"><p className="font-semibold">{hasFilter ? `筛选结果 · ${uniqueCount(filtered)} 个模型` : "全部公开价格"}</p><span className="text-[11px] text-[#8292ad]">— 为未提供，0 为免费</span></div><div className="mb-4 rounded-lg border border-[#e1e6f2] bg-[#f8faff] px-4 py-3 text-[11px] leading-5 text-[#72849f]">原价优先读取对应渠道管理保存的模型定价，缺失字段再使用系统基价 / 官方目录；按量分组价使用渠道基价 × 分组倍率。按次仅展示分组独立生图的 1K / 2K / 4K 价格，不乘倍率、不展示原价。Token 价格按百万 Token 展示，未做汇率换算。阶梯、时段和 Fast / Flex 规则见模型详情。</div>
+			{data?.warnings?.length ? <div role="alert" className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800"><p className="font-semibold">部分分组价格暂未读取完整</p>{data.warnings.map((warning, index) => <p key={index}>{warning}</p>)}</div> : null}
+			{error ? <div role="alert" className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"><span>{error}{data ? "，当前显示上次数据。" : ""}</span><Button type="button" variant="outline" size="sm" onClick={() => void load()}>重试</Button></div> : null}
+			{loading && !data ? <div className="space-y-3">{Array.from({ length: 4 }, (_, index) => <div key={index} className="rounded-lg border border-[#dbe4f2] bg-white p-5"><Skeleton className="h-5 w-44" /><Skeleton className="mt-4 h-28 w-full" /></div>)}</div> : grouped.length ? <div className="space-y-5">{grouped.map(([company, entries]) => <section key={company} className="overflow-hidden rounded-lg border border-[#d6e0ee] bg-white"><header className="flex items-center gap-2.5 border-b border-[#d5e6e5] border-l-[3px] border-l-teal-500 bg-[#eef9f6] px-4 py-3"><CompanyLogo company={company} /><span className="text-[10px] font-semibold text-[#8199a6]">厂商</span><h2 className="text-sm font-bold text-[#1b6764]">{company}</h2><Counter value={uniqueCount(entries)} /></header>{entries.map((entry) => <ModelMatrix key={entry.key} entry={entry} groups={visibleGroups} currency={currency} toneByGroup={toneByGroup} />)}</section>)}</div> : <div className="rounded-lg border border-dashed border-[#cbd7e8] bg-white px-5 py-16 text-center"><Database className="mx-auto size-7 text-[#9aa8be]" /><h2 className="mt-3 text-base font-semibold">{hasFilter ? "没有匹配的模型" : "暂无公开模型"}</h2><p className="mt-2 text-xs text-[#8292ad]">{hasFilter ? "调整搜索词或筛选条件后重试。" : "当前没有公开且可用的模型，请稍后刷新。"}</p>{hasFilter ? <Button type="button" variant="outline" size="sm" className="mt-4" onClick={reset}>清除筛选</Button> : null}</div>}
+		</section>
+    </div>
+  </div></main>
 }
 
 export default function PublicModelPricingPage() {
   const { stationID } = useParams()
-  const numericStationID = Number(stationID)
-  const initialCache = useMemo(() => readBrowserCache(numericStationID), [numericStationID])
-  const [data, setData] = useState<PublicModelPricingView | null>(initialCache?.data ?? null)
-  const [cacheUpdatedAt, setCacheUpdatedAt] = useState(initialCache?.cached_at ?? 0)
-  const [loading, setLoading] = useState(!initialCache)
-  const [refreshing, setRefreshing] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [query, setQuery] = useState("")
-  const [company, setCompany] = useState("all")
-  const [billingMode, setBillingMode] = useState("all")
-  const [selectedGroup, setSelectedGroup] = useState("all")
-
-  const load = useCallback(async (silent = false) => {
-    if (!Number.isInteger(numericStationID) || numericStationID <= 0) {
-      setError("模型价格页面地址无效")
-      setLoading(false)
-      return
-    }
-    if (silent) setRefreshing(true); else setLoading(true)
-    try { const nextData = await apiFetch<PublicModelPricingView>(`/public/relay-stations/${numericStationID}/model-pricing`, { skipAuthErrorHandler: true }); const cachedAt = Date.now(); setData(nextData); setCacheUpdatedAt(cachedAt); writeBrowserCache(numericStationID, nextData, cachedAt); setError(null) } catch (requestError) { setError(requestError instanceof Error ? requestError.message : "价格读取失败") } finally { setLoading(false); setRefreshing(false) }
-  }, [numericStationID])
-
-  useEffect(() => {
-    const age = Date.now() - cacheUpdatedAt
-    if (!data || cacheUpdatedAt <= 0 || age >= browserCacheTTL) { void load(Boolean(data)); return }
-    const timer = window.setTimeout(() => void load(true), browserCacheTTL - age)
-    return () => window.clearTimeout(timer)
-  }, [cacheUpdatedAt, data, load])
-  useEffect(() => { document.title = data?.station_name ? `${data.station_name} · 模型价格` : "模型价格 · GatewayOps" }, [data?.station_name])
-
-  const orderedGroups = useMemo(() => {
-    const groups = new Set<string>()
-    for (const item of data?.items ?? []) {
-      for (const group of item.groups ?? []) {
-        const name = group.trim()
-        if (name) groups.add(name)
-      }
-    }
-    return [...groups].sort((left, right) => left.localeCompare(right, "zh-CN", { numeric: true, sensitivity: "base" }))
-  }, [data?.items])
-
-  useEffect(() => {
-    if (selectedGroup !== "all" && !orderedGroups.includes(selectedGroup)) setSelectedGroup("all")
-  }, [orderedGroups, selectedGroup])
-
-  const items = useMemo(() => {
-    const normalized = query.trim().toLowerCase()
-    return (data?.items ?? []).filter((item) => {
-      const groups = (item.groups ?? []).map((group) => group.trim()).filter(Boolean)
-      return (!normalized || [item.model, item.billing_model, item.company, item.provider, item.channel_name, ...groups].some((value) => value?.toLowerCase().includes(normalized))) && (company === "all" || item.company === company) && (billingMode === "all" || item.billing_mode === billingMode) && (selectedGroup === "all" || groups.includes(selectedGroup))
-    })
-  }, [data?.items, query, company, billingMode, selectedGroup])
-
-  const grouped = useMemo(() => {
-    const companies = new Map<string, Map<string, PublicModelPricingItem[]>>()
-    for (const item of items) { if (!companies.has(item.company)) companies.set(item.company, new Map()); const models = companies.get(item.company)!; models.set(item.model, [...(models.get(item.model) ?? []), item]) }
-    return [...companies.entries()].sort(([left], [right]) => compareCompanies(left, right))
-  }, [items])
-
-  const orderedCompanies = useMemo(() => [...(data?.summary.companies_list ?? [])].sort(compareCompanies), [data?.summary.companies_list])
-
-  return <main className="min-h-screen bg-background text-foreground"><div className="mx-auto w-full max-w-[1440px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
-    <header className="flex min-h-16 flex-wrap items-start justify-between gap-4 border-b border-border pb-5"><div className="min-w-0"><h1 className="flex items-center gap-2 text-xl font-bold sm:text-2xl"><BadgeDollarSign className="size-5 shrink-0 text-brand sm:size-6" /><span className="truncate">{data?.station_name || "模型价格"}</span></h1><p className="mt-1.5 text-sm text-muted-foreground">仅展示该中转站当前可用模型；Token 价格按每 1M tokens，按次价格按单次请求及分辨率展示</p></div><div className="ml-auto flex items-center gap-2"><span className="whitespace-nowrap text-xs font-medium text-foreground/65">最新更新：{data ? new Date(data.updated_at).toLocaleString("zh-CN", { hour12: false }) : "暂无"}</span><Button type="button" variant="outline" size="icon" className="size-11 sm:size-9" aria-label="刷新模型价格" disabled={refreshing} onClick={() => void load(true)}><RefreshCw className={cn("size-4", refreshing && "animate-spin")} /></Button></div></header>
-    {data ? <section className="grid grid-cols-3 border-b border-border" aria-label="价格汇总"><div className="py-4 sm:px-4 sm:first:pl-0"><p className="text-[11px] text-muted-foreground">当前模型</p><p className="mt-1 font-mono text-xl font-bold tabular-nums">{data.summary.models}</p></div><div className="py-4 sm:px-4"><p className="text-[11px] text-muted-foreground">所属平台</p><p className="mt-1 font-mono text-xl font-bold tabular-nums">{data.summary.companies}</p></div><div className="py-4 sm:px-4"><p className="text-[11px] text-muted-foreground">渠道定价</p><p className="mt-1 font-mono text-xl font-bold tabular-nums">{data.summary.channels}</p></div></section> : null}
-    <section className="mt-4 flex flex-wrap items-center gap-2 border-b border-border pb-3"><div className="relative min-w-[240px] flex-1"><Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" /><Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索模型、平台、Provider、渠道或分组" className="h-11 pl-9 text-base sm:h-10 sm:text-sm" /></div><Select value={company} onValueChange={setCompany}><SelectTrigger className="h-11 w-[calc(50%-4px)] border-brand/40 bg-card text-xs font-semibold hover:border-brand/70 sm:h-10 sm:w-44"><Layers3 className="mr-1.5 size-3.5 text-brand" /><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部平台</SelectItem>{orderedCompanies.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select><Select value={selectedGroup} onValueChange={setSelectedGroup}><SelectTrigger className="h-11 w-[calc(50%-4px)] border-success/35 bg-card text-xs font-semibold hover:border-success/60 sm:h-10 sm:w-44"><Filter className="mr-1.5 size-3.5 text-success" /><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部分组</SelectItem>{orderedGroups.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select><Select value={billingMode} onValueChange={setBillingMode}><SelectTrigger className="h-11 w-[calc(50%-4px)] text-xs sm:h-10 sm:w-40"><Tags className="mr-1.5 size-3.5 text-muted-foreground" /><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部计费模式</SelectItem>{(data?.summary.billing_modes ?? []).map((value) => <SelectItem key={value} value={value}>{billingModeLabels[value] || value}</SelectItem>)}</SelectContent></Select></section>
-    {error ? <p className="mt-4 border border-danger/30 bg-danger/5 px-3 py-2 text-sm font-medium text-danger">{error}</p> : null}
-    <section className="mt-5" aria-label="模型价格列表">{loading ? <div className="grid gap-3 min-[1000px]:grid-cols-2">{Array.from({ length: 8 }).map((_, index) => <div key={index} className="rounded-md border border-border p-5 shadow-sm"><Skeleton className="h-5 w-48" /><Skeleton className="mt-5 h-20 w-full" /></div>)}</div> : grouped.length === 0 ? <div className="border border-dashed border-border px-4 py-14 text-center text-sm text-muted-foreground"><Database className="mx-auto mb-2 size-5" />当前中转站暂无匹配的可用模型价格</div> : <div className="space-y-10">{grouped.map(([companyName, models]) => <section key={companyName} className="space-y-4" aria-labelledby={`company-${companyName}`}><div className="flex min-h-16 items-center gap-3 border-b-2 border-brand/60 pb-3"><span className="flex size-11 shrink-0 items-center justify-center rounded-md bg-muted shadow-sm"><CompanyLogo company={companyName} /></span><div className="min-w-0"><p className="text-xs font-semibold text-brand">平台分类</p><h2 id={`company-${companyName}`} className="truncate text-xl font-bold text-foreground">{companyName}</h2></div><span className="ml-auto shrink-0 text-sm font-semibold text-foreground/70">{models.size} 个模型</span></div><div className="grid items-start gap-4 min-[1000px]:grid-cols-2">{[...models.entries()].sort(([left], [right]) => left.localeCompare(right, "en", { numeric: true, sensitivity: "base" })).map(([model, modelItems]) => <ModelPricingCard key={model} model={model} items={modelItems} />)}</div></section>)}</div>}</section>
-  </div></main>
+  const id = Number(stationID)
+  return Number.isInteger(id) && id > 0 ? <PricingContent key={id} stationID={id} /> : <main data-public-page className="min-w-0 bg-transparent px-0 py-8 text-center text-sm text-danger">模型价格页面地址无效</main>
 }

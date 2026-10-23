@@ -163,13 +163,14 @@ type UpdateInput struct {
 }
 
 type GroupUpdateInput struct {
-	Name           *string
-	Description    *string
-	RateMultiplier *float64
-	IsExclusive    *bool
-	Status         *string
-	ModelTypes     *[]string
-	MonitorEnabled *bool
+	Name                *string
+	Description         *string
+	RateMultiplier      *float64
+	IsExclusive         *bool
+	Status              *string
+	ModelTypes          *[]string
+	MonitorEnabled      *bool
+	ModelPricingEnabled *bool
 }
 
 type GroupSortOrderUpdate struct {
@@ -777,7 +778,7 @@ func (s *Service) UpdateGroup(ctx context.Context, stationID uint, externalID in
 	if externalID <= 0 {
 		return nil, errors.New("无效的分组 ID")
 	}
-	if in.Name == nil && in.Description == nil && in.RateMultiplier == nil && in.IsExclusive == nil && in.Status == nil && in.ModelTypes == nil && in.MonitorEnabled == nil {
+	if in.Name == nil && in.Description == nil && in.RateMultiplier == nil && in.IsExclusive == nil && in.Status == nil && in.ModelTypes == nil && in.MonitorEnabled == nil && in.ModelPricingEnabled == nil {
 		return nil, errors.New("至少需要修改一个分组字段")
 	}
 	station, err := s.stations.FindByID(stationID)
@@ -815,6 +816,7 @@ func (s *Service) UpdateGroup(ctx context.Context, stationID uint, externalID in
 	if in.MonitorEnabled != nil || in.IsExclusive != nil {
 		s.invalidatePublicMonitor(stationID)
 	}
+	s.invalidatePublicModelPricing(stationID)
 	return group, nil
 }
 
@@ -937,9 +939,9 @@ func applyGroupUpdate(group *storage.RelayGroup, in GroupUpdateInput) (map[strin
 	}
 	if in.IsExclusive != nil {
 		group.IsExclusive = *in.IsExclusive
-		// 公开分组参与公开监控，专属分组不进入公开监控。
-		// 类型切换时由类型统一决定监控状态，避免两者出现矛盾。
+		// Match monitoring defaults on a visibility change; both toggles remain local.
 		group.MonitorEnabled = !*in.IsExclusive
+		group.ModelPricingEnabled = !*in.IsExclusive
 		body["is_exclusive"] = *in.IsExclusive
 	}
 	if in.Status != nil {
@@ -975,6 +977,10 @@ func applyGroupUpdate(group *storage.RelayGroup, in GroupUpdateInput) (map[strin
 	if in.MonitorEnabled != nil && in.IsExclusive == nil {
 		group.MonitorEnabled = *in.MonitorEnabled
 		// Monitoring is Hub-side state and must not be sent to Sub2API.
+	}
+	if in.ModelPricingEnabled != nil && in.IsExclusive == nil {
+		group.ModelPricingEnabled = *in.ModelPricingEnabled
+		// Model pricing visibility is Hub-side state and must not be sent to Sub2API.
 	}
 	return body, nil
 }

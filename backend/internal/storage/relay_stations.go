@@ -192,6 +192,10 @@ func (r *RelayStations) ReplaceSnapshot(
 				if old, ok := previousGroupByExternalID[groups[i].ExternalID]; ok {
 					groups[i].ModelTypesJSON = old.ModelTypesJSON
 					groups[i].MonitorEnabled = old.MonitorEnabled
+					groups[i].ModelPricingEnabled = old.ModelPricingEnabled
+				} else {
+					// Only pricing defaults follow visibility; keep the existing monitoring defaults.
+					groups[i].ModelPricingEnabled = !groups[i].IsExclusive
 				}
 			}
 			if err := tx.Create(&groups).Error; err != nil {
@@ -490,8 +494,9 @@ func (r *RelayStations) UpdateGroup(group *RelayGroup) error {
 			"name": group.Name, "rate_multiplier": group.RateMultiplier,
 			"is_exclusive": group.IsExclusive, "status": group.Status,
 			"description": group.Description, "model_types_json": group.ModelTypesJSON,
-			"monitor_enabled": group.MonitorEnabled,
-			"synced_at":       group.SyncedAt,
+			"monitor_enabled":       group.MonitorEnabled,
+			"model_pricing_enabled": group.ModelPricingEnabled,
+			"synced_at":             group.SyncedAt,
 		}).Error
 }
 
@@ -507,8 +512,9 @@ func (r *RelayStations) UpdateGroupAndSyncAccountModelType(group *RelayGroup, ol
 				"name": group.Name, "rate_multiplier": group.RateMultiplier,
 				"is_exclusive": group.IsExclusive, "status": group.Status,
 				"description": group.Description, "model_types_json": group.ModelTypesJSON,
-				"monitor_enabled": group.MonitorEnabled,
-				"synced_at":       group.SyncedAt,
+				"monitor_enabled":       group.MonitorEnabled,
+				"model_pricing_enabled": group.ModelPricingEnabled,
+				"synced_at":             group.SyncedAt,
 			}).Error; err != nil {
 			return err
 		}

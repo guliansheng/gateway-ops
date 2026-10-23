@@ -488,6 +488,7 @@ type RelayGroup struct {
 	SortOrder            int       `gorm:"not null;default:0" json:"sort_order"`
 	ModelTypesJSON       string    `gorm:"type:text" json:"-"`
 	MonitorEnabled       bool      `gorm:"not null;default:false" json:"monitor_enabled"`
+	ModelPricingEnabled  bool      `gorm:"not null;default:false" json:"model_pricing_enabled"`
 	RateMultiplier       float64   `gorm:"not null" json:"rate_multiplier"`
 	AllowImageGeneration bool      `gorm:"not null;default:false" json:"allow_image_generation"`
 	ImageRateIndependent bool      `gorm:"not null;default:false" json:"image_rate_independent"`
