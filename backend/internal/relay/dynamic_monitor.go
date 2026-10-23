@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -82,8 +83,12 @@ type DynamicMonitorRuleGroup struct {
 // DynamicMonitorErrorRuleGroup 是全局报错规则组：不选择账号，按具体 HTTP
 // 状态码统计所有账号的上游最终失败请求，达到阈值即关闭账号。
 type DynamicMonitorErrorRuleGroup struct {
+	// ID 保持关闭记录与规则的关联，不受改名、重排和同名组影响。
+	ID string `json:"id,omitempty"`
 	// Name 规则组名称，仅用于界面展示。
 	Name string `json:"name"`
+	// Enabled 缺省时保持旧配置的启用行为；显式 false 暂停该组。
+	Enabled *bool `json:"enabled,omitempty"`
 	// StatusCodes 具体 HTTP 状态码，例如 401、429、502；不使用 4xx/5xx 范围。
 	StatusCodes []int `json:"status_codes"`
 	// Threshold 统计窗口内达到该错误次数后关闭账号。
@@ -104,6 +109,8 @@ type DynamicMonitorConfig struct {
 	Groups []DynamicMonitorRuleGroup `json:"groups"`
 	// ErrorGroups 全局报错规则组：不选择账号，按具体状态码统计所有账号。
 	ErrorGroups []DynamicMonitorErrorRuleGroup `json:"error_groups,omitempty"`
+	// ProtectedAccountExternalIDs 不受本功能任何关闭规则影响，不改变手动或其他功能的开关行为。
+	ProtectedAccountExternalIDs []int64 `json:"protected_account_external_ids,omitempty"`
 	// MinAccountsPerGroup 通用规则：分组至少保留多少个可用账号，0 表示不设置。
 	// 未在 GroupMinAccounts 中单独设置的分组都使用这个公共值。
 	MinAccountsPerGroup int `json:"min_accounts_per_group"`
@@ -170,6 +177,7 @@ type DynamicMonitorClosure struct {
 	RuleCategory string `json:"rule_category,omitempty"`
 	// RuleGroupName 是命中规则组的名称，便于界面直接展示。
 	RuleGroupName string `json:"rule_group_name,omitempty"`
+	RuleGroupID   string `json:"rule_group_id,omitempty"`
 	// ErrorStatusCodes/ErrorCount/ErrorWindowMinutes 说明报错组命中的状态码、次数与统计窗口。
 	ErrorStatusCodes   []int     `json:"error_status_codes,omitempty"`
 	ErrorCount         int64     `json:"error_count,omitempty"`
@@ -289,6 +297,7 @@ func ParseDynamicMonitorState(raw string) DynamicMonitorState {
 // 同时收敛“同一账号出现在多个规则组”的情况：一个账号只归属第一个提到它的组，
 // 否则同一账号会被两套阈值同时判定，行为不可预期。
 func (c DynamicMonitorConfig) Normalize() DynamicMonitorConfig {
+	c.ProtectedAccountExternalIDs = normalizeDynamicMonitorAccountIDs(c.ProtectedAccountExternalIDs)
 	if c.MinAccountsPerGroup < 0 {
 		c.MinAccountsPerGroup = 0
 	}
@@ -315,10 +324,18 @@ func (c DynamicMonitorConfig) Normalize() DynamicMonitorConfig {
 	}
 	// 报错规则组：没有有效状态码的空壳组直接丢弃，避免界面出现无法命中的规则。
 	errorGroups := make([]DynamicMonitorErrorRuleGroup, 0, len(c.ErrorGroups))
-	for _, group := range c.ErrorGroups {
+	for index, group := range c.ErrorGroups {
 		normalized := group.Normalize()
 		if len(normalized.StatusCodes) == 0 {
 			continue
+		}
+		if normalized.ID == "" {
+			// 旧配置在首次保存前也需有稳定标识；开关不参与标识，禁用不会改换身份。
+			identity := normalized
+			identity.Enabled = nil
+			body, _ := json.Marshal(identity)
+			digest := sha256.Sum256(body)
+			normalized.ID = fmt.Sprintf("error-%x-%d", digest[:12], index)
 		}
 		errorGroups = append(errorGroups, normalized)
 	}
@@ -381,9 +398,14 @@ func (g DynamicMonitorRuleGroup) Normalize() DynamicMonitorRuleGroup {
 	if g.SingleTimeoutSeconds < 0 {
 		g.SingleTimeoutSeconds = 0
 	}
-	ids := make([]int64, 0, len(g.AccountExternalIDs))
-	seen := make(map[int64]struct{}, len(g.AccountExternalIDs))
-	for _, id := range g.AccountExternalIDs {
+	g.AccountExternalIDs = normalizeDynamicMonitorAccountIDs(g.AccountExternalIDs)
+	return g
+}
+
+func normalizeDynamicMonitorAccountIDs(source []int64) []int64 {
+	ids := make([]int64, 0, len(source))
+	seen := make(map[int64]struct{}, len(source))
+	for _, id := range source {
 		if id <= 0 {
 			continue
 		}
@@ -394,8 +416,7 @@ func (g DynamicMonitorRuleGroup) Normalize() DynamicMonitorRuleGroup {
 		ids = append(ids, id)
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	g.AccountExternalIDs = ids
-	return g
+	return ids
 }
 
 // Label 返回规则组在错误提示里用的称呼。
@@ -419,6 +440,11 @@ func (g DynamicMonitorRuleGroup) singleTimeoutMS() int64 {
 // Normalize 补齐报错组的默认值，并按升序去重状态码。
 func (g DynamicMonitorErrorRuleGroup) Normalize() DynamicMonitorErrorRuleGroup {
 	g.Name = strings.TrimSpace(g.Name)
+	g.ID = strings.TrimSpace(g.ID)
+	if g.Enabled == nil {
+		enabled := true
+		g.Enabled = &enabled
+	}
 	if g.Threshold <= 0 {
 		g.Threshold = dynamicMonitorDefaultErrorThreshold
 	}
@@ -445,6 +471,52 @@ func (g DynamicMonitorErrorRuleGroup) Normalize() DynamicMonitorErrorRuleGroup {
 	return g
 }
 
+// IsEnabled 兼容没有 enabled 字段的旧配置。
+func (g DynamicMonitorErrorRuleGroup) IsEnabled() bool {
+	return g.Enabled == nil || *g.Enabled
+}
+
+// errorRuleIndex 优先按稳定 ID 关联；旧记录沿用命中靠前报错组的优先级。
+func (c DynamicMonitorConfig) errorRuleIndex(id, name string, codes []int, window int, count int64) int {
+	for index, group := range c.ErrorGroups {
+		if id != "" {
+			if group.ID == id {
+				return index
+			}
+			continue
+		}
+		if count > 0 && count < int64(group.Threshold) {
+			continue
+		}
+		if group.Label(index) == name && (len(codes) == 0 || slices.Equal(group.StatusCodes, codes)) && (window <= 0 || group.LookbackMinutes == window) {
+			return index
+		}
+	}
+	return -1
+}
+
+func (c DynamicMonitorConfig) errorRuleEnabled(id, name string, codes []int, window int, count int64) bool {
+	index := c.errorRuleIndex(id, name, codes, window, count)
+	return index < 0 || c.ErrorGroups[index].IsEnabled()
+}
+
+// 保存新配置前按旧配置绑定历史关闭记录，避免改名或重排让停用开关失效。
+func bindDynamicMonitorErrorRuleIDs(state DynamicMonitorState, config DynamicMonitorConfig) (DynamicMonitorState, bool) {
+	state.ClosedAccounts = slices.Clone(state.ClosedAccounts)
+	changed := false
+	for index, closure := range state.ClosedAccounts {
+		if closure.RuleGroupID != "" || (closure.RuleCategory != dynamicMonitorRuleCategoryError && closure.Reason != dynamicMonitorReasonError) {
+			continue
+		}
+		groupIndex := config.errorRuleIndex("", closure.RuleGroupName, closure.ErrorStatusCodes, closure.ErrorWindowMinutes, closure.ErrorCount)
+		if groupIndex >= 0 && config.ErrorGroups[groupIndex].ID != "" {
+			state.ClosedAccounts[index].RuleGroupID = config.ErrorGroups[groupIndex].ID
+			changed = true
+		}
+	}
+	return state, changed
+}
+
 // Label 返回报错组在提示与关闭记录里用的称呼。
 func (g DynamicMonitorErrorRuleGroup) Label(index int) string {
 	if g.Name != "" {
@@ -455,6 +527,9 @@ func (g DynamicMonitorErrorRuleGroup) Label(index int) string {
 
 // Validate 校验弹窗提交的规则。
 func (c DynamicMonitorConfig) Validate() error {
+	if len(c.ProtectedAccountExternalIDs) > dynamicMonitorMaxAccounts {
+		return fmt.Errorf("保护账号不能超过 %d 个", dynamicMonitorMaxAccounts)
+	}
 	if len(c.Groups) > dynamicMonitorMaxGroups {
 		return fmt.Errorf("规则组不能超过 %d 个", dynamicMonitorMaxGroups)
 	}
@@ -509,8 +584,18 @@ func (c DynamicMonitorConfig) Validate() error {
 	if len(c.ErrorGroups) > dynamicMonitorMaxErrorGroups {
 		return fmt.Errorf("报错规则组不能超过 %d 个", dynamicMonitorMaxErrorGroups)
 	}
+	errorGroupIDs := make(map[string]struct{}, len(c.ErrorGroups))
 	for index, group := range c.ErrorGroups {
 		label := group.Label(index)
+		if len(group.ID) > 128 {
+			return fmt.Errorf("%s 规则标识不能超过 128 个字符", label)
+		}
+		if group.ID != "" {
+			if _, exists := errorGroupIDs[group.ID]; exists {
+				return fmt.Errorf("%s 规则标识重复", label)
+			}
+			errorGroupIDs[group.ID] = struct{}{}
+		}
 		if len(group.StatusCodes) == 0 {
 			return fmt.Errorf("%s 请至少填写一个 HTTP 状态码", label)
 		}
@@ -847,6 +932,7 @@ func (s *Service) AssignNewAccountsToRuleGroups(stationID uint, accountExternalI
 // dynamicMonitorErrorHit 是一个账号命中的报错规则组信息，用于写入关闭记录。
 type dynamicMonitorErrorHit struct {
 	RuleGroupName   string
+	RuleGroupID     string
 	StatusCodes     []int
 	Count           int64
 	WindowMinutes   int
@@ -954,7 +1040,7 @@ func planDynamicMonitorWithErrors(
 	}
 
 	for _, account := range accounts {
-		if !relayAccountSchedulable(account) {
+		if !relayAccountSchedulable(account) || slices.Contains(config.ProtectedAccountExternalIDs, account.ExternalID) {
 			continue
 		}
 		if _, alreadyClosed := closed[account.ExternalID]; alreadyClosed {
@@ -974,7 +1060,7 @@ func planDynamicMonitorWithErrors(
 				continue
 			}
 		}
-		if hit, ok := errorHits[account.ExternalID]; ok && hit.Count > 0 {
+		if hit, ok := errorHits[account.ExternalID]; ok && hit.Count > 0 && config.errorRuleEnabled(hit.RuleGroupID, hit.RuleGroupName, hit.StatusCodes, hit.WindowMinutes, hit.Count) {
 			if markClose(account.ExternalID, dynamicMonitorReasonError) {
 				plan.CloseErrorHits[account.ExternalID] = hit
 			}
@@ -1063,6 +1149,22 @@ func (s *Service) SaveDynamicMonitorConfig(stationID uint, config DynamicMonitor
 	body, err := json.Marshal(config)
 	if err != nil {
 		return DynamicMonitorConfig{}, fmt.Errorf("编码动态监测规则失败: %w", err)
+	}
+	s.dynamicMonitorMu.Lock()
+	defer s.dynamicMonitorMu.Unlock()
+	previous, err := s.stations.FindByID(stationID)
+	if err != nil {
+		return DynamicMonitorConfig{}, err
+	}
+	state, changed := bindDynamicMonitorErrorRuleIDs(ParseDynamicMonitorState(previous.DynamicMonitorState), ParseDynamicMonitorConfig(previous.DynamicMonitorConfig))
+	if changed {
+		stateBody, err := json.Marshal(state)
+		if err != nil {
+			return DynamicMonitorConfig{}, fmt.Errorf("编码动态监测状态失败: %w", err)
+		}
+		if err := s.stations.SetDynamicMonitorState(stationID, string(stateBody)); err != nil {
+			return DynamicMonitorConfig{}, err
+		}
 	}
 	if err := s.stations.SetDynamicMonitorConfig(stationID, string(body)); err != nil {
 		return DynamicMonitorConfig{}, err
@@ -1166,6 +1268,7 @@ func (s *Service) applyDynamicMonitor(ctx context.Context, station *storage.Rela
 			hit := plan.CloseErrorHits[externalID]
 			closure.RuleCategory = dynamicMonitorRuleCategoryError
 			closure.RuleGroupName = hit.RuleGroupName
+			closure.RuleGroupID = hit.RuleGroupID
 			closure.ErrorStatusCodes = hit.StatusCodes
 			closure.ErrorCount = hit.Count
 			closure.ErrorWindowMinutes = hit.WindowMinutes
@@ -1271,6 +1374,9 @@ func (s *Service) ReopenTimedDynamicAccounts(ctx context.Context) error {
 // dynamicMonitorClosureDeadline 返回关闭记录的实际自动开启时间。
 // 旧版记录没有 AutoOpenAt，回落到整站通用配置，保证升级后仍能按时开启。
 func dynamicMonitorClosureDeadline(closure DynamicMonitorClosure, config DynamicMonitorConfig) *time.Time {
+	if (closure.RuleCategory == dynamicMonitorRuleCategoryError || closure.Reason == dynamicMonitorReasonError) && !config.errorRuleEnabled(closure.RuleGroupID, closure.RuleGroupName, closure.ErrorStatusCodes, closure.ErrorWindowMinutes, closure.ErrorCount) {
+		return nil
+	}
 	if closure.AutoOpenAt != nil {
 		return closure.AutoOpenAt
 	}
@@ -1410,6 +1516,9 @@ func dynamicMonitorErrorEventFrom(item remoteRequestError, statusSet map[int]str
 // fetchDynamicMonitorErrorEvents 分页读取一个报错组窗口内的错误明细。
 // 第二个返回值为 false 表示统计不完整，调用方据此跳过自动关闭。
 func (s *Service) fetchDynamicMonitorErrorEvents(ctx context.Context, baseURL, apiKey string, group DynamicMonitorErrorRuleGroup, since, until time.Time) ([]dynamicMonitorErrorEvent, bool) {
+	if !group.IsEnabled() {
+		return nil, false
+	}
 	statusSet := make(map[int]struct{}, len(group.StatusCodes))
 	for _, code := range group.StatusCodes {
 		statusSet[code] = struct{}{}
@@ -1444,12 +1553,12 @@ func (s *Service) fetchDynamicMonitorErrorEvents(ctx context.Context, baseURL, a
 
 // dynamicMonitorErrorHits 计算本轮达到阈值的账号，命中靠前的报错组优先。
 func (s *Service) dynamicMonitorErrorHits(ctx context.Context, station *storage.RelayStation, config DynamicMonitorConfig, state DynamicMonitorState, accounts []storage.RelayAccount) map[int64]dynamicMonitorErrorHit {
-	if len(config.ErrorGroups) == 0 {
+	if !slices.ContainsFunc(config.ErrorGroups, func(group DynamicMonitorErrorRuleGroup) bool { return group.IsEnabled() && len(group.StatusCodes) > 0 }) {
 		return nil
 	}
 	schedulable := make(map[int64]struct{}, len(accounts))
 	for _, account := range accounts {
-		if relayAccountSchedulable(account) {
+		if relayAccountSchedulable(account) && !slices.Contains(config.ProtectedAccountExternalIDs, account.ExternalID) {
 			schedulable[account.ExternalID] = struct{}{}
 		}
 	}
@@ -1463,7 +1572,7 @@ func (s *Service) dynamicMonitorErrorHits(ctx context.Context, station *storage.
 	now := time.Now().UTC()
 	hits := make(map[int64]dynamicMonitorErrorHit)
 	for index, group := range config.ErrorGroups {
-		if len(group.StatusCodes) == 0 {
+		if !group.IsEnabled() || len(group.StatusCodes) == 0 {
 			continue
 		}
 		since := now.Add(-time.Duration(group.LookbackMinutes) * time.Minute)
@@ -1481,6 +1590,7 @@ func (s *Service) dynamicMonitorErrorHits(ctx context.Context, station *storage.
 			}
 			hits[externalID] = dynamicMonitorErrorHit{
 				RuleGroupName:   group.Label(index),
+				RuleGroupID:     group.ID,
 				StatusCodes:     append([]int(nil), group.StatusCodes...),
 				Count:           count,
 				WindowMinutes:   group.LookbackMinutes,

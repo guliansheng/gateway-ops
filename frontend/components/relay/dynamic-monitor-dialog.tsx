@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react"
-import { Activity, AlertTriangle, ChevronDown, HelpCircle, Layers3, Power, Plus, RefreshCw, Search, SlidersHorizontal, Trash2, Zap } from "lucide-react"
+import { Activity, AlertTriangle, ChevronDown, HelpCircle, Layers3, Power, Plus, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Trash2, Zap } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -16,6 +16,8 @@ import { cn } from "@/lib/utils"
 
 /** 与后端 dynamicMonitorMaxGroups 对齐。 */
 const MAX_RULE_GROUPS = 20
+const MAX_PROTECTED_ACCOUNTS = 1000
+const EMPTY_CLAIMED_ACCOUNTS = new Set<number>()
 
 /**
  * 弹窗里的一级模块：统一“彩色图标 + 标题 + 右侧操作”的标题栏与卡片外观，
@@ -115,7 +117,9 @@ const ERROR_REFERENCE: { code: string; cause: string; advice: string }[] = [
 /** 报错组编辑态：状态码用逗号分隔的字符串承载，便于清空后重填。 */
 interface ErrorGroupDraft {
   key: string
+  id?: string
   name: string
+  enabled: boolean
   codes: string
   threshold: string
   lookback: string
@@ -129,7 +133,9 @@ function makeErrorDraft(index: number, overrides: Partial<ErrorGroupDraft> = {})
   errorGroupSeq += 1
   return {
     key: `error-${errorGroupSeq}`,
+    id: overrides.id ?? (globalThis.crypto?.randomUUID?.() ?? `error-${Date.now()}-${errorGroupSeq}`),
     name: overrides.name ?? `报错组 ${index}`,
+    enabled: overrides.enabled ?? true,
     codes: overrides.codes ?? "502,503",
     threshold: overrides.threshold ?? "3",
     lookback: overrides.lookback ?? "10",
@@ -142,10 +148,12 @@ function toErrorDrafts(config: RelayDynamicMonitorConfig): ErrorGroupDraft[] {
   const source = config.error_groups ?? []
   return source.map((group, index) => makeErrorDraft(index + 1, {
     name: group.name,
+    id: group.id,
+    enabled: group.enabled ?? true,
     codes: (group.status_codes ?? []).join(","),
     threshold: String(group.threshold ?? 0),
     lookback: String(group.lookback_minutes ?? 0),
-    autoOpenEnabled: (group.auto_open_minutes ?? 0) > 0,
+    autoOpenEnabled: group.allow_auto_open && (group.auto_open_minutes ?? 0) > 0,
     autoOpen: (group.auto_open_minutes ?? 0) > 0 ? String(group.auto_open_minutes) : "30",
   }))
 }
@@ -222,9 +230,21 @@ function toGroupExcludedDrafts(config: RelayDynamicMonitorConfig): Record<string
   return result
 }
 
+function errorClosurePaused(closure: RelayDynamicMonitorState["closed_accounts"][number], config: RelayDynamicMonitorConfig): boolean {
+  if (closure.rule_category !== "error" && closure.reason !== "error_rule") return false
+  const group = (config.error_groups ?? []).find((group, index) => {
+    if (closure.rule_group_id) return group.id === closure.rule_group_id
+    if (closure.error_count && closure.error_count < group.threshold) return false
+    if ((group.name || `报错组 ${index + 1}`) !== closure.rule_group_name) return false
+    if (closure.error_status_codes?.length && (group.status_codes.length !== closure.error_status_codes.length || group.status_codes.some((code, index) => code !== closure.error_status_codes?.[index]))) return false
+    return !closure.error_window_minutes || group.lookback_minutes === closure.error_window_minutes
+  })
+  return group?.enabled === false
+}
+
 /** 单个规则组：自己的阈值、超标次数与账号勾选。 */
 function RuleGroupCard({
-  draft, index, total, accounts, groups, closedByExternalID, claimed, busy, canRemove, onChange, onToggleAccount, onRemove,
+  draft, index, total, accounts, groups, closedByExternalID, claimed, protectedIDs, busy, canRemove, onChange, onToggleAccount, onRemove,
 }: {
   draft: RuleGroupDraft
   index: number
@@ -233,47 +253,14 @@ function RuleGroupCard({
   groups: RelayGroupView[]
   closedByExternalID: Map<number, { account_name: string }>
   claimed: Set<number>
+  protectedIDs: Set<number>
   busy: boolean
   canRemove: boolean
   onChange: (patch: Partial<RuleGroupDraft>) => void
   onToggleAccount: (externalID: number, checked: boolean) => void
   onRemove: () => void
 }) {
-  const [query, setQuery] = useState("")
-  const [groupFilterIDs, setGroupFilterIDs] = useState<number[]>([])
-  const [onlySelected, setOnlySelected] = useState(false)
-  const selectedAccountIDs = useMemo(() => new Set(draft.selectedIDs), [draft.selectedIDs])
-  const selectedGroups = useMemo(() => groups.filter((group) => groupFilterIDs.includes(group.external_id)), [groupFilterIDs, groups])
-
-  const visibleAccounts = useMemo(() => {
-    const needle = query.trim().toLocaleLowerCase()
-    return accounts.filter((account) => {
-      if (onlySelected && !selectedAccountIDs.has(account.external_id)) return false
-      if (groupFilterIDs.length > 0 && !account.current_groups.some((group) => groupFilterIDs.includes(group.external_id))) return false
-      if (needle !== "" && !account.name.toLocaleLowerCase().includes(needle)) return false
-      return true
-    })
-  }, [accounts, groupFilterIDs, query, onlySelected, selectedAccountIDs])
-
-  function toggleAllVisible() {
-    const visibleIDs = visibleAccounts.filter((account) => !claimed.has(account.external_id)).map((account) => account.external_id)
-    if (visibleIDs.length === 0) return
-    const allSelected = visibleIDs.every((id) => draft.selectedIDs.includes(id))
-    onChange({
-      selectedIDs: allSelected
-        ? draft.selectedIDs.filter((id) => !visibleIDs.includes(id))
-        : [...new Set([...draft.selectedIDs, ...visibleIDs])],
-    })
-  }
-
-  const closedCount = useMemo(
-    () => draft.selectedIDs.filter((externalID) => closedByExternalID.has(externalID)).length,
-    [draft.selectedIDs, closedByExternalID],
-  )
-
-  const allVisibleSelected = visibleAccounts.some((account) => !claimed.has(account.external_id))
-    && visibleAccounts.filter((account) => !claimed.has(account.external_id)).every((account) => draft.selectedIDs.includes(account.external_id))
-
+  const closedCount = draft.selectedIDs.filter((externalID) => closedByExternalID.has(externalID)).length
   return (
     <section className="overflow-hidden rounded-lg border border-border bg-card shadow-none">
       {/* 左侧色条 + 序号徽标，让每个规则组的边界一眼可见。 */}
@@ -316,15 +303,73 @@ function RuleGroupCard({
 
       <p className="mt-1.5 text-[11px] text-muted-foreground">{describeRule(draft)}</p>
 
+      <DynamicMonitorAccountPicker
+        id={draft.key} label={`规则组 ${index + 1}`} selectedIDs={draft.selectedIDs}
+        accounts={accounts} groups={groups} closedByExternalID={closedByExternalID}
+        claimed={claimed} protectedIDs={protectedIDs} busy={busy}
+        onChange={(selectedIDs) => onChange({ selectedIDs })} onToggleAccount={onToggleAccount}
+      />
+      </div>
+      {total > 1 ? <p className="px-3 pb-3 text-[11px] text-muted-foreground">共 {total} 个规则组；同一账号只能归属一个规则组。</p> : null}
+      {closedCount > 0 ? <p className="px-3 pb-3 text-[11px] text-muted-foreground">本组当前有 {closedCount} 个账号被规则关闭。</p> : null}
+    </section>
+  )
+}
+
+/** 监测规则与保护名单共用账号筛选、多选和全选行为。 */
+function DynamicMonitorAccountPicker({
+  id, label, selectedIDs, accounts, groups, closedByExternalID, claimed, protectedIDs, busy, onChange, onToggleAccount,
+}: {
+  id: string
+  label: string
+  selectedIDs: number[]
+  accounts: RelayAccountView[]
+  groups: RelayGroupView[]
+  closedByExternalID: Map<number, { account_name: string }>
+  claimed: Set<number>
+  protectedIDs: Set<number>
+  busy: boolean
+  onChange: (selectedIDs: number[]) => void
+  onToggleAccount: (externalID: number, checked: boolean) => void
+}) {
+  const [query, setQuery] = useState("")
+  const [groupFilterIDs, setGroupFilterIDs] = useState<number[]>([])
+  const [onlySelected, setOnlySelected] = useState(false)
+  const selectedAccountIDs = useMemo(() => new Set(selectedIDs), [selectedIDs])
+  const selectedGroups = useMemo(() => groups.filter((group) => groupFilterIDs.includes(group.external_id)), [groupFilterIDs, groups])
+  const visibleAccounts = useMemo(() => {
+    const needle = query.trim().toLocaleLowerCase()
+    return accounts.filter((account) => {
+      if (onlySelected && !selectedAccountIDs.has(account.external_id)) return false
+      if (groupFilterIDs.length > 0 && !account.current_groups.some((group) => groupFilterIDs.includes(group.external_id))) return false
+      if (needle !== "" && !account.name.toLocaleLowerCase().includes(needle)) return false
+      return true
+    })
+  }, [accounts, groupFilterIDs, query, onlySelected, selectedAccountIDs])
+
+  function toggleAllVisible() {
+    const visibleIDs = visibleAccounts.filter((account) => !claimed.has(account.external_id)).map((account) => account.external_id)
+    if (visibleIDs.length === 0) return
+    const allSelected = visibleIDs.every((id) => selectedIDs.includes(id))
+    onChange(allSelected
+      ? selectedIDs.filter((id) => !visibleIDs.includes(id))
+      : [...new Set([...selectedIDs, ...visibleIDs])])
+  }
+
+  const allVisibleSelected = visibleAccounts.some((account) => !claimed.has(account.external_id))
+    && visibleAccounts.filter((account) => !claimed.has(account.external_id)).every((account) => selectedIDs.includes(account.external_id))
+
+  return (
+    <>
       <div className="mt-2.5 flex flex-wrap items-center gap-2">
         <div className="relative">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
-          <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="筛选账号名称" aria-label={`规则组 ${index + 1} 按账号名称筛选`} className="h-8 w-40 pl-8 text-xs" />
+          <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="筛选账号名称" aria-label={`${label} 按账号名称筛选`} className="h-8 w-40 pl-8 text-xs" />
         </div>
-        {/* modal 让浮层自建滚动锁（与 Select 一致）；否则外层 Dialog 的 RemoveScroll 会吃掉列表里的滚轮事件。 */}
+        {/* modal 与外层 Dialog 共用滚动锁，保证筛选浮层可滚动。 */}
         <Popover modal>
           <PopoverTrigger asChild>
-            <Button type="button" variant="outline" size="sm" className="h-8 w-44 justify-between gap-2 px-2.5 text-xs font-normal" aria-label={`规则组 ${index + 1} 按销售分组筛选`}>
+            <Button type="button" variant="outline" size="sm" className="h-8 w-44 justify-between gap-2 px-2.5 text-xs font-normal" aria-label={`${label} 按销售分组筛选`}>
               <span className="truncate">{selectedGroups.length === 0 ? "全部分组" : selectedGroups.length === 1 ? selectedGroups[0].name : `已选 ${selectedGroups.length} 个分组`}</span>
               <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
             </Button>
@@ -352,19 +397,17 @@ function RuleGroupCard({
           </PopoverContent>
         </Popover>
         <div className="flex h-8 items-center gap-1.5">
-          <Switch id={`${draft.key}-only-selected`} checked={onlySelected} onCheckedChange={setOnlySelected} aria-label={`规则组 ${index + 1} 仅显示本组已选账号`} />
-          <Label htmlFor={`${draft.key}-only-selected`} className="cursor-pointer whitespace-nowrap text-xs">仅显示本组已选</Label>
+          <Switch id={`${id}-only-selected`} checked={onlySelected} onCheckedChange={setOnlySelected} aria-label={`${label} 仅显示已选账号`} />
+          <Label htmlFor={`${id}-only-selected`} className="cursor-pointer whitespace-nowrap text-xs">仅显示已选</Label>
         </div>
         <Button type="button" variant="outline" size="sm" className="h-8 gap-1 text-xs" disabled={busy || visibleAccounts.length === 0} onClick={toggleAllVisible}>
           {allVisibleSelected ? "取消全选" : "全选当前列表"}
         </Button>
-        <span className="text-[11px] text-muted-foreground">已选 {draft.selectedIDs.length} 个</span>
+        <span className="text-[11px] text-muted-foreground">已选 {selectedIDs.length} 个</span>
       </div>
-
       <div className="mt-2 max-h-52 space-y-1.5 overflow-y-auto rounded-md border border-border bg-background p-2 pr-1">
-        {visibleAccounts.length === 0 ? <p className="py-6 text-center text-xs text-muted-foreground">{onlySelected ? "当前筛选没有本组已选账号" : "当前筛选没有账号"}</p> : visibleAccounts.map((account) => {
-          const checked = draft.selectedIDs.includes(account.external_id)
-          // 已被其它规则组占用的账号不可再勾，保证一个账号只有一套判定规则。
+        {visibleAccounts.length === 0 ? <p className="py-6 text-center text-xs text-muted-foreground">{onlySelected ? "当前筛选没有已选账号" : "当前筛选没有账号"}</p> : visibleAccounts.map((account) => {
+          const checked = selectedIDs.includes(account.external_id)
           const taken = !checked && claimed.has(account.external_id)
           const closed = closedByExternalID.has(account.external_id)
           return (
@@ -375,6 +418,7 @@ function RuleGroupCard({
                   <span className="flex flex-wrap items-center gap-1.5">
                     <span className="truncate text-xs font-medium">{account.name}</span>
                     {taken ? <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">已在其它规则组</span> : null}
+                    {protectedIDs.has(account.external_id) ? <span className="rounded bg-success/10 px-1.5 py-0.5 text-[10px] font-medium text-success">保护账号</span> : null}
                     {closed ? <span className="rounded bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning">已被规则关闭</span> : null}
                     {!account.schedulable && !closed ? <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">调度已关闭</span> : null}
                   </span>
@@ -385,10 +429,7 @@ function RuleGroupCard({
           )
         })}
       </div>
-      </div>
-      {total > 1 ? <p className="px-3 pb-3 text-[11px] text-muted-foreground">共 {total} 个规则组；同一账号只能归属一个规则组。</p> : null}
-      {closedCount > 0 ? <p className="px-3 pb-3 text-[11px] text-muted-foreground">本组当前有 {closedCount} 个账号被规则关闭。</p> : null}
-    </section>
+    </>
   )
 }
 
@@ -396,6 +437,8 @@ function RuleGroupCard({
 export function DynamicMonitorDialog({ open, busy, config, state, accounts, groups, onOpenChange, onSave }: DynamicMonitorDialogProps) {
   const [enabled, setEnabled] = useState(config.enabled)
   const [ruleGroups, setRuleGroups] = useState<RuleGroupDraft[]>(() => toDrafts(config))
+  const [protectedAccountIDs, setProtectedAccountIDs] = useState<number[]>(() => [...(config.protected_account_external_ids ?? [])])
+  const protectedIDs = useMemo(() => new Set(protectedAccountIDs), [protectedAccountIDs])
   const [minAccounts, setMinAccounts] = useState(String(config.min_accounts_per_group))
   // 按销售分组单独设置的最少保留账号数：key 为分组 external_id 字符串。
   // 只保留用户明确启用自定义的分组，其余分组保存时不下发，运行时沿用公共值。
@@ -423,6 +466,7 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
       const next = latestConfig.current
       setEnabled(next.enabled)
       setRuleGroups(toDrafts(next))
+      setProtectedAccountIDs([...(next.protected_account_external_ids ?? [])])
       setMinAccounts(String(next.min_accounts_per_group))
       setGroupMinAccounts(toGroupMinDrafts(next))
       setGroupRuleGroups(toGroupRuleDrafts(next))
@@ -514,6 +558,8 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
     const autoOpenValue = Number(autoOpenMinutes)
     if (!Number.isInteger(minAccountsValue) || minAccountsValue < 0 || minAccountsValue > 1000) return setError("分组最少保留账号数必须是 0 到 1000 的整数")
     if (!Number.isInteger(autoOpenValue) || autoOpenValue < 0 || autoOpenValue > 10080) return setError("自动开启时间必须是 0 到 10080 分钟的整数")
+    const protectedIDsValue = [...new Set(protectedAccountIDs.filter((id) => Number.isSafeInteger(id) && id > 0))].sort((a, b) => a - b)
+    if (protectedIDsValue.length > MAX_PROTECTED_ACCOUNTS) return setError(`保护账号不能超过 ${MAX_PROTECTED_ACCOUNTS} 个`)
 
     // 只保留仍存在的销售分组，且用户明确启用自定义的分组。
     const overrides: Record<string, number> = {}
@@ -568,6 +614,8 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
       if (draft.autoOpenEnabled && (!Number.isInteger(groupAutoOpenValue) || groupAutoOpenValue < 1 || groupAutoOpenValue > 10080)) return setError(`${label}：关闭后自动开启时间必须是 1 到 10080 分钟的整数`)
       payloadErrorGroups.push({
         name: draft.name.trim(),
+        id: draft.id,
+        enabled: draft.enabled,
         status_codes: codes,
         threshold: thresholdValue,
         lookback_minutes: lookbackValue,
@@ -591,6 +639,7 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
         account_external_ids: draft.selectedIDs,
       })),
       error_groups: payloadErrorGroups.length > 0 ? payloadErrorGroups : undefined,
+      protected_account_external_ids: protectedIDsValue,
       min_accounts_per_group: minAccountsValue,
       group_min_accounts: Object.keys(overrides).length > 0 ? overrides : undefined,
       group_rule_groups: Object.keys(ruleAssignments).length > 0 ? ruleAssignments : undefined,
@@ -606,7 +655,7 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
         <DialogHeader className="shrink-0 border-b border-border px-4 py-4 sm:px-6">
           <DialogTitle>账号动态监测</DialogTitle>
           <DialogDescription>
-            规则只保存在当前中转站的这个功能里，不会写入分组配置，也不影响自动调组策略：监测规则组按首字延迟关闭勾选的账号，报错规则组按具体 HTTP 状态码统计所有账号；两者都支持各自的超时开启，分组最少保留账号数始终生效。
+            规则仅属于当前中转站，不影响自动调组策略；保护账号免于本功能关闭，监测规则按首字延迟、已启用的报错规则按 HTTP 状态码判断，分组最少保留账号数始终生效。
           </DialogDescription>
         </DialogHeader>
 
@@ -617,6 +666,23 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
             description="关闭判断在每次快照同步时执行，超时开启由后台每分钟任务处理。"
             action={<Switch checked={enabled} onCheckedChange={setEnabled} disabled={busy} aria-label="启用账号动态监测" />}
           />
+
+          <ModuleSection
+            icon={ShieldCheck}
+            title="保护账号 / 免关闭账号"
+            description="不受连续首字、单次首字或报错规则关闭，包括分组自动关联加入的账号；不影响手动关闭及其他功能。"
+            action={<span className="text-[11px] text-muted-foreground">已选 {protectedAccountIDs.length} / {MAX_PROTECTED_ACCOUNTS} 个</span>}
+          >
+            <DynamicMonitorAccountPicker
+              id="dm-protected" label="保护账号" selectedIDs={protectedAccountIDs}
+              accounts={accounts} groups={groups} closedByExternalID={closedByExternalID}
+              claimed={EMPTY_CLAIMED_ACCOUNTS} protectedIDs={protectedIDs} busy={busy}
+              onChange={setProtectedAccountIDs}
+              onToggleAccount={(externalID, checked) => setProtectedAccountIDs((current) => checked
+                ? [...new Set([...current, externalID])]
+                : current.filter((id) => id !== externalID))}
+            />
+          </ModuleSection>
 
           <ModuleSection
             icon={Layers3}
@@ -639,6 +705,7 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
                   groups={groups}
                   closedByExternalID={closedByExternalID}
                   claimed={claimedByGroup.get(draft.key) ?? new Set()}
+                  protectedIDs={protectedIDs}
                   busy={busy}
                   canRemove={ruleGroups.length > 1}
                   onChange={(patch) => patchDraft(draft.key, patch)}
@@ -666,7 +733,7 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
           <ModuleSection
             icon={AlertTriangle}
             title="报错规则组"
-            description="不选择账号，按具体 HTTP 状态码统计所有账号：命中任意一组即关闭账号，关闭后按该组自己的时间自动开启。"
+            description="按具体 HTTP 状态码统计未保护账号；仅启用的组参与关闭和该组的超时开启，禁用不清除已有关闭记录。"
             action={<>
               {/* modal 让浮层自建滚动锁（与分组筛选、Select 一致）；否则外层 Dialog 的 RemoveScroll 会吃掉列表里的滚轮事件。 */}
               <Popover modal>
@@ -697,19 +764,21 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
             </>}
           >
             {errorGroups.length === 0 ? (
-              <p className="rounded-md border border-dashed border-border px-3 py-4 text-center text-[11px] text-muted-foreground">暂无报错规则组；添加后对所有账号生效</p>
+              <p className="rounded-md border border-dashed border-border px-3 py-4 text-center text-[11px] text-muted-foreground">暂无报错规则组</p>
             ) : errorGroups.map((draft, index) => (
               <div key={draft.key} className="space-y-2 rounded-md border border-border bg-muted/20 p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex min-w-0 flex-1 items-center gap-2">
+                  <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
                     <span className="shrink-0 rounded bg-danger/10 px-1.5 py-0.5 text-[11px] font-semibold text-danger">报错组 {index + 1}</span>
-                    <Input value={draft.name} onChange={(event) => patchErrorDraft(draft.key, { name: event.target.value })} disabled={busy} placeholder="报错组名称" aria-label={`报错组 ${index + 1} 名称`} className="h-8 w-44 text-xs" />
+                    <Input value={draft.name} onChange={(event) => patchErrorDraft(draft.key, { name: event.target.value })} disabled={busy} placeholder="报错组名称" aria-label={`报错组 ${index + 1} 名称`} className="h-8 w-44 min-w-0 max-w-full text-xs" />
+                    <Label htmlFor={`${draft.key}-enabled`} className="shrink-0 cursor-pointer text-[11px] text-muted-foreground">{draft.enabled ? "已启用" : "已禁用"}</Label>
+                    <Switch id={`${draft.key}-enabled`} checked={draft.enabled} onCheckedChange={(checked) => patchErrorDraft(draft.key, { enabled: checked })} disabled={busy} aria-label={`启用报错组 ${index + 1}`} />
                   </div>
                   <Button type="button" variant="ghost" size="sm" className="h-8 shrink-0 gap-1 text-xs text-danger hover:text-danger" disabled={busy} onClick={() => removeErrorGroup(draft.key)} aria-label={`删除报错组 ${index + 1}`}>
                     <Trash2 className="size-3.5" />删除
                   </Button>
                 </div>
-                <div className="grid gap-2 sm:grid-cols-3">
+                <fieldset disabled={busy || !draft.enabled} className={cn("grid min-w-0 gap-2 sm:grid-cols-3", !draft.enabled && "opacity-60")}>
                   <div className="rounded-md border border-border bg-background px-2.5 py-2">
                     <span className="text-[11px] text-muted-foreground">状态码</span>
                     <Input value={draft.codes} onChange={(event) => patchErrorDraft(draft.key, { codes: event.target.value })} disabled={busy} placeholder="502,503" aria-label={`报错组 ${index + 1} 状态码`} className="mt-1 h-8 text-xs tabular-nums" />
@@ -728,8 +797,8 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
                       <span className="text-[11px] text-muted-foreground">分钟</span>
                     </div>
                   </div>
-                </div>
-                <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-background px-2.5 py-2">
+                </fieldset>
+                <fieldset disabled={busy || !draft.enabled} className={cn("flex min-w-0 flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-background px-2.5 py-2", !draft.enabled && "opacity-60")}>
                   <div className="flex items-center gap-1.5">
                     <Switch checked={draft.autoOpenEnabled} onCheckedChange={(checked) => patchErrorDraft(draft.key, { autoOpenEnabled: checked })} disabled={busy} aria-label={`报错组 ${index + 1} 启用动态开启`} />
                     <span className="text-xs">关闭后动态开启</span>
@@ -739,7 +808,7 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
                     <Input inputMode="numeric" value={draft.autoOpen} onChange={(event) => patchErrorDraft(draft.key, { autoOpen: event.target.value })} disabled={busy || !draft.autoOpenEnabled} aria-label={`报错组 ${index + 1} 自动开启时间（分钟）`} className="h-8 w-20 text-xs tabular-nums" />
                     <span className="text-[11px] text-muted-foreground">分钟后开启</span>
                   </div>
-                </div>
+                </fieldset>
               </div>
             ))}
           </ModuleSection>
@@ -861,7 +930,7 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
             icon={Activity}
             tone="warning"
             title="当前被规则关闭的账号"
-            description="这些账号由动态监测自动关闭，将按上面的规则自动开启。"
+            description="历史关闭记录保留；禁用报错组会暂停该组的超时开启，分组保底不受影响。"
             action={<span className="rounded bg-warning/10 px-2 py-0.5 text-[11px] font-medium tabular-nums text-warning">{closedAccounts.length} 个</span>}
           >
             {closedAccounts.length === 0 ? (
@@ -888,7 +957,7 @@ export function DynamicMonitorDialog({ open, busy, config, state, accounts, grou
                     </span>
                     <span className="shrink-0 text-right text-[11px] text-muted-foreground">
                       <span className="block">关闭于 {relativeTime(closure.closed_at)}</span>
-                      <span className="block">{closure.auto_open_at ? "到点自动开启" : "仅分组保底开启"}</span>
+                      <span className="block">{errorClosurePaused(closure, config) ? "报错组已禁用，超时开启暂停" : closure.auto_open_at ? "到点自动开启" : "仅分组保底开启"}</span>
                     </span>
                   </div>
                 ))}
