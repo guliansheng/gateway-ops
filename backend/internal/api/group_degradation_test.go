@@ -331,9 +331,9 @@ func TestDegradationPromptsGetPutResponseAndStationErrors(t *testing.T) {
 			steps := []degradationAPISQLStep{station}
 			if !tc.missing {
 				if tc.method == http.MethodGet {
-					lookup := degradationAPISQLStep{contains: `FROM "degradation_prompt_settings"`, columns: []string{"candy_prompt", "candy_expected_answer", "pelican_prompt"}}
+					lookup := degradationAPISQLStep{contains: `FROM "degradation_prompt_settings"`, columns: []string{"candy_prompt", "candy_expected_answer", "pelican_prompt", "pelican_reference"}}
 					if tc.stored {
-						lookup.rows = [][]driver.Value{{"stored question", "stored reference", "stored drawing"}}
+						lookup.rows = [][]driver.Value{{"stored question", "stored reference", "stored drawing", "stored checklist"}}
 					}
 					if tc.dbError {
 						lookup.err = errors.New("database password private secret")
@@ -341,7 +341,7 @@ func TestDegradationPromptsGetPutResponseAndStationErrors(t *testing.T) {
 					steps = append(steps, lookup)
 				} else {
 					upsert := degradationAPISQLStep{contains: `ON CONFLICT ("station_id") DO UPDATE SET`, columns: []string{"id"}, rows: [][]driver.Value{{int64(7)}}, check: func(_ string, args []driver.NamedValue) {
-						if args[0].Value != int64(1) || args[1].Value != "custom question" || args[2].Value != "42" || args[3].Value != "custom drawing" {
+						if args[0].Value != int64(1) || args[1].Value != "custom question" || args[2].Value != "42" || args[3].Value != "custom drawing" || args[4].Value != storage.DefaultPelicanDegradationReference {
 							t.Errorf("PUT not station-owned/trimmed: %+v", args)
 						}
 					}}
@@ -367,16 +367,16 @@ func TestDegradationPromptsGetPutResponseAndStationErrors(t *testing.T) {
 				return
 			}
 			var envelope map[string]map[string]string
-			if err := json.Unmarshal(w.Body.Bytes(), &envelope); err != nil || len(envelope) != 1 || len(envelope["data"]) != 3 {
+			if err := json.Unmarshal(w.Body.Bytes(), &envelope); err != nil || len(envelope) != 1 || len(envelope["data"]) != 4 {
 				t.Fatalf("prompt response envelope=%s err=%v", w.Body.String(), err)
 			}
 			want := storage.DefaultDegradationPromptSettings()
 			if tc.stored {
-				want = storage.DegradationPromptSettings{CandyPrompt: "stored question", CandyExpectedAnswer: "stored reference", PelicanPrompt: "stored drawing"}
+				want = storage.DegradationPromptSettings{CandyPrompt: "stored question", CandyExpectedAnswer: "stored reference", PelicanPrompt: "stored drawing", PelicanReference: "stored checklist"}
 			} else if tc.method == http.MethodPut {
-				want = storage.DegradationPromptSettings{CandyPrompt: "custom question", CandyExpectedAnswer: "42", PelicanPrompt: "custom drawing"}
+				want = storage.DegradationPromptSettings{CandyPrompt: "custom question", CandyExpectedAnswer: "42", PelicanPrompt: "custom drawing", PelicanReference: storage.DefaultPelicanDegradationReference}
 			}
-			if envelope["data"]["candy_prompt"] != want.CandyPrompt || envelope["data"]["candy_expected_answer"] != want.CandyExpectedAnswer || envelope["data"]["pelican_prompt"] != want.PelicanPrompt {
+			if envelope["data"]["candy_prompt"] != want.CandyPrompt || envelope["data"]["candy_expected_answer"] != want.CandyExpectedAnswer || envelope["data"]["pelican_prompt"] != want.PelicanPrompt || envelope["data"]["pelican_reference"] != want.PelicanReference {
 				t.Fatalf("response=%s", w.Body.String())
 			}
 		})

@@ -61,6 +61,8 @@ export interface DegradationPrompts {
   candy_prompt: string
   candy_expected_answer: string
   pelican_prompt: string
+  /** 鹈鹕测试的评审参考标准，仅用于评审模型，不发送给作答模型。 */
+  pelican_reference: string
 }
 export const degradationStatusMeta = {
   normal: { label: "正常", explanation: "通过检测", tone: "text-success", bar: "bg-emerald-500" },

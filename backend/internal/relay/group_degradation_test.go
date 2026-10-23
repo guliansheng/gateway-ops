@@ -241,7 +241,7 @@ func TestGroupDegradationConcurrencyBound(t *testing.T) {
 func TestGroupDegradationCustomPromptsAreMethodScoped(t *testing.T) {
 	for _, method := range []string{"candy", "pelican"} {
 		t.Run(method, func(t *testing.T) {
-			prompts := storage.DegradationPromptSettings{CandyPrompt: "只回答自定义题目的最终结论", CandyExpectedAnswer: "forty-two-private-reference", PelicanPrompt: "创建完整 HTML/SVG：一棵蓝色的树，不能出现鸟或自行车"}
+			prompts := storage.DegradationPromptSettings{CandyPrompt: "只回答自定义题目的最终结论", CandyExpectedAnswer: "forty-two-private-reference", PelicanPrompt: "创建完整 HTML/SVG：一棵蓝色的树，不能出现鸟或自行车", PelicanReference: "自定义参考标准：只允许蓝色的树"}
 			answer := "我的最终结论是 forty-two-private-reference。"
 			html := "<html><body><svg><rect fill=\"blue\" width=\"10\" height=\"20\"/></svg></body></html>"
 			selected, other, output := prompts.CandyPrompt, prompts.PelicanPrompt, answer
@@ -295,7 +295,7 @@ func TestGroupDegradationCustomPromptsAreMethodScoped(t *testing.T) {
 								t.Errorf("custom pelican judge retained unrelated default/reference: %q", forbidden)
 							}
 						}
-						if !strings.Contains(review, "没有标准答案") || !strings.Contains(review, "当前生成提示词") {
+						if !strings.Contains(review, "参考标准") || !strings.Contains(review, "当前生成提示词") || !strings.Contains(review, "自定义参考标准：只允许蓝色的树") {
 							t.Error("custom pelican review did not use configured requirements")
 						}
 					}
@@ -325,7 +325,7 @@ func TestPelicanReviewKeepsKeyCriteriaAndIgnoresCosmetics(t *testing.T) {
 		return "<html><svg viewBox='0 0 10 10'></svg></html>", nil
 	}
 	config := storage.GroupDegradationConfig{Method: "pelican", Model: "candidate", JudgeModel: "judge", Effort: "none"}
-	prompts := storage.DegradationPromptSettings{PelicanPrompt: "画一只鸟骑车"}
+	prompts := storage.DegradationPromptSettings{PelicanPrompt: "画一只鸟骑车", PelicanReference: storage.DefaultPelicanDegradationReference}
 	if result := (&Service{}).evaluateDegradation(context.Background(), config, prompts, chat); result.Status != "degraded" {
 		t.Fatalf("result = %+v", result)
 	}

@@ -3,13 +3,13 @@
 import { useEffect, useId, useRef, useState } from "react"
 import { Loader2, Save, Settings2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Dialog, DialogBody, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Textarea } from "@/components/ui/textarea"
 import { apiFetch } from "@/lib/api"
 import type { DegradationPrompts } from "@/lib/group-degradation"
 
 function normalizePrompts(value: DegradationPrompts): DegradationPrompts {
-  const fields = [["candy_prompt", "糖果题提示词", 32 * 1024], ["candy_expected_answer", "糖果题标准答案", 4 * 1024], ["pelican_prompt", "鹈鹕测试提示词", 32 * 1024]] as const
+  const fields = [["candy_prompt", "糖果题提示词", 32 * 1024], ["candy_expected_answer", "糖果题标准答案", 4 * 1024], ["pelican_prompt", "鹈鹕测试提示词", 32 * 1024], ["pelican_reference", "鹈鹕测试参考标准", 8 * 1024]] as const
   const normalized = { ...value }
   for (const [key, label, limit] of fields) {
     if (typeof value[key] !== "string" || /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(value[key])) throw new Error(`${label}包含不允许的控制字符`)
@@ -73,8 +73,8 @@ function PromptSettingsForm({ stationID }: { stationID: number }) {
     <fieldset disabled={saving} className="grid gap-6 md:grid-cols-2">
       <section className="min-w-0 space-y-4 md:border-r md:border-border md:pr-6">
         <h3 className="border-b border-border pb-2 text-sm font-semibold">鹈鹕测试</h3>
-        <label htmlFor={`${id}-pelican-prompt`} className="block space-y-2"><span className="text-xs font-medium">鹈鹕测试提示词</span><Textarea id={`${id}-pelican-prompt`} aria-label="鹈鹕测试提示词" value={settings.pelican_prompt} onChange={(event) => update("pelican_prompt", event.target.value)} className="min-h-64 resize-y text-sm leading-6 md:min-h-96" maxLength={32768} /></label>
-        <p className="text-[11px] leading-5 text-muted-foreground">无标准答案，按提示词评审生成源码。</p>
+        <label htmlFor={`${id}-pelican-prompt`} className="block space-y-2"><span className="text-xs font-medium">鹈鹕测试提示词</span><Textarea id={`${id}-pelican-prompt`} aria-label="鹈鹕测试提示词" value={settings.pelican_prompt} onChange={(event) => update("pelican_prompt", event.target.value)} className="min-h-52 resize-y text-sm leading-6 md:min-h-64" maxLength={32768} /><span className="block text-[11px] leading-5 text-muted-foreground">发送给作答模型，要求返回自包含的 HTML 文档。</span></label>
+        <label htmlFor={`${id}-pelican-reference`} className="block space-y-2"><span className="text-xs font-medium">鹈鹕测试参考标准</span><Textarea id={`${id}-pelican-reference`} aria-label="鹈鹕测试参考标准" value={settings.pelican_reference} onChange={(event) => update("pelican_reference", event.target.value)} className="min-h-40 resize-y text-sm leading-6" maxLength={8192} /><span className="block text-[11px] leading-5 text-muted-foreground">仅供评审模型逐项核对，不发送给作答模型，也不公开。</span></label>
       </section>
       <section className="min-w-0 space-y-4">
         <h3 className="border-b border-border pb-2 text-sm font-semibold">糖果测试</h3>
@@ -84,7 +84,7 @@ function PromptSettingsForm({ stationID }: { stationID: number }) {
     </fieldset>
     {error ? <p role="alert" className="text-sm text-danger">{error}</p> : null}
     {message ? <p role="status" className="text-sm text-success">{message}</p> : null}
-    <div className="flex items-center justify-between gap-3 border-t border-border pt-3"><p className="text-[11px] leading-5 text-muted-foreground">保存仅更新设置，不会立即执行检测。</p><Button type="button" disabled={saving || !dirty} className="shrink-0 gap-1.5" onClick={() => void save()}>{saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}保存设置</Button></div>
+    <div className="sticky bottom-0 z-10 flex items-center justify-between gap-3 border-t border-border bg-background/95 pt-3 pb-1 backdrop-blur"><p className="text-[11px] leading-5 text-muted-foreground">保存仅更新设置，不会立即执行检测。</p><Button type="button" disabled={saving || !dirty} className="shrink-0 gap-1.5" onClick={() => void save()}>{saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}保存设置</Button></div>
   </div>
 }
 
@@ -93,6 +93,6 @@ export function DegradationPromptSettingsButton({ stationID, disabled = false }:
   useEffect(() => setOpen(false), [stationID])
   return <Dialog open={open} onOpenChange={setOpen}>
     <Button type="button" variant="outline" size="sm" className="h-11 gap-1.5 sm:h-9" disabled={disabled} aria-label="降智测试设置" onClick={() => setOpen(true)}><Settings2 className="size-3.5" />降智测试标准</Button>
-    {open ? <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-5xl"><DialogHeader className="border-b border-border pb-4"><DialogTitle>降智测试设置</DialogTitle><DialogDescription>当前中转站的分组监测与账号手动测试共用此标准。</DialogDescription></DialogHeader><PromptSettingsForm key={stationID} stationID={stationID} /></DialogContent> : null}
+    {open ? <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-5xl"><DialogHeader className="shrink-0 border-b border-border px-5 py-4 text-left sm:px-6"><DialogTitle>降智测试设置</DialogTitle><DialogDescription>当前中转站的分组监测与账号手动测试共用此标准。</DialogDescription></DialogHeader><DialogBody className="px-5 py-4 sm:px-6"><PromptSettingsForm key={stationID} stationID={stationID} /></DialogBody></DialogContent> : null}
   </Dialog>
 }
