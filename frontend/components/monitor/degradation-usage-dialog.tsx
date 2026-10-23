@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react"
 import { ChevronLeft, ChevronRight, Loader2, ReceiptText, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Dialog, DialogBody, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { apiFetch } from "@/lib/api"
@@ -47,15 +47,15 @@ function DegradationUsageTable({ stationID }: { stationID: number }) {
   const items = data?.items ?? []
   const totals = data?.totals
   const pages = Math.max(1, data?.pages ?? 1)
-  return <div className="space-y-4">
-    <div className="flex flex-wrap items-center justify-between gap-2">
+  return <div className="flex min-h-0 flex-1 flex-col gap-4">
+    <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
       <Select value={scope} onValueChange={(value) => { setScope(value as DegradationUsageScope); setPage(1) }}>
         <SelectTrigger className="h-9 w-40 text-xs" aria-label="筛选降智测试范围"><SelectValue /></SelectTrigger>
         <SelectContent><SelectItem value="all">分组和账号</SelectItem><SelectItem value="group">仅分组检测</SelectItem><SelectItem value="account">仅账号测试</SelectItem></SelectContent>
       </Select>
       <div className="flex items-center gap-2"><span className="text-[11px] text-muted-foreground">共 {data?.total ?? 0} 条记录</span><Button type="button" variant="outline" size="sm" className="h-9 gap-1.5" disabled={loading} onClick={() => setVersion((value) => value + 1)}><RefreshCw className={cn("size-3.5", loading && "animate-spin")} />刷新</Button></div>
     </div>
-    <dl className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+    <dl className="grid shrink-0 grid-cols-2 gap-2 sm:grid-cols-5">
       <Totals label="测试次数" value={formatTokens(totals?.runs ?? 0)} />
       <Totals label="输入 token" value={formatTokens(totals?.input_tokens ?? 0)} />
       <Totals label="输出 token" value={formatTokens(totals?.output_tokens ?? 0)} />
@@ -63,7 +63,7 @@ function DegradationUsageTable({ stationID }: { stationID: number }) {
       <Totals label="实际扣费" value={`$${formatDegradationCost(totals?.actual_cost)}`} tone="text-brand" />
     </dl>
     {error ? <p role="alert" className="text-sm text-danger">{error}</p> : null}
-    <div className="overflow-x-auto rounded-md border border-border">
+    <div className="min-h-0 flex-1 overflow-auto rounded-md border border-border">
       <Table className="min-w-[900px] text-xs">
         <TableHeader><TableRow className="hover:bg-transparent">
           <TableHead className="whitespace-nowrap">时间</TableHead>
@@ -98,7 +98,7 @@ function DegradationUsageTable({ stationID }: { stationID: number }) {
         </TableBody>
       </Table>
     </div>
-    <div className="flex flex-wrap items-center justify-between gap-2">
+    <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
       <p className="text-[11px] leading-5 text-muted-foreground">费用取自 Sub2API 扣费记录，按测试实际使用的账号倍率折算；未匹配到扣费记录的行会显示回退账号与 0 费用。</p>
       <div className="flex items-center gap-2"><span className="font-mono text-[11px] text-muted-foreground">第 {data?.page ?? page} / {pages} 页</span><Button type="button" variant="outline" size="sm" className="h-8 gap-1" disabled={loading || page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}><ChevronLeft className="size-3.5" />上一页</Button><Button type="button" variant="outline" size="sm" className="h-8 gap-1" disabled={loading || page >= pages} onClick={() => setPage((value) => Math.min(pages, value + 1))}>下一页<ChevronRight className="size-3.5" /></Button></div>
     </div>
@@ -111,6 +111,6 @@ export function DegradationUsageButton({ stationID, disabled = false }: { statio
   useEffect(() => setOpen(false), [stationID])
   return <Dialog open={open} onOpenChange={setOpen}>
     <Button type="button" variant="outline" size="sm" className="h-11 gap-1.5 sm:h-9" disabled={disabled} aria-label="降智测试费用统计" onClick={() => setOpen(true)}><ReceiptText className="size-3.5" />测试费用</Button>
-    {open ? <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-6xl"><DialogHeader className="border-b border-border pb-4"><DialogTitle>降智测试费用统计</DialogTitle><DialogDescription>汇总分组定时检测与账号手动测试的实际扣费，按测试账号倍率折算。</DialogDescription></DialogHeader><DegradationUsageTable key={stationID} stationID={stationID} /></DialogContent> : null}
+    {open ? <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-6xl"><DialogHeader className="shrink-0 border-b border-border px-4 py-4 text-left sm:px-6"><DialogTitle>降智测试费用统计</DialogTitle><DialogDescription>汇总分组定时检测与账号手动测试的实际扣费，按测试账号倍率折算。</DialogDescription></DialogHeader><DialogBody className="flex min-h-0 flex-col overflow-hidden px-4 py-4 sm:px-6"><DegradationUsageTable key={stationID} stationID={stationID} /></DialogBody></DialogContent> : null}
   </Dialog>
 }

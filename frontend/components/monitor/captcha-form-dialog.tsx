@@ -3,6 +3,7 @@
 import { useEffect, useState, type FormEvent } from "react"
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -113,15 +114,16 @@ export function CaptchaFormDialog({ open, onOpenChange, config }: CaptchaFormDia
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-md">
+        <DialogHeader className="shrink-0 border-b border-border px-4 py-4 text-left sm:px-6">
           <DialogTitle>{isEdit ? "编辑打码平台" : "新增打码平台"}</DialogTitle>
           <DialogDescription>
             上游站点开启 Turnstile 时，会用此打码 provider 拿 token。siteKey 由 GatewayOps 自动从上游公开接口拉取，无需手填。
           </DialogDescription>
         </DialogHeader>
 
-        <form onSubmit={handleSubmit} className="space-y-3">
+        <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
+          <DialogBody className="space-y-3 px-4 py-4 sm:px-6">
           <div className="space-y-1.5">
             <Label htmlFor="captcha-name">配置名</Label>
             <Input
@@ -197,8 +199,9 @@ export function CaptchaFormDialog({ open, onOpenChange, config }: CaptchaFormDia
               {error}
             </p>
           ) : null}
+          </DialogBody>
 
-          <DialogFooter>
+          <DialogFooter className="shrink-0 border-t border-border px-4 py-3 sm:px-6">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
               取消
             </Button>

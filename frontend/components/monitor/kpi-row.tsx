@@ -4,7 +4,7 @@ import { useState } from "react"
 import { ArrowUpRight, CircleDollarSign, DollarSign, Info, List, MessageSquare, RefreshCw, WalletCards } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Dialog, DialogBody, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import { useDashboardSummary, useUnlinkedAccounts } from "@/lib/queries"
@@ -79,14 +79,14 @@ function UnlinkedAccountsDialog({ open, onOpenChange, range, rangeLabel }: { ope
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] max-w-2xl overflow-y-auto p-0 sm:max-w-2xl">
-        <DialogHeader className="border-b border-border px-4 py-4 sm:px-6">
+      <DialogContent className="flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] max-w-2xl flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl">
+        <DialogHeader className="shrink-0 border-b border-border px-4 py-4 text-left sm:px-6">
           <DialogTitle>未关联渠道账号扣费明细</DialogTitle>
           <DialogDescription>
             {rangeLabel}内没有归属到任何监控渠道的中转站账号，与首页“未关联渠道账号扣费”使用同一套关联规则。
           </DialogDescription>
         </DialogHeader>
-        <div className="px-4 py-4 sm:px-6">
+        <DialogBody className="px-4 py-4 sm:px-6">
           {query.loading ? (
             <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground" aria-live="polite">
               <RefreshCw className="size-4 animate-spin" aria-hidden="true" />
@@ -139,7 +139,7 @@ function UnlinkedAccountsDialog({ open, onOpenChange, range, rangeLabel }: { ope
               <p className="text-xs leading-5 text-muted-foreground">在中转站账号列表中选中账号并选择“统计用户扣费”，可把重复计费的账号排除在用户扣费汇总之外。</p>
             </div>
           )}
-        </div>
+        </DialogBody>
       </DialogContent>
     </Dialog>
   )

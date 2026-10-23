@@ -4,6 +4,7 @@ import { useEffect, useState, type FormEvent } from "react"
 import { HelpCircle, Plus, Trash2 } from "lucide-react"
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -450,15 +451,16 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] min-w-0 overflow-x-hidden overflow-y-auto sm:max-w-md">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[calc(100dvh-2rem)] min-w-0 flex-col gap-0 overflow-hidden p-0 sm:max-w-md">
+        <DialogHeader className="shrink-0 border-b border-border px-6 py-4 text-left">
           <DialogTitle>{isEdit ? "编辑渠道" : "新增渠道"}</DialogTitle>
           <DialogDescription>
             {isManualBalance ? "手动余额不需要上游用户名密码；已绑定账号产生消费后会自动扣减。" : "一个渠道可维护多个上游账号，余额会自动汇总。"}
           </DialogDescription>
         </DialogHeader>
 
-        <form onSubmit={handleSubmit} className="min-w-0 space-y-3" autoComplete="off">
+        <form onSubmit={handleSubmit} className="flex min-h-0 min-w-0 flex-1 flex-col" autoComplete="off">
+          <DialogBody className="min-w-0 space-y-3 overflow-x-hidden px-6 py-4">
           <div className="space-y-1.5">
             <Label htmlFor="name">渠道名</Label>
             <Input
@@ -891,8 +893,9 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
               {error}
             </p>
           ) : null}
+          </DialogBody>
 
-          <DialogFooter>
+          <DialogFooter className="shrink-0 border-t border-border px-6 py-3">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
               取消
             </Button>

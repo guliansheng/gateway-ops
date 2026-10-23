@@ -298,8 +298,8 @@ function AccountAdjustmentPreview({ mode, accounts, totalCount, groupsByID, sele
 
 function AccountAdjustmentSelectionDialog({ state, selections, busy, groupsByID, onSelectionChange, onCancel, onConfirm }: { state: AccountAdjustmentDialogState; selections: AccountAdjustmentSelection; busy: boolean; groupsByID: Map<number, RelayGroupOption>; onSelectionChange: (accountID: number, groupIDs: number[]) => void; onCancel: () => void; onConfirm: () => void }) {
   return <Dialog open={state != null} onOpenChange={(open) => { if (!open && !busy) onCancel() }}>
-    <DialogContent className="w-[calc(100vw-2rem)] max-h-[calc(100dvh-2rem)] overflow-hidden p-0 sm:max-w-3xl">
-      {state ? <><DialogHeader className="border-b border-border px-4 py-5 sm:px-6"><DialogTitle>{state.title}</DialogTitle><DialogDescription>默认全选候选分组，可按账号取消不需要应用的分组。</DialogDescription></DialogHeader><div className="px-4 py-4 sm:px-6"><AccountAdjustmentPreview mode={state.mode} accounts={state.accounts} totalCount={state.totalCount} groupsByID={groupsByID} selectedGroupIDs={selections} onSelectionChange={onSelectionChange} /></div><DialogFooter className="border-t border-border px-4 py-4 sm:px-6"><Button type="button" variant="outline" disabled={busy} onClick={onCancel}>取消</Button><Button type="button" className="gap-1.5" disabled={busy} onClick={onConfirm}><Check className="size-3.5" />{state.confirmLabel}</Button></DialogFooter></> : null}
+    <DialogContent className="flex w-[calc(100vw-2rem)] max-h-[calc(100dvh-2rem)] flex-col overflow-hidden p-0 sm:max-w-3xl">
+      {state ? <><DialogHeader className="border-b border-border px-4 py-5 sm:px-6"><DialogTitle>{state.title}</DialogTitle><DialogDescription>默认全选候选分组，可按账号取消不需要应用的分组。</DialogDescription></DialogHeader><div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6"><AccountAdjustmentPreview mode={state.mode} accounts={state.accounts} totalCount={state.totalCount} groupsByID={groupsByID} selectedGroupIDs={selections} onSelectionChange={onSelectionChange} /></div><DialogFooter className="border-t border-border px-4 py-4 sm:px-6"><Button type="button" variant="outline" disabled={busy} onClick={onCancel}>取消</Button><Button type="button" className="gap-1.5" disabled={busy} onClick={onConfirm}><Check className="size-3.5" />{state.confirmLabel}</Button></DialogFooter></> : null}
     </DialogContent>
   </Dialog>
 }
@@ -2158,9 +2158,9 @@ export default function RelayStationsPage() {
     <BatchGroupEditor groups={currentOverview?.groups.map((group) => ({ external_id: group.external_id, name: group.name, platform: group.platform, status: group.status, is_exclusive: group.is_exclusive, require_oauth_only: group.require_oauth_only, account_types: group.account_types, model_types: group.model_types, rate_multiplier: group.rate_multiplier })) ?? []} count={selected.length} open={batchGroupDialogOpen} busy={busy} onOpenChange={setBatchGroupDialogOpen} onSave={(ids) => void saveBatchGroups(ids)} />
     <GroupEditor account={groupEditor} groups={currentOverview?.groups.map((group) => ({ external_id: group.external_id, name: group.name, platform: group.platform, status: group.status, is_exclusive: group.is_exclusive, require_oauth_only: group.require_oauth_only, account_types: group.account_types, model_types: group.model_types, rate_multiplier: group.rate_multiplier })) ?? []} open={groupEditor != null} busy={busy} onOpenChange={(open) => { if (!open && !busy) setGroupEditor(null) }} onSave={(ids) => void saveGroups(ids)} />
     <Dialog open={testGroup != null} onOpenChange={(open) => { if (!open && testingGroupID == null) setTestGroup(null) }}>
-      <DialogContent className="w-[calc(100vw-2rem)] max-h-[calc(100dvh-2rem)] max-w-[772px] overflow-x-hidden overflow-y-auto p-0">
+      <DialogContent className="flex w-[calc(100vw-2rem)] max-h-[calc(100dvh-2rem)] max-w-[772px] flex-col overflow-hidden p-0">
         <DialogHeader className="border-b border-border px-4 py-5 sm:px-6"><DialogTitle>快速测试分组</DialogTitle><DialogDescription className="sr-only">选择模型和调用次数后，使用管理员额度进行真实分组调用测试</DialogDescription></DialogHeader>
-        <div className="space-y-4 px-4 py-4 sm:px-6">
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4 sm:px-6">
           <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-muted/30 px-3 py-2.5"><div className="min-w-0"><p className="truncate text-sm font-semibold text-foreground">{testGroup?.name || "-"}</p><p className="mt-0.5 text-[11px] text-muted-foreground">{testGroup?.platform || "未知平台"} · 分组 #{testGroup?.external_id || "-"}</p></div><span className={cn("shrink-0 rounded px-2 py-1 text-[11px] font-medium", testGroup?.status?.toLowerCase() === "active" ? "bg-success/10 text-success" : "bg-muted text-muted-foreground")}>{testGroup?.status?.toLowerCase() === "active" ? "已启用" : "未启用"}</span></div>
           <Alert className="border-warning/30 bg-warning/5 py-3 text-warning"><CircleDollarSign className="size-4" /><AlertDescription className="text-xs leading-5 text-warning"><strong>真实调用测试：</strong>会消耗该分组绑定的管理员额度，并写入使用记录、错误记录和分组监控。请按需设置次数。</AlertDescription></Alert>
           <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_132px]">
@@ -2176,9 +2176,9 @@ export default function RelayStationsPage() {
       </DialogContent>
     </Dialog>
     <Dialog open={testAccount != null} onOpenChange={(open) => { if (!open && testingAccountID == null) setTestAccount(null) }}>
-      <DialogContent className="max-h-[calc(100dvh-2rem)] max-w-xl overflow-y-auto p-0">
+      <DialogContent className="flex max-h-[calc(100dvh-2rem)] max-w-xl flex-col overflow-hidden p-0">
         <DialogHeader className="border-b border-border px-4 py-5 sm:px-6"><DialogTitle>测试账号连接</DialogTitle><DialogDescription className="sr-only">选择模型和测试模式后测试账号连接</DialogDescription></DialogHeader>
-        <div className="space-y-4 px-4 sm:px-6">
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 sm:px-6">
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1.5"><Label>选择测试模型</Label><Select value={testModel} onValueChange={setTestModel} disabled={testModelsLoading || testModels.length === 0}><SelectTrigger className="w-full"><SelectValue placeholder={testModelsLoading ? "正在读取模型..." : "没有可用模型"} /></SelectTrigger><SelectContent>{testModels.map((model) => <SelectItem key={model} value={model}>{model}</SelectItem>)}</SelectContent></Select></div>
             <div className="space-y-1.5"><Label>测试模式</Label><Select value={testMode} onValueChange={setTestMode}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="regular">常规请求</SelectItem><SelectItem value="stream">流式请求</SelectItem></SelectContent></Select></div>

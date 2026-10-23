@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react"
 import { Plus, Trash2 } from "lucide-react"
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -283,15 +284,16 @@ export function NotificationFormDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-lg">
+        <DialogHeader className="shrink-0 border-b border-border px-6 py-4 text-left">
           <DialogTitle>{isEdit ? "编辑通知渠道" : "新增通知渠道"}</DialogTitle>
           <DialogDescription>
             订阅留空表示接收所有上游的所有事件（向后兼容）。配置好订阅后只会收到关心的事件。
           </DialogDescription>
         </DialogHeader>
 
-        <form onSubmit={handleSubmit} className="space-y-3" autoComplete="off">
+        <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col" autoComplete="off">
+          <DialogBody className="space-y-3 px-6 py-4">
           <div className="space-y-1.5">
             <Label htmlFor="notify-name">渠道名</Label>
             <Input
@@ -397,8 +399,9 @@ export function NotificationFormDialog({
               {error}
             </p>
           ) : null}
+          </DialogBody>
 
-          <DialogFooter>
+          <DialogFooter className="shrink-0 border-t border-border px-6 py-3">
             <Button
               type="button"
               variant="outline"

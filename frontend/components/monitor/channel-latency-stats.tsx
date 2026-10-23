@@ -5,6 +5,7 @@ import { BarChart3 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogHeader,
@@ -248,11 +249,12 @@ export function ChannelLatencyStatsButton({ channelName, samples }: { channelNam
         统计
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] max-w-[1200px] sm:max-w-[1200px] overflow-x-auto overflow-y-auto">
+        <DialogContent className="w-[calc(100vw-2rem)] max-w-[1200px] sm:max-w-[1200px]">
           <DialogHeader>
             <DialogTitle>{channelName} · 调用延迟统计</DialogTitle>
             <DialogDescription>渠道总览取最近 60 次调用；每个模型单独取最近 60 次，按延迟从低到高排序，优先展示更流畅的模型。</DialogDescription>
           </DialogHeader>
+          <DialogBody className="overflow-x-auto">
           {!stats ? (
             <div className="rounded-lg border border-dashed border-border px-4 py-10 text-center text-sm text-muted-foreground">暂无可用的模型调用延迟数据</div>
           ) : (
@@ -288,6 +290,7 @@ export function ChannelLatencyStatsButton({ channelName, samples }: { channelNam
               </div>
             </div>
           )}
+          </DialogBody>
         </DialogContent>
       </Dialog>
     </>

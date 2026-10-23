@@ -62,20 +62,18 @@ export function useConfirm() {
         if (!o) finish(false)
       }}
     >
-      <AlertDialogContent className={state.contentClassName}>
-        <AlertDialogHeader>
+      <AlertDialogContent className={cn("flex max-h-[calc(100dvh-2rem)] flex-col gap-4 overflow-hidden", state.contentClassName)}>
+        <AlertDialogHeader className="shrink-0">
           <AlertDialogTitle>{state.title}</AlertDialogTitle>
           {state.description ? (
-            typeof state.description === "string" ? (
-              <AlertDialogDescription>{state.description}</AlertDialogDescription>
-            ) : (
-              <AlertDialogDescription asChild>
-                <div>{state.description}</div>
-              </AlertDialogDescription>
-            )
+            <AlertDialogDescription asChild>
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+                {state.description}
+              </div>
+            </AlertDialogDescription>
           ) : null}
         </AlertDialogHeader>
-        <AlertDialogFooter>
+        <AlertDialogFooter className="shrink-0">
           <AlertDialogCancel onClick={() => finish(false)}>
             {state.cancelLabel ?? "取消"}
           </AlertDialogCancel>
