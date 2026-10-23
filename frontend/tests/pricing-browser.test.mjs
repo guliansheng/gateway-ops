@@ -32,15 +32,22 @@ try {
   await server.listen()
   browser = await chromium.launch({ headless: true })
   const context = await browser.newContext({ viewport: { width: 1700, height: 1000 } })
-  await context.route("**/api/**", async (route) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: base })
+  const mockApi = async (route) => {
     const url = new URL(route.request().url())
     if (url.pathname === "/api/public/relay-stations/1/model-pricing") return route.fulfill({ json: { data: pricing } })
     return route.fulfill({ status: 501, json: { error: `Unexpected mocked endpoint: ${url.pathname}` } })
-  })
+  }
+  await context.route("**/api/**", mockApi)
   const page = await context.newPage()
   page.on("pageerror", (error) => errors.push(error.message))
   await page.goto(`${base}/public/model-pricing/1`)
   await page.getByRole("heading", { name: "deepseek-v4.1-flash", exact: true }).waitFor()
+  // 复制按钮：安全上下文走 clipboard API，并给出可见反馈
+  const copyStatus = page.locator("article").filter({ has: page.getByRole("heading", { name: "deepseek-v4.1-flash", exact: true }) }).getByRole("status")
+  await page.getByRole("button", { name: "复制模型 deepseek-v4.1-flash", exact: true }).click()
+  await copyStatus.filter({ hasText: "已复制" }).waitFor()
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), "deepseek-v4.1-flash")
   assert.equal(await page.getByRole("heading", { name: "hidden-request-price", exact: true }).count(), 0)
   const deepseek = page.getByRole("table", { name: "deepseek-v4.1-flash公开分组价格", exact: true })
   const rows = await deepseek.getByRole("row").allTextContents()
@@ -90,6 +97,40 @@ try {
   assert.equal(await page.getByRole("heading", { name: "deepseek-v4.1-flash", exact: true }).count(), 0)
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), "pricing mobile overflow")
   if (process.env.BROWSER_ARTIFACT_DIR) await page.screenshot({ path: `${process.env.BROWSER_ARTIFACT_DIR}/model-pricing-mobile.png`, fullPage: true })
+  // 非安全上下文（无 navigator.clipboard）退回 textarea + execCommand
+  const fallbackContext = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+  await fallbackContext.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true })
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value(command) {
+        if (command !== "copy") return false
+        window.__copiedText = Array.from(document.querySelectorAll("textarea")).map((area) => area.value).join("")
+        return true
+      },
+    })
+  })
+  await fallbackContext.route("**/api/**", mockApi)
+  const fallbackPage = await fallbackContext.newPage()
+  await fallbackPage.goto(`${base}/public/model-pricing/1`)
+  await fallbackPage.getByRole("button", { name: "复制模型 deepseek-v4.1-flash", exact: true }).click()
+  await fallbackPage.getByRole("status").filter({ hasText: "已复制" }).first().waitFor()
+  assert.equal(await fallbackPage.evaluate(() => window.__copiedText), "deepseek-v4.1-flash")
+  await fallbackContext.close()
+
+  // 两条复制路径都失败时给出可见提示，而不是静默无反应
+  const failingContext = await browser.newContext({ viewport: { width: 1200, height: 800 } })
+  await failingContext.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true })
+    Object.defineProperty(document, "execCommand", { configurable: true, value: () => false })
+  })
+  await failingContext.route("**/api/**", mockApi)
+  const failingPage = await failingContext.newPage()
+  await failingPage.goto(`${base}/public/model-pricing/1`)
+  await failingPage.getByRole("button", { name: "复制模型 deepseek-v4.1-flash", exact: true }).click()
+  await failingPage.getByRole("status").filter({ hasText: "复制失败，请手动选择" }).first().waitFor()
+  await failingContext.close()
+  console.log("PASS: clipboard falls back to execCommand and reports failures")
   assert.deepEqual(errors, [])
   console.log("PASS: saved $1.5/$4.5 channel prices, group ordering/multiplier, original-free $0.03/$0.04/$0.06 image prices, two billing kinds, search/filter, brand icons, mobile layout, no runtime errors")
 } finally {
