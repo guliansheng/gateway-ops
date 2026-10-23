@@ -63,6 +63,7 @@ func Register(r *gin.Engine, d *Deps) {
 
 	publicAPI := r.Group("/api/public")
 	registerPublicRelayStations(publicAPI, d)
+	registerPublicGroupDegradation(publicAPI, d)
 	registerPublicModelPricing(publicAPI, d)
 	registerPublicServiceStatus(publicAPI)
 	registerPublicHelp(publicAPI, d)
@@ -84,6 +85,7 @@ func Register(r *gin.Engine, d *Deps) {
 		registerMonitorLogs(api, d)
 		registerDashboard(api, d)
 		registerRelayStations(api, d)
+		registerGroupDegradation(api, d)
 		registerSyncSettings(api, d)
 		registerOperations(api, d)
 		registerHelp(api, d)

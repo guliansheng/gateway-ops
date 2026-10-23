@@ -53,27 +53,34 @@ const (
 var ErrGroupAdminAPIKeyMissing = errors.New("管理员未在 API 密钥中创建并启用当前分组的管理员密钥，请创建并绑定该分组；也可使用未绑定分组的全局管理员密钥")
 
 type Service struct {
-	stations           *storage.RelayStations
-	cipher             *crypto.Cipher
-	channels           *storage.Channels
-	rates              *storage.Rates
-	client             *http.Client
-	usageMu            sync.Mutex
-	usageCache         map[string]usageCacheEntry
-	userUsageCache     map[string]userUsageCacheEntry
-	ipLocationMu       sync.Mutex
-	ipLocationCache    map[string]ipLocationCacheEntry
-	latencyMu          sync.Mutex
-	latencyCache       map[string]latencyCacheEntry
-	dynamicMonitorMu   sync.Mutex
-	publicMonitorMu    sync.Mutex
-	publicMonitorCache map[uint]publicMonitorCacheEntry
-	publicPricingMu    sync.Mutex
-	publicPricingCache map[uint]publicModelPricingCacheEntry
-	userEmailMu        sync.Mutex
-	userEmailCache     map[string]userEmailCacheEntry
-	userRiskMu         sync.Mutex
-	userRiskCache      map[string]userRiskCacheEntry
+	stations                  *storage.RelayStations
+	cipher                    *crypto.Cipher
+	channels                  *storage.Channels
+	rates                     *storage.Rates
+	client                    *http.Client
+	usageMu                   sync.Mutex
+	usageCache                map[string]usageCacheEntry
+	userUsageCache            map[string]userUsageCacheEntry
+	ipLocationMu              sync.Mutex
+	ipLocationCache           map[string]ipLocationCacheEntry
+	latencyMu                 sync.Mutex
+	latencyCache              map[string]latencyCacheEntry
+	dynamicMonitorMu          sync.Mutex
+	groupDegradationDueMu     sync.Mutex
+	manualDegradationSlots    [3]sync.Mutex
+	scheduledDegradationSlots [2]sync.Mutex
+	publicMonitorMu           sync.Mutex
+	publicMonitorCache        map[uint]publicMonitorCacheEntry
+	publicPricingMu           sync.Mutex
+	publicPricingCache        map[uint]publicModelPricingCacheEntry
+	userEmailMu               sync.Mutex
+	userEmailCache            map[string]userEmailCacheEntry
+	userRiskMu                sync.Mutex
+	userRiskCache             map[string]userRiskCacheEntry
+	// usageSync records the Sub2API charge of a finished detection run. It is
+	// wired by NewService so unit tests that build a bare Service never issue
+	// background SQL against a scripted driver.
+	usageSync func(context.Context, degradationUsageJob)
 }
 
 func NewService(stations *storage.RelayStations, cipher *crypto.Cipher, deps ...any) *Service {
@@ -85,7 +92,7 @@ func NewService(stations *storage.RelayStations, cipher *crypto.Cipher, deps ...
 	if len(deps) > 1 {
 		rates, _ = deps[1].(*storage.Rates)
 	}
-	return &Service{
+	service := &Service{
 		stations:           stations,
 		cipher:             cipher,
 		channels:           channels,
@@ -93,13 +100,14 @@ func NewService(stations *storage.RelayStations, cipher *crypto.Cipher, deps ...
 		client:             &http.Client{Timeout: requestTimeout},
 		usageCache:         make(map[string]usageCacheEntry),
 		userUsageCache:     make(map[string]userUsageCacheEntry),
-		ipLocationCache:    make(map[string]ipLocationCacheEntry),
 		latencyCache:       make(map[string]latencyCacheEntry),
+		ipLocationCache:    make(map[string]ipLocationCacheEntry),
 		publicMonitorCache: make(map[uint]publicMonitorCacheEntry),
 		publicPricingCache: make(map[uint]publicModelPricingCacheEntry),
-		userEmailCache:     make(map[string]userEmailCacheEntry),
 		userRiskCache:      make(map[string]userRiskCacheEntry),
 	}
+	service.usageSync = service.syncDegradationUsage
+	return service
 }
 
 type CreateInput struct {
@@ -3184,34 +3192,48 @@ func (s *Service) TestGroup(ctx context.Context, stationID uint, groupID int64, 
 }
 
 func (s *Service) groupGatewayCredential(ctx context.Context, stationID uint, groupID int64) (*storage.RelayStation, string, error) {
+	station, key, _, err := s.groupGatewayCredentialWithOwner(ctx, stationID, groupID)
+	return station, key, err
+}
+
+// groupGatewayCredentialWithOwner also reports the admin account that owns the
+// selected key. Degradation history shows that name to operators only.
+func (s *Service) groupGatewayCredentialWithOwner(ctx context.Context, stationID uint, groupID int64) (*storage.RelayStation, string, string, error) {
 	station, err := s.stations.FindByID(stationID)
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 	if _, err := s.stations.FindGroupByExternalID(stationID, groupID); err != nil {
-		return nil, "", errors.New("中转站分组不存在，请先同步分组")
+		return nil, "", "", errors.New("中转站分组不存在，请先同步分组")
 	}
 	adminKey, err := s.cipher.Decrypt(station.APIKeyCipher)
 	if err != nil {
-		return nil, "", fmt.Errorf("decrypt admin API key: %w", err)
+		return nil, "", "", fmt.Errorf("decrypt admin API key: %w", err)
 	}
 	for page := 1; page <= 1000; page++ {
 		var keys remoteGroupAPIKeyPage
 		endpoint := fmt.Sprintf("%s/api/v1/admin/groups/%d/api-keys?page=%d&page_size=100", station.BaseURL, groupID, page)
 		if err := s.get(ctx, endpoint, adminKey, &keys); err != nil {
-			return nil, "", fmt.Errorf("查询分组的管理员 API 密钥失败: %w", err)
+			return nil, "", "", fmt.Errorf("查询分组的管理员 API 密钥失败: %w", err)
 		}
-		if key := selectAdminGroupAPIKey(keys.Items, groupID); key != "" {
-			return station, key, nil
+		if key, owner := selectAdminGroupAPIKeyOwner(keys.Items, groupID); key != "" {
+			return station, key, owner, nil
 		}
 		if len(keys.Items) == 0 || keys.Pages <= page {
 			break
 		}
 	}
-	return nil, "", ErrGroupAdminAPIKeyMissing
+	return nil, "", "", ErrGroupAdminAPIKeyMissing
 }
 
 func selectAdminGroupAPIKey(items []remoteGroupAPIKey, groupID int64) string {
+	key, _ := selectAdminGroupAPIKeyOwner(items, groupID)
+	return key
+}
+
+// selectAdminGroupAPIKeyOwner returns the active admin key of a group together
+// with its owning account label (username, falling back to the email).
+func selectAdminGroupAPIKeyOwner(items []remoteGroupAPIKey, groupID int64) (string, string) {
 	for _, item := range items {
 		if strings.TrimSpace(item.Key) == "" || !strings.EqualFold(strings.TrimSpace(item.Status), "active") || item.User == nil || !strings.EqualFold(strings.TrimSpace(item.User.Role), "admin") {
 			continue
@@ -3219,9 +3241,13 @@ func selectAdminGroupAPIKey(items []remoteGroupAPIKey, groupID int64) string {
 		if item.GroupID != nil && *item.GroupID != groupID {
 			continue
 		}
-		return strings.TrimSpace(item.Key)
+		owner := strings.TrimSpace(item.User.Username)
+		if owner == "" {
+			owner = strings.TrimSpace(item.User.Email)
+		}
+		return strings.TrimSpace(item.Key), owner
 	}
-	return ""
+	return "", ""
 }
 
 func (s *Service) testGroupCall(ctx context.Context, baseURL, gatewayKey, model string, index int) GroupTestCallResult {

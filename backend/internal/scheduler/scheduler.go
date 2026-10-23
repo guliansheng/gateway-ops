@@ -17,31 +17,35 @@ import (
 )
 
 type Scheduler struct {
-	cfg                   config.SchedulerConfig
-	log                   *slog.Logger
-	cron                  *cron.Cron
-	monitor               *monitor.Service
-	monLogs               *storage.MonitorLogs
-	rates                 *storage.Rates
-	notifies              *storage.Notifications
-	settings              *storage.Settings
-	relay                 *relay.Service
-	legacyBalanceID       cron.EntryID
-	legacyRateID          cron.EntryID
-	channelSyncID         cron.EntryID
-	channelRateSyncID     cron.EntryID
-	relayRateSyncID       cron.EntryID
-	relaySnapshotSyncID   cron.EntryID
-	dynamicMonitorID      cron.EntryID
-	userRiskID            cron.EntryID
-	dailyBalanceID        cron.EntryID
-	jobsMu                sync.Mutex
-	channelSyncMu         sync.Mutex
-	channelRateSyncMu     sync.Mutex
-	relaySyncMu           sync.Mutex
-	relayRateRunning      atomic.Bool
-	relaySnapshotRunning  atomic.Bool
-	dynamicMonitorRunning atomic.Bool
+	cfg                       config.SchedulerConfig
+	log                       *slog.Logger
+	cron                      *cron.Cron
+	monitor                   *monitor.Service
+	monLogs                   *storage.MonitorLogs
+	rates                     *storage.Rates
+	notifies                  *storage.Notifications
+	settings                  *storage.Settings
+	relay                     *relay.Service
+	legacyBalanceID           cron.EntryID
+	legacyRateID              cron.EntryID
+	channelSyncID             cron.EntryID
+	channelRateSyncID         cron.EntryID
+	relayRateSyncID           cron.EntryID
+	relaySnapshotSyncID       cron.EntryID
+	dynamicMonitorID          cron.EntryID
+	groupDegradationID        cron.EntryID
+	accountDegradationID      cron.EntryID
+	groupDegradationRunning   atomic.Bool
+	userRiskID                cron.EntryID
+	dailyBalanceID            cron.EntryID
+	jobsMu                    sync.Mutex
+	channelSyncMu             sync.Mutex
+	channelRateSyncMu         sync.Mutex
+	relaySyncMu               sync.Mutex
+	relayRateRunning          atomic.Bool
+	relaySnapshotRunning      atomic.Bool
+	dynamicMonitorRunning     atomic.Bool
+	accountDegradationRunning atomic.Bool
 }
 
 func New(
@@ -110,6 +114,16 @@ func (s *Scheduler) Start() error {
 		return err
 	} else {
 		s.dynamicMonitorID = entryID
+	}
+	if entryID, err := s.cron.AddFunc("@every 1m", s.runGroupDegradation); err != nil {
+		return err
+	} else {
+		s.groupDegradationID = entryID
+	}
+	if entryID, err := s.cron.AddFunc("@every 1m", s.runAccountDegradation); err != nil {
+		return err
+	} else {
+		s.accountDegradationID = entryID
 	}
 	if err := s.configureSyncJobs(); err != nil {
 		return err
@@ -310,6 +324,31 @@ func (s *Scheduler) runDynamicMonitorAutoOpen() {
 	defer cancel()
 	if err := s.relay.ReopenTimedDynamicAccounts(ctx); err != nil {
 		s.log.Warn("relay dynamic monitor auto open failed", "err", err)
+	}
+}
+
+func (s *Scheduler) runGroupDegradation() {
+	if s.relay == nil || !s.groupDegradationRunning.CompareAndSwap(false, true) {
+		return
+	}
+	defer s.groupDegradationRunning.Store(false)
+	// Independent of relaySyncMu: model generation must not delay snapshots.
+	ctx, cancel := context.WithTimeout(context.Background(), 9*time.Minute)
+	defer cancel()
+	if err := s.relay.RunDueGroupDegradation(ctx); err != nil {
+		s.log.Warn("group degradation checks failed", "err", err)
+	}
+}
+
+func (s *Scheduler) runAccountDegradation() {
+	if s.relay == nil || !s.accountDegradationRunning.CompareAndSwap(false, true) {
+		return
+	}
+	defer s.accountDegradationRunning.Store(false)
+	ctx, cancel := context.WithTimeout(context.Background(), 9*time.Minute)
+	defer cancel()
+	if err := s.relay.RunDueAccountDegradation(ctx); err != nil {
+		s.log.Warn("account degradation checks failed", "err", err)
 	}
 }
 

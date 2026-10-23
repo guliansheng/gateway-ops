@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"gorm.io/driver/postgres"
@@ -87,6 +88,17 @@ func AutoMigrate(db *gorm.DB) error {
 			return err
 		}
 	}
+	// Add and backfill the local pricing toggle only when its column is absent.
+	// This must run before AutoMigrate so later startups preserve manual false values.
+	if err := migrateGroupModelPricing(db); err != nil {
+		return err
+	}
+	if err := migrateDegradationEffortDefaults(db); err != nil {
+		return err
+	}
+	if err := migrateDegradationMethodConstraint(db); err != nil {
+		return err
+	}
 	// 帮助文档旧结构（Markdown + 多站发布配置）先升级为“每站一篇 HTML 文档”，
 	// 必须在 GORM AutoMigrate 之前处理 markdown → content 的列改名。
 	if err := migrateHelpSchema(db); err != nil {
@@ -113,7 +125,12 @@ func AutoMigrate(db *gorm.DB) error {
 		&OperationLedgerEntry{},
 		&RelayStation{},
 		&RelayGroup{},
-		&RelayUserAutoDisableLog{},
+		&GroupDegradationConfig{},
+		&GroupDegradationResult{},
+		&DegradationPromptSettings{},
+		&AccountDegradationRun{},
+		&AccountDegradationResult{},
+		&AccountDegradationConfig{},
 		&RelayChannel{},
 		&RelayChannelGroup{},
 		&RelayChannelMapping{},
@@ -200,4 +217,59 @@ func AutoMigrate(db *gorm.DB) error {
 	// 帮助文档数据迁移必须在表结构就绪后执行：绑定中转站、丢弃旧配置表、
 	// 把遗留 Markdown 正文转换成富文本 HTML。
 	return migrateHelpData(db)
+}
+
+// migrateGroupModelPricing upgrades legacy snapshots without resetting a saved toggle.
+// PostgreSQL keeps the column addition and its one-time visibility backfill atomic.
+func migrateGroupModelPricing(db *gorm.DB) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		if !tx.Migrator().HasTable(&RelayGroup{}) || tx.Migrator().HasColumn(&RelayGroup{}, "model_pricing_enabled") {
+			return nil
+		}
+		if err := tx.Migrator().AddColumn(&RelayGroup{}, "ModelPricingEnabled"); err != nil {
+			return err
+		}
+		backfill := "UPDATE relay_groups SET model_pricing_enabled = true"
+		if tx.Migrator().HasColumn(&RelayGroup{}, "is_exclusive") {
+			backfill = "UPDATE relay_groups SET model_pricing_enabled = NOT COALESCE(is_exclusive, false)"
+		}
+		return tx.Exec(backfill).Error
+	})
+}
+
+// migrateDegradationEffortDefaults changes only the database defaults for new configs.
+// Existing rows keep their explicitly stored effort values.
+func migrateDegradationEffortDefaults(db *gorm.DB) error {
+	for _, table := range []string{"group_degradation_configs", "account_degradation_configs"} {
+		if !db.Migrator().HasTable(table) {
+			continue
+		}
+		if err := db.Exec(fmt.Sprintf("ALTER TABLE %s ALTER COLUMN effort SET DEFAULT 'none'", table)).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// migrateDegradationMethodConstraint repairs the CHECK constraint shipped by the
+// first release, which only accepted pelican/candy. GORM never rewrites an
+// existing constraint, so a database created before the "鹈鹕和糖果" option kept
+// rejecting that choice with a generic save failure.
+func migrateDegradationMethodConstraint(db *gorm.DB) error {
+	if !db.Migrator().HasTable("group_degradation_configs") {
+		return nil
+	}
+	var row struct{ Definition string }
+	// A missing constraint leaves the struct empty and is repaired below; an
+	// already permissive definition is left untouched.
+	if err := db.Raw(`SELECT COALESCE(pg_get_constraintdef(oid), '') AS definition FROM pg_constraint WHERE conname = 'chk_group_degradation_method' AND conrelid = 'group_degradation_configs'::regclass`).Scan(&row).Error; err != nil {
+		return err
+	}
+	if strings.Contains(row.Definition, "'both'") {
+		return nil
+	}
+	if err := db.Exec("ALTER TABLE group_degradation_configs DROP CONSTRAINT IF EXISTS chk_group_degradation_method").Error; err != nil {
+		return err
+	}
+	return db.Exec("ALTER TABLE group_degradation_configs ADD CONSTRAINT chk_group_degradation_method CHECK (method IN ('pelican','candy','both'))").Error
 }
