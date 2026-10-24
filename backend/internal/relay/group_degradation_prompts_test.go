@@ -175,12 +175,12 @@ func TestGroupDegradationRunCapturesSettingsOncePerRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	settings := storage.DegradationPromptSettings{CandyPrompt: "first prompt", CandyExpectedAnswer: "42", PelicanPrompt: "draw a tree"}
-	currentPrompt := settings.CandyPrompt
+	settings := storage.DegradationPromptSettings{CandyPrompt: "first prompt", CandyExpectedAnswer: "42", PelicanPrompt: "draw a tree", PelicanReference: "reference standard"}
+	currentPrompt := settings.PelicanPrompt
 	lookupCount, modelCalls, credentialCalls := 0, 0, 0
 	steps := []degradationRunSQLStep{
 		{contains: `FROM "relay_stations"`, columns: []string{"id"}, rows: [][]driver.Value{{int64(1)}}},
-		{contains: `FROM "degradation_prompt_settings"`, columns: []string{"candy_prompt", "candy_expected_answer", "pelican_prompt"}, rows: [][]driver.Value{{settings.CandyPrompt, settings.CandyExpectedAnswer, settings.PelicanPrompt}}, check: func(_ context.Context, _ string, args []driver.NamedValue) {
+		{contains: `FROM "degradation_prompt_settings"`, columns: []string{"candy_prompt", "candy_expected_answer", "pelican_prompt", "pelican_reference"}, rows: [][]driver.Value{{settings.CandyPrompt, settings.CandyExpectedAnswer, settings.PelicanPrompt, settings.PelicanReference}}, check: func(_ context.Context, _ string, args []driver.NamedValue) {
 			lookupCount++
 			if args[0].Value != int64(1) {
 				t.Errorf("wrong station settings: %+v", args)
@@ -209,20 +209,20 @@ func TestGroupDegradationRunCapturesSettingsOncePerRun(t *testing.T) {
 			}
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			if modelCalls == 1 {
-				if len(body.Messages) != 1 || body.Messages[0].Content != settings.CandyPrompt || strings.Contains(body.Messages[0].Content, settings.CandyExpectedAnswer) {
+				if len(body.Messages) != 1 || body.Messages[0].Content != settings.PelicanPrompt || strings.Contains(body.Messages[0].Content, settings.PelicanReference) {
 					t.Errorf("generation not captured: %+v", body)
 				}
-				degradationChatResponse(w, "final conclusion 42")
+				degradationChatResponse(w, "<html><svg/></html>")
 			} else {
-				if len(body.Messages) != 2 || !strings.Contains(body.Messages[1].Content, settings.CandyPrompt) || strings.Contains(body.Messages[1].Content, currentPrompt) || !strings.Contains(body.Messages[1].Content, "固定参考答案为 42") {
+				if len(body.Messages) != 2 || !strings.Contains(body.Messages[1].Content, settings.PelicanPrompt) || strings.Contains(body.Messages[1].Content, currentPrompt) || !strings.Contains(body.Messages[1].Content, settings.PelicanReference) {
 					t.Errorf("judge not captured: %+v", body)
 				}
-				degradationChatResponse(w, `{"status":"normal","reason":"最终结论一致"}`)
+				degradationChatResponse(w, `{"status":"normal","reason":"源码满足参考标准"}`)
 			}
 		}
 		return w.Result(), nil
 	})}}
-	result, err := s.runClaimedGroupDegradation(context.Background(), storage.GroupDegradationConfig{ID: 7, StationID: 1, GroupExternalID: 9, Method: "candy", Model: "candidate", JudgeModel: "judge", Effort: "none", LeaseToken: "lease-token"})
+	result, err := s.runClaimedGroupDegradation(context.Background(), storage.GroupDegradationConfig{ID: 7, StationID: 1, GroupExternalID: 9, Method: "pelican", Model: "candidate", JudgeModel: "judge", Effort: "none", LeaseToken: "lease-token"})
 	if err != nil || result.Status != "normal" || result.ID != 55 || lookupCount != 1 || credentialCalls != 1 || modelCalls != 2 || state.commits != 1 {
 		t.Fatalf("result=%+v err=%v settings=%d model=%d", result, err, lookupCount, modelCalls)
 	}
@@ -260,6 +260,9 @@ func TestGroupDegradationManualCancellationAndCronCancellation(t *testing.T) {
 			}
 			claim := degradationRunConfigStep()
 			claim.rows[0][10], claim.rows[0][11] = "", nil
+			// A drawing run keeps both steps in play: the claim must still reserve
+			// enough time for review after generation.
+			claim.rows[0][4] = "pelican"
 			steps := []degradationRunSQLStep{}
 			if manual {
 				steps = append(steps,
@@ -283,13 +286,13 @@ func TestGroupDegradationManualCancellationAndCronCancellation(t *testing.T) {
 							claimedToken = value
 						}
 					case time.Time:
-						if until := time.Until(value); until > 8*time.Minute && until <= 9*time.Minute {
+						if until := time.Until(value); until > 11*time.Minute && until <= 12*time.Minute {
 							claimedUntil = value
 						}
 					}
 				}
 				if claimedToken == "" || claimedUntil.IsZero() {
-					t.Errorf("claim did not create a nine-minute lease: %+v", args)
+					t.Errorf("claim did not create a twelve-minute lease: %+v", args)
 				}
 			}})
 			// The run starts after the claim commits; cancel during credential
@@ -297,8 +300,8 @@ func TestGroupDegradationManualCancellationAndCronCancellation(t *testing.T) {
 			steps = append(steps,
 				degradationRunSQLStep{contains: `FROM "relay_stations"`, columns: []string{"id"}, rows: [][]driver.Value{{int64(1)}}, check: func(ctx context.Context, _ string, _ []driver.NamedValue) {
 					deadline, ok := ctx.Deadline()
-					if !ok || time.Until(deadline) > 8*time.Minute || time.Until(deadline) < 7*time.Minute || ctx.Value(contextKey("request")) != "kept" {
-						t.Fatal("run context must preserve values and have an eight-minute timeout")
+					if !ok || time.Until(deadline) > 10*time.Minute || time.Until(deadline) < 9*time.Minute || ctx.Value(contextKey("request")) != "kept" {
+						t.Fatal("run context must preserve values and have a ten-minute timeout")
 					}
 				}},
 				degradationRunSQLStep{contains: `FROM "degradation_prompt_settings"`, columns: []string{"candy_prompt", "candy_expected_answer", "pelican_prompt"}, rows: [][]driver.Value{{"question", "42", "draw"}}},

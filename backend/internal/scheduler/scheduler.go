@@ -332,8 +332,10 @@ func (s *Scheduler) runGroupDegradation() {
 		return
 	}
 	defer s.groupDegradationRunning.Store(false)
-	// Independent of relaySyncMu: model generation must not delay snapshots.
-	ctx, cancel := context.WithTimeout(context.Background(), 9*time.Minute)
+	// Independent of relaySyncMu: model generation must not delay snapshots. The
+	// cap sits just above the relay's ten-minute run budget so a run is never cut
+	// short between generation and its detached review step.
+	ctx, cancel := context.WithTimeout(context.Background(), 11*time.Minute)
 	defer cancel()
 	if err := s.relay.RunDueGroupDegradation(ctx); err != nil {
 		s.log.Warn("group degradation checks failed", "err", err)
@@ -345,7 +347,7 @@ func (s *Scheduler) runAccountDegradation() {
 		return
 	}
 	defer s.accountDegradationRunning.Store(false)
-	ctx, cancel := context.WithTimeout(context.Background(), 9*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 11*time.Minute)
 	defer cancel()
 	if err := s.relay.RunDueAccountDegradation(ctx); err != nil {
 		s.log.Warn("account degradation checks failed", "err", err)

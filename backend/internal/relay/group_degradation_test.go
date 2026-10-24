@@ -48,7 +48,7 @@ func TestGroupDegradationPelicanTwoPassAndRawHTML(t *testing.T) {
 			}
 			degradationChatResponse(w, html)
 		} else {
-			if body.Model != "judge" || len(body.Messages) != 2 || body.Messages[0].Role != "system" || !strings.Contains(body.Messages[1].Content, html) {
+			if body.Model != "judge" || len(body.Messages) != 2 || body.Messages[0].Role != "system" || !strings.Contains(body.Messages[1].Content, `<circle r="4"/>`) {
 				t.Errorf("judge prompt/model mismatch: %+v", body)
 			}
 			degradationChatResponse(w, `{"status":"inconclusive","reason":"需要实际渲染才能确定踏频效果"}`)
@@ -72,7 +72,7 @@ func (f degradationTestTransport) RoundTrip(request *http.Request) (*http.Respon
 	return f(request)
 }
 
-func TestGroupDegradationCandyUsesJudgeAndOmitsNoneEffort(t *testing.T) {
+func TestGroupDegradationCandyVerdictUsesCodeCheck(t *testing.T) {
 	calls := 0
 	answer := "最少需要 21 颗糖果。"
 	transport := degradationTestTransport(func(r *http.Request) (*http.Response, error) {
@@ -84,32 +84,48 @@ func TestGroupDegradationCandyUsesJudgeAndOmitsNoneEffort(t *testing.T) {
 			t.Error("none reasoning_effort must be omitted")
 		}
 		if body["model"] != "candidate" {
-			t.Errorf("judge fallback model = %v", body["model"])
+			t.Errorf("generation model = %v", body["model"])
 		}
-		if calls == 1 {
-			prompt := fmt.Sprint(body["messages"])
-			for _, fragment := range []string{"黑色的袋子", "苹果味", "桃子味", "西瓜味", "圆形 | 7 | 9 | 8", "五角星形 | 7 | 6 | 4", "禁止联网", "禁止写代码算出答案", "禁止使用外部工具"} {
-				if !strings.Contains(prompt, fragment) {
-					t.Errorf("candy prompt missing %q", fragment)
-				}
+		prompt := fmt.Sprint(body["messages"])
+		for _, fragment := range []string{"黑色的袋子", "苹果味", "桃子味", "西瓜味", "圆形 | 7 | 9 | 8", "五角星形 | 7 | 6 | 4", "禁止联网", "禁止写代码算出答案", "禁止使用外部工具"} {
+			if !strings.Contains(prompt, fragment) {
+				t.Errorf("candy prompt missing %q", fragment)
 			}
-			if strings.Contains(prompt, candyDegradationExpectedAnswer) {
-				t.Error("generation prompt leaked reference answer")
-			}
-			degradationChatResponse(w, answer)
-		} else {
-			prompt := fmt.Sprint(body["messages"])
-			if candyDegradationExpectedAnswer != "21" || !strings.Contains(prompt, "固定参考答案为 21") || !strings.Contains(prompt, "不得重新计算或推导答案") || !strings.Contains(prompt, answer) {
-				t.Error("judge missing reference/candidate")
-			}
-			degradationChatResponse(w, "```json\n{\"status\":\"normal\",\"reason\":\"最终结论符合管理员提供的固定参考答案\"}\n```")
 		}
+		if strings.Contains(prompt, candyDegradationExpectedAnswer) {
+			t.Error("generation prompt leaked reference answer")
+		}
+		degradationChatResponse(w, answer)
 		return w.Result(), nil
 	})
 	s := &Service{client: &http.Client{Transport: transport}}
-	result := s.evaluateGroupDegradation(context.Background(), "https://model.invalid", "key", storage.GroupDegradationConfig{Method: "candy", Model: "candidate", Effort: "none"})
-	if result.Status != "normal" || result.Answer != answer || result.HTML != "" || calls != 2 || result.JudgeModel != "candidate" {
+	result := s.evaluateGroupDegradation(context.Background(), "https://model.invalid", "key", storage.GroupDegradationConfig{Method: "candy", Model: "candidate", JudgeModel: "judge", Effort: "none"})
+	if result.Status != "normal" || result.Answer != answer || result.HTML != "" || calls != 1 || result.JudgeModel != "" || !strings.Contains(result.Reason, "代码判定") {
 		t.Fatalf("result = %+v calls = %d", result, calls)
+	}
+}
+
+func TestCandyDegradationVerdictMatchesWholeReferenceAnswer(t *testing.T) {
+	for _, tc := range []struct{ name, answer, expected, wantStatus string }{
+		{"exact", "答案是 21。", "21", "normal"},
+		{"with unit", "最少需要21颗糖果", "21", "normal"},
+		{"full width digits", "答案是 ２１ 颗", "21", "normal"},
+		{"longer number keeps fragment", "答案是 210 颗", "21", "degraded"},
+		{"embedded fragment", "答案是 121 颗", "21", "degraded"},
+		{"missing reference", "答案为 20 颗", "21", "degraded"},
+		{"custom reference", "结论 forty-two", "forty-two", "normal"},
+		{"custom reference differs", "结论 forty three", "forty-two", "degraded"},
+		{"empty reference", "答案 21", "", "inconclusive"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status, reason := candyDegradationVerdict(tc.answer, tc.expected)
+			if status != tc.wantStatus || !strings.Contains(reason, "代码判定") {
+				t.Fatalf("status = %q reason = %q", status, reason)
+			}
+			if tc.expected != "" && strings.Contains(reason, tc.expected) {
+				t.Errorf("reason leaked the reference answer: %q", reason)
+			}
+		})
 	}
 }
 
@@ -138,7 +154,7 @@ func TestGroupDegradationJudgeFailurePreservesOutputAndRedacts(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		if calls == 1 {
-			degradationChatResponse(w, "answer local-secret sk-unsafe123 Bearer leaked123")
+			degradationChatResponse(w, "<html><body><svg></svg></body></html> local-secret sk-unsafe123 Bearer leaked123")
 			return
 		}
 		w.WriteHeader(http.StatusBadGateway)
@@ -146,9 +162,9 @@ func TestGroupDegradationJudgeFailurePreservesOutputAndRedacts(t *testing.T) {
 	}))
 	defer server.Close()
 	s := &Service{client: server.Client()}
-	result := s.evaluateGroupDegradation(context.Background(), server.URL, "local-secret", storage.GroupDegradationConfig{Method: "candy", Model: "candidate", Effort: "low"}, "local-secret", "admin-secret")
+	result := s.evaluateGroupDegradation(context.Background(), server.URL, "local-secret", storage.GroupDegradationConfig{Method: "pelican", Model: "candidate", Effort: "low"}, "local-secret", "admin-secret")
 	serialized, _ := json.Marshal(result)
-	if result.Status != "error" || result.Answer == "" || !strings.Contains(result.Reason, "HTTP 502") {
+	if result.Status != "error" || result.HTML == "" || !strings.Contains(result.Reason, "HTTP 502") {
 		t.Fatalf("result = %+v", result)
 	}
 	for _, secret := range []string{"local-secret", "admin-secret", "sk-unsafe123", "leaked123", "raw upstream details"} {
@@ -281,24 +297,13 @@ func TestGroupDegradationCustomPromptsAreMethodScoped(t *testing.T) {
 					if !strings.Contains(review, selected) || !strings.Contains(review, output) || strings.Contains(review, other) {
 						t.Errorf("wrong review scope: %s", review)
 					}
-					if method == "candy" {
-						for _, fragment := range []string{prompts.CandyExpectedAnswer, "由管理员提供", "不得重新计算或推导答案", "最终结论与管理员参考答案一致", "中间提及的参考答案"} {
-							if !strings.Contains(review, fragment) {
-								t.Errorf("custom judge missing %q", fragment)
-							}
+					for _, forbidden := range []string{prompts.CandyExpectedAnswer, "白色鹈鹕", "踏板", "合理车架", "prefers-reduced-motion"} {
+						if strings.Contains(review, forbidden) {
+							t.Errorf("custom pelican judge retained unrelated default/reference: %q", forbidden)
 						}
-						if strings.Contains(review, "21") || strings.Contains(review, "二十一") {
-							t.Error("custom answer judge retained default 21")
-						}
-					} else {
-						for _, forbidden := range []string{prompts.CandyExpectedAnswer, "白色鹈鹕", "踏板", "合理车架", "prefers-reduced-motion"} {
-							if strings.Contains(review, forbidden) {
-								t.Errorf("custom pelican judge retained unrelated default/reference: %q", forbidden)
-							}
-						}
-						if !strings.Contains(review, "参考标准") || !strings.Contains(review, "当前生成提示词") || !strings.Contains(review, "自定义参考标准：只允许蓝色的树") {
-							t.Error("custom pelican review did not use configured requirements")
-						}
+					}
+					if !strings.Contains(review, "参考标准") || !strings.Contains(review, "当前生成提示词") || !strings.Contains(review, "自定义参考标准：只允许蓝色的树") {
+						t.Error("custom pelican review did not use configured requirements")
 					}
 					degradationChatResponse(w, `{"status":"normal","reason":"候选最终结论或源码符合当前配置要求"}`)
 				}
@@ -306,7 +311,15 @@ func TestGroupDegradationCustomPromptsAreMethodScoped(t *testing.T) {
 			})
 			s := &Service{client: &http.Client{Transport: transport}}
 			result := s.evaluateGroupDegradationWithPrompts(context.Background(), "https://model.invalid", "key", storage.GroupDegradationConfig{Method: method, Model: "candidate", JudgeModel: "judge", Effort: "none"}, prompts)
-			if result.Status != "normal" || calls != 2 || method == "candy" && result.Answer != answer || method == "pelican" && result.HTML != html {
+			if method == "candy" {
+				// The candy verdict is a code check on the answer, so only the
+				// generation call happens and no review prompt is ever built.
+				if result.Status != "normal" || result.Answer != answer || calls != 1 {
+					t.Fatalf("candy result=%+v calls=%d", result, calls)
+				}
+				return
+			}
+			if result.Status != "normal" || calls != 2 || result.HTML != html {
 				t.Fatalf("result=%+v calls=%d", result, calls)
 			}
 		})
@@ -338,21 +351,21 @@ func TestPelicanReviewKeepsKeyCriteriaAndIgnoresCosmetics(t *testing.T) {
 }
 
 func TestGroupDegradationPrivateReviewEchoRedaction(t *testing.T) {
-	prompts := storage.DegradationPromptSettings{CandyPrompt: "private question\nsecond line", CandyExpectedAnswer: "private-answer", PelicanPrompt: "private drawing"}
+	prompts := storage.DegradationPromptSettings{CandyPrompt: "private question\nsecond line", CandyExpectedAnswer: "private-answer", PelicanPrompt: "private drawing", PelicanReference: "private reference\nsecond line"}
 	calls := 0
 	s := &Service{client: &http.Client{Transport: degradationTestTransport(func(r *http.Request) (*http.Response, error) {
 		calls++
 		w := httptest.NewRecorder()
 		if calls == 1 {
-			degradationChatResponse(w, "candidate final conclusion")
+			degradationChatResponse(w, "<html><body><svg></svg></body></html>")
 		} else {
-			judgment, _ := json.Marshal(map[string]string{"status": "normal", "reason": prompts.CandyPrompt + ": " + prompts.CandyExpectedAnswer})
+			judgment, _ := json.Marshal(map[string]string{"status": "normal", "reason": prompts.PelicanReference + " / " + prompts.PelicanPrompt})
 			degradationChatResponse(w, string(judgment))
 		}
 		return w.Result(), nil
 	})}}
-	result := s.evaluateGroupDegradationWithPrompts(context.Background(), "https://model.invalid", "key", storage.GroupDegradationConfig{Method: "candy", Model: "candidate"}, prompts)
-	if result.Status != "normal" || !strings.Contains(result.Reason, "[REDACTED]") || strings.Contains(result.Reason, prompts.CandyPrompt) || strings.Contains(result.Reason, prompts.CandyExpectedAnswer) {
+	result := s.evaluateGroupDegradationWithPrompts(context.Background(), "https://model.invalid", "key", storage.GroupDegradationConfig{Method: "pelican", Model: "candidate"}, prompts)
+	if result.Status != "normal" || !strings.Contains(result.Reason, "[REDACTED]") || strings.Contains(result.Reason, prompts.PelicanPrompt) || strings.Contains(result.Reason, "private reference") {
 		t.Fatalf("private review echo leaked: %+v", result)
 	}
 }
@@ -401,7 +414,7 @@ func TestGroupDegradationHTMLMustBeCompleteAndSelfContained(t *testing.T) {
 func TestGroupDegradationEvaluateInjectedChat(t *testing.T) {
 	for _, method := range []string{"candy", "pelican"} {
 		t.Run(method, func(t *testing.T) {
-			prompts := storage.DegradationPromptSettings{CandyPrompt: "private question", CandyExpectedAnswer: "private answer", PelicanPrompt: "private drawing"}
+			prompts := storage.DegradationPromptSettings{CandyPrompt: "private question", CandyExpectedAnswer: "21", PelicanPrompt: "private drawing"}
 			config := storage.GroupDegradationConfig{Method: method, Model: "candidate", JudgeModel: "judge", Effort: "high", Protocol: "responses"}
 			calls := 0
 			chat := func(ctx context.Context, model, effort, system, prompt string, timeout time.Duration, limit int) (string, error) {
@@ -418,17 +431,21 @@ func TestGroupDegradationEvaluateInjectedChat(t *testing.T) {
 						t.Fatalf("wrong generation arguments: %q %q %q %v %d", model, system, prompt, timeout, limit)
 					}
 					if method == "pelican" {
-						return "<html><svg/></html><!-- injected-secret -->", nil
+						return "<html>\n  <svg id=\"injected-secret\"/>\n</html>", nil
 					}
-					return "conclusion injected-secret", nil
+					return "final answer 21 injected-secret", nil
 				}
-				if model != "judge" || system != degradationJudgeSystem || timeout != 90*time.Second || limit != groupDegradationJudgeOutputLimit || strings.Contains(prompt, "injected-secret") || !strings.Contains(prompt, "[REDACTED]") {
+				if model != "judge" || system != degradationJudgeSystem || timeout != groupDegradationJudgeTimeout || limit != groupDegradationJudgeOutputLimit || strings.Contains(prompt, "injected-secret") || !strings.Contains(prompt, "[REDACTED]") {
 					t.Fatalf("wrong judge arguments: %q %q %v %d", model, prompt, timeout, limit)
 				}
 				return `{"status":"normal","reason":"符合配置要求"}`, nil
 			}
 			result := (&Service{}).evaluateDegradation(context.Background(), config, prompts, chat, "injected-secret")
-			if calls != 2 || result.Status != "normal" || strings.Contains(result.Answer+result.HTML, "injected-secret") {
+			wantCalls := 2
+			if method == "candy" {
+				wantCalls = 1
+			}
+			if calls != wantCalls || result.Status != "normal" || strings.Contains(result.Answer+result.HTML, "injected-secret") {
 				t.Fatalf("result=%+v calls=%d", result, calls)
 			}
 		})
@@ -449,7 +466,7 @@ func TestGroupDegradationGenerationAndJudgeProtocols(t *testing.T) {
 			calls := 0
 			s := &Service{client: &http.Client{Transport: degradationTestTransport(func(r *http.Request) (*http.Response, error) {
 				calls++
-				want, text := tc.generationPath, "answer"
+				want, text := tc.generationPath, "<html><svg/></html>"
 				if calls == 2 {
 					want, text = tc.judgePath, `{"status":"normal","reason":"符合配置要求"}`
 				}
@@ -464,8 +481,8 @@ func TestGroupDegradationGenerationAndJudgeProtocols(t *testing.T) {
 				}
 				return w.Result(), nil
 			})}}
-			result := s.evaluateGroupDegradation(context.Background(), "https://offline.invalid", "key", storage.GroupDegradationConfig{Method: "candy", Model: tc.candidate, JudgeModel: tc.judge, Protocol: tc.protocol})
-			if result.Status != "normal" || result.Answer != "answer" || calls != 2 {
+			result := s.evaluateGroupDegradation(context.Background(), "https://offline.invalid", "key", storage.GroupDegradationConfig{Method: "pelican", Model: tc.candidate, JudgeModel: tc.judge, Protocol: tc.protocol})
+			if result.Status != "normal" || result.HTML != "<html><svg/></html>" || calls != 2 {
 				t.Fatalf("result=%+v calls=%d", result, calls)
 			}
 		})
@@ -488,5 +505,23 @@ func TestGroupDegradationTruncatedGenerationNeverDegraded(t *testing.T) {
 		if result.Status != "error" || result.HTML != "" || calls != 1 || !strings.Contains(result.Reason, "生成失败") {
 			t.Fatalf("truncated response was judged: result=%+v calls=%d", result, calls)
 		}
+	}
+}
+
+// The review prompt used to carry the drawing verbatim, indentation included,
+// which is what made a slow judge time out on 30KB documents.
+func TestCompactDegradationEvidenceKeepsEveryElement(t *testing.T) {
+	source := "<html>\n  <!-- hidden -->\n  <style>\n    .p { fill: #fff; }\n  </style>\n\n  <svg id=\"a\">\n    <circle r=\"4\"/>\n  </svg>\n</html>\n"
+	compacted := compactDegradationEvidence(source)
+	if strings.Contains(compacted, "hidden") || strings.Contains(compacted, "\n\n") || strings.Contains(compacted, "  <") {
+		t.Fatalf("compaction left noise: %q", compacted)
+	}
+	for _, keep := range []string{"<style>", ".p { fill: #fff; }", `<svg id="a">`, `<circle r="4"/>`} {
+		if !strings.Contains(compacted, keep) {
+			t.Fatalf("compaction dropped %q: %q", keep, compacted)
+		}
+	}
+	if len(compacted) >= len(source) {
+		t.Fatalf("compaction did not shrink the evidence: %d -> %d", len(source), len(compacted))
 	}
 }
