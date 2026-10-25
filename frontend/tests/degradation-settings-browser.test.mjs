@@ -51,6 +51,10 @@ const errors = []
 let failPromptRead = true
 let failPromptWrite = true
 let failHistoryClear = true
+// Keep the mocked group run pending until the reopened dialog observes it.
+// A fixed delay can expire before the close/reopen interaction finishes.
+let groupRunGate = null
+let releaseGroupRun = null
 let browser
 try {
   await server.listen()
@@ -70,6 +74,11 @@ try {
       const results = [{ ...record(2), ...hidden, status: "normal" }, { ...record(1), ...hidden, status: "degraded", reason: "未通过检测" }]
       if (visibility === "hide") results.unshift({ ...record(3), ...hidden, status: "error", reason: "模拟上游调用失败" })
       return route.fulfill({ json: { data: { config: { ...(configs.get(key) || defaultConfig), enabled: true, result_visibility: visibility }, results } } })
+    }
+    const stationMatch = url.pathname.match(/^\/api\/relay-stations\/(\d+)$/)
+    if (stationMatch) {
+      assert.equal(method, "GET")
+      return route.fulfill({ json: { data: { station: { id: Number(stationMatch[1]), name: "测试站" }, groups: [{ external_id: 101, name: "甲组", monitor_enabled: true }, { external_id: 102, name: "乙组", monitor_enabled: false }], accounts: [] } } })
     }
     const accountMatch = url.pathname.match(/^\/api\/relay-stations\/(\d+)\/accounts\/(\d+)\/(models|degradation)(?:\/(run|history)(?:\/(\d+))?)?$/)
     if (accountMatch) {
@@ -117,11 +126,24 @@ try {
         ...(histories.get(`${usageMatch[1]}:101`) || []).map((item) => ({ ...item, scope: "group", scope_id: 101, scope_name: "甲组" })),
         ...(accountHistories.get(`${usageMatch[1]}:11`) || []).map((item) => ({ ...item, scope: "account", scope_id: 11, scope_name: "测试账号" })),
       ].filter((item) => scope === "all" || item.scope === scope)
+        // 导入的分组记录是账号测试的副本，服务端不计入费用统计，避免重复计数
+        .filter((item) => !item.source_result_id)
       const sum = (field) => items.reduce((total, item) => total + (item[field] || 0), 0)
       const totals = { runs: items.length, input_tokens: sum("input_tokens"), output_tokens: sum("output_tokens"), base_cost: sum("base_cost"), actual_cost: sum("actual_cost") }
       return route.fulfill({ json: { data: { items: items.slice((page - 1) * pageSize, page * pageSize), totals, total: items.length, page, page_size: pageSize, pages: Math.max(1, Math.ceil(items.length / pageSize)) } } })
     }
-    const match = url.pathname.match(/^\/api\/relay-stations\/(\d+)\/groups\/(\d+)(?:\/(models|degradation)(?:\/(history|run)(?:\/(\d+))?)?)?$/)
+    const reviewMatch = url.pathname.match(/^\/api\/relay-stations\/(\d+)\/groups\/(\d+)\/degradation\/history\/(\d+)\/review$/)
+    if (reviewMatch) {
+      assert.equal(method, "POST")
+      writes.push({ path: url.pathname, method })
+      const reviewKey = `${reviewMatch[1]}:${reviewMatch[2]}`
+      // 服务端只重跑评审：判定与理由更新，已存内容和手动改判标记一起处理
+      const rows = (histories.get(reviewKey) || []).map((item) => String(item.id) !== reviewMatch[3] ? item : { ...item, status: "normal", reason: "静态源码评审（未进行视觉验证）：重新评审通过", original_status: undefined, adjusted_at: undefined })
+      histories.set(reviewKey, rows)
+      await new Promise((done) => setTimeout(done, 200))
+      return route.fulfill({ json: { data: { config: configs.get(reviewKey) || defaultConfig, results: rows } } })
+    }
+    const match = url.pathname.match(/^\/api\/relay-stations\/(\d+)\/groups\/(\d+)(?:\/(models|degradation)(?:\/(history|run|import)(?:\/(\d+))?)?)?$/)
     assert.ok(match, `unexpected endpoint ${url.pathname}`)
     const key = `${match[1]}:${match[2]}`
     if (match[3] === "models") return route.fulfill({ json: { data: ["candidate", "reviewer"] } })
@@ -131,19 +153,51 @@ try {
       const result = { ...record(9), method: runMethod, created_at: "2026-01-01T12:09:00Z" }
       histories.set(key, [result, ...(histories.get(key) || [])].slice(0, configs.get(key)?.history_limit || 100))
       writes.push({ path: url.pathname, method })
-      await new Promise((done) => setTimeout(done, 400))
+      if (groupRunGate) {
+        await groupRunGate
+      } else {
+        await new Promise((done) => setTimeout(done, 400))
+      }
       return route.fulfill({ json: { data: result } })
     }
+    if (match[4] === "import") {
+      assert.equal(method, "POST")
+      const body = request.postDataJSON()
+      writes.push({ path: url.pathname, method, body })
+      const rows = histories.get(key) || []
+      if (rows.some((item) => item.source_result_id === body.account_result_id)) return route.fulfill({ json: { data: { imported: false, view: { config: configs.get(key) || defaultConfig, results: rows } } } })
+      const source = (accountHistories.get(`1:${body.account_external_id}`) || []).find((item) => item.id === body.account_result_id)
+      const imported = { ...record(7), status: source?.status || "degraded", reason: source?.reason || "左脚悬空并压住踏板", created_at: source?.created_at || "2026-01-01T12:08:00Z", input_tokens: 0, output_tokens: 0, base_cost: 0, cost_multiplier: 0, actual_cost: 0, source_account_id: body.account_external_id, source_account_name: "测试账号", source_result_id: body.account_result_id }
+      histories.set(key, [imported, ...rows])
+      return route.fulfill({ json: { data: { imported: true, view: { config: configs.get(key) || defaultConfig, results: histories.get(key) } } } })
+    }
     if (match[4] === "history") {
+      if (method === "PATCH") {
+        const body = request.postDataJSON()
+        writes.push({ path: url.pathname, method, body })
+        const rows = (histories.get(key) || []).map((item) => {
+          if (String(item.id) !== match[5]) return item
+          const original = item.original_status || item.status
+          // Mirrors the server: a new verdict keeps the superseded one, and going
+          // back to it clears the manual marker instead of stacking overrides.
+          return body.status === original ? { ...item, status: body.status, original_status: undefined, adjusted_at: undefined } : { ...item, status: body.status, original_status: original, adjusted_at: "2026-01-01T13:00:00Z" }
+        })
+        histories.set(key, rows)
+        return route.fulfill({ json: { data: { config: configs.get(key), results: rows } } })
+      }
       assert.equal(method, "DELETE")
-      writes.push({ path: url.pathname, method })
+      writes.push({ path: url.pathname, method, query: url.search })
       if (match[5]) {
         histories.set(key, (histories.get(key) || []).filter((item) => String(item.id) !== match[5]))
         return route.fulfill({ json: { data: { config: configs.get(key), results: histories.get(key) || [] } } })
       }
       if (failHistoryClear) { failHistoryClear = false; return route.fulfill({ status: 409, json: { error: "检测正在运行，请稍后清空" } }) }
-      histories.set(key, [])
-      return route.fulfill({ json: { data: { config: configs.get(key), results: [] } } })
+      // 清空只删当前筛选看到的记录：all / error / success / pelican / candy
+      const filter = url.searchParams.get("filter") || "all"
+      const matches = (item) => filter === "all" || (filter === "error" ? item.status === "error" : filter === "success" ? item.status !== "error" : item.method === filter)
+      const kept = (histories.get(key) || []).filter((item) => !matches(item))
+      histories.set(key, kept)
+      return route.fulfill({ json: { data: { config: configs.get(key), results: kept } } })
     }
     if (method === "PUT") { const body = request.postDataJSON(); configs.set(key, body); histories.set(key, (histories.get(key) || []).slice(0, body.history_limit)); writes.push({ path: url.pathname, method, body }) }
     return route.fulfill({ json: { data: { config: configs.get(key) || defaultConfig, results: histories.get(key) || [] } } })
@@ -214,7 +268,7 @@ try {
   await historyLimit.fill("2")
   await dialog.getByLabel("鹈鹕检测间隔（分钟）").fill("60")
   await dialog.getByLabel("糖果检测间隔（分钟）").fill("10")
-  assert.ok(await dialog.getByRole("button", { name: "清空历史", exact: true }).isDisabled())
+  assert.ok(await dialog.getByRole("button", { name: "清空当前列表", exact: true }).isDisabled())
   await dialog.getByRole("button", { name: "保存配置", exact: true }).click()
   await dialog.getByText("配置已保存", { exact: true }).waitFor()
   assert.equal(configs.get("1:101").history_limit, 2)
@@ -231,18 +285,39 @@ try {
   assert.equal(await dialog.locator("[data-degradation-history] [data-history-row]").count(), 1)
   assert.ok(writes.some((write) => write.method === "DELETE" && /^\/api\/relay-stations\/1\/groups\/101\/degradation\/history\/\d+$/.test(write.path)))
   console.log("PASS: single group history record can be deleted without touching the rest")
-  await dialog.getByRole("button", { name: "清空历史", exact: true }).click()
+  // 手动改判：只改判定状态，保留原判定标记，改回原值即取消标记
+  await dialog.getByRole("button", { name: /修改 .* 的检测结果/ }).first().click()
+  const review = page.getByRole("dialog", { name: "修改检测结果", exact: true })
+  await review.waitFor()
+  await review.getByRole("radio", { name: /疑似降智/ }).click()
+  await review.getByRole("button", { name: "保存判定", exact: true }).click()
+  await dialog.getByText("检测结果已改为「疑似降智」", { exact: true }).waitFor()
+  const reviewWrite = writes.filter((write) => write.method === "PATCH").at(-1)
+  assert.ok(/^\/api\/relay-stations\/1\/groups\/101\/degradation\/history\/\d+$/.test(reviewWrite.path))
+  assert.deepEqual(reviewWrite.body, { status: "degraded" })
+  let reviewedRow = dialog.locator("[data-degradation-history] [data-history-row]").first()
+  assert.match(await reviewedRow.textContent(), /疑似降智/)
+  assert.equal(await reviewedRow.locator("[data-history-manual]").getAttribute("title"), "原判定：正常")
+  await dialog.getByRole("button", { name: /修改 .* 的检测结果/ }).first().click()
+  await review.getByRole("radio", { name: /正常/ }).click()
+  await review.getByRole("button", { name: "保存判定", exact: true }).click()
+  await dialog.getByText("检测结果已改为「正常」", { exact: true }).waitFor()
+  reviewedRow = dialog.locator("[data-degradation-history] [data-history-row]").first()
+  assert.equal(await reviewedRow.locator("[data-history-manual]").count(), 0)
+  assert.match(await reviewedRow.textContent(), /正常/)
+  console.log("PASS: group history verdict can be reviewed by hand and reverted")
+  await dialog.getByRole("button", { name: "清空当前列表", exact: true }).click()
   let confirm = page.getByRole("alertdialog")
   await confirm.waitFor()
   const beforeDeletes = writes.filter((write) => write.method === "DELETE").length
   await confirm.getByRole("button", { name: "取消", exact: true }).click()
   assert.equal(writes.filter((write) => write.method === "DELETE").length, beforeDeletes)
-  await dialog.getByRole("button", { name: "清空历史", exact: true }).click()
+  await dialog.getByRole("button", { name: "清空当前列表", exact: true }).click()
   confirm = page.getByRole("alertdialog")
-  await confirm.getByRole("button", { name: "确认清空", exact: true }).click()
+  await confirm.getByRole("button", { name: "确认清空当前列表", exact: true }).click()
   await confirm.getByText("检测正在运行，请稍后清空", { exact: true }).waitFor()
   assert.equal(histories.get("1:101").length, 1)
-  await confirm.getByRole("button", { name: "确认清空", exact: true }).click()
+  await confirm.getByRole("button", { name: "确认清空当前列表", exact: true }).click()
   await dialog.getByText("检测历史已清空", { exact: true }).waitFor()
   assert.ok(await dialog.getByText("暂无检测记录", { exact: true }).isVisible())
   assert.equal(histories.get("1:102").length, 1)
@@ -250,6 +325,72 @@ try {
   assert.ok(writes.filter((write) => write.method === "DELETE").every((write) => /^\/api\/relay-stations\/1\/groups\/101\/degradation\/history(\/\d+)?$/.test(write.path)))
   await dialog.getByRole("button", { name: "Close", exact: true }).click()
   console.log("PASS: legacy history limit, save/prune, cancel without DELETE, failed-clear preservation, scoped clear and unchanged configuration")
+
+  // 失败阶段、按测试方式筛选与只重评审：列表外层要能判断该重测还是只重评审
+  const failedGeneration = { ...record(11), method: "pelican", status: "error", reason: "上游返回 HTTP 502，已重试 2 次", answer: "", html: "", created_at: "2026-01-01T13:05:00Z" }
+  const failedReview = { ...record(12), method: "pelican", status: "error", reason: "评审失败：模型响应超过大小上限", answer: "", html: '<html><svg><circle r="4"/></svg></html>', created_at: "2026-01-01T13:10:00Z" }
+  const candyOK = { ...record(13), status: "normal", reason: "代码判定：回答中包含参考答案", created_at: "2026-01-01T13:15:00Z" }
+  histories.set("1:101", [failedGeneration, failedReview, candyOK])
+  configs.set("1:101", { ...configs.get("1:101"), history_limit: 5 })
+  await page.getByRole("button", { name: "配置甲组降智监控", exact: true }).click()
+  dialog = page.getByRole("dialog", { name: "分组降智监测配置", exact: true })
+  const historyRows = dialog.locator("[data-degradation-history] [data-history-row]")
+  await historyRows.first().waitFor()
+  assert.equal(await historyRows.count(), 3)
+  // 没有生成内容 → 生成失败（只能重测）；已有内容 → 评审失败（可只重评审）
+  // 失败只报类别：网关问题可重跑，评审问题已有内容可只重评审
+  assert.equal(await historyRows.nth(0).locator("[data-history-failure]").textContent(), "网关问题")
+  assert.equal(await historyRows.nth(0).locator("[data-history-failure]").getAttribute("title"), "上游返回 HTTP 502，已重试 2 次")
+  assert.equal(await historyRows.nth(1).locator("[data-history-failure]").textContent(), "评审问题")
+  assert.equal(await historyRows.nth(2).locator("[data-history-failure]").count(), 0)
+  assert.ok(await historyRows.nth(0).getByRole("button", { name: /重新评审/ }).isDisabled())
+  assert.ok(!await historyRows.nth(1).getByRole("button", { name: /重新评审/ }).isDisabled())
+  // 两种测试混排时按测试方式筛选
+  await dialog.locator('[data-history-filter="pelican"]').click()
+  assert.equal(await historyRows.count(), 2)
+  await dialog.locator('[data-history-filter="candy"]').click()
+  assert.equal(await historyRows.count(), 1)
+  assert.match(await historyRows.first().textContent(), /糖果/)
+  // 成功 / 错误是独立的筛选维度，条数随之变化
+  await dialog.locator('[data-history-filter="error"]').click()
+  assert.equal(await historyRows.count(), 2)
+  await dialog.locator('[data-history-filter="success"]').click()
+  assert.equal(await historyRows.count(), 1)
+  assert.match(await historyRows.first().textContent(), /正常/)
+  await dialog.locator('[data-history-filter="all"]').click()
+  assert.equal(await historyRows.count(), 3)
+  // 只重评审：复用已存的 HTML，不重新生成
+  await historyRows.nth(1).getByRole("button", { name: /重新评审/ }).click()
+  await dialog.getByText("已重新评审，判定已更新", { exact: true }).waitFor()
+  const rejudgeWrite = writes.filter((write) => write.method === "POST" && /\/review$/.test(write.path)).at(-1)
+  assert.equal(rejudgeWrite.path, "/api/relay-stations/1/groups/101/degradation/history/12/review")
+  assert.equal(await historyRows.nth(1).locator("[data-history-failure]").count(), 0)
+  assert.match(await historyRows.nth(1).textContent(), /正常/)
+  await dialog.getByRole("button", { name: "Close", exact: true }).click()
+  // 分组列表的“最近降智检测”列同样带失败阶段，外层就能判断该重测还是只重评审
+  const latestFailure = page.locator("[data-degradation-failure]").first()
+  await latestFailure.waitFor()
+  assert.match(await latestFailure.textContent(), /网关问题/)
+  // 清空当前列表只删当前筛选：「错误」一键删掉，成功记录保留
+  await page.getByRole("button", { name: "配置甲组降智监控", exact: true }).click()
+  dialog = page.getByRole("dialog", { name: "分组降智监测配置", exact: true })
+  await dialog.locator('[data-history-filter="error"]').click()
+  assert.equal(await historyRows.count(), 1)
+  await dialog.getByRole("button", { name: "清空当前列表", exact: true }).click()
+  const filteredConfirm = page.getByRole("alertdialog")
+  await filteredConfirm.getByText(/「错误」的 1 条检测记录/).waitFor()
+  await filteredConfirm.getByRole("button", { name: "确认清空当前列表", exact: true }).click()
+  await dialog.getByText("已清空错误记录（1 条）", { exact: true }).waitFor()
+  await dialog.locator('[data-history-filter="all"]').click()
+  assert.equal(await historyRows.count(), 2)
+  assert.equal(histories.get("1:101").length, 2)
+  const filteredClear = writes.filter((write) => write.method === "DELETE" && write.query).at(-1)
+  assert.equal(filteredClear.query, "?filter=error")
+  await dialog.getByRole("button", { name: "Close", exact: true }).click()
+  // 还原成后续用例期望的状态：历史清空、上限退回 2 条
+  histories.set("1:101", [])
+  configs.set("1:101", { ...configs.get("1:101"), history_limit: 2 })
+  console.log("PASS: per-row failure stage, method filter and review-only re-judge")
 
   await page.getByRole("button", { name: "测试测试账号降智能力", exact: true }).click()
   dialog = page.getByRole("dialog", { name: "账号降智测试", exact: true })
@@ -267,6 +408,24 @@ try {
   await dialog.getByRole("button", { name: /糖果测试.*candidate/ }).waitFor()
   await dialog.getByRole("button", { name: "Close", exact: true }).click()
   console.log("PASS: manual account test, upstream error persisted and history reload")
+  // 账号测试可加入分组历史：选分组导入后，分组弹窗出现“账号测试”徽标
+  await page.getByRole("button", { name: "测试测试账号降智能力", exact: true }).click()
+  dialog = page.getByRole("dialog", { name: "账号降智测试", exact: true })
+  await dialog.getByRole("button", { name: /加入分组历史/ }).first().click()
+  const share = page.getByRole("dialog", { name: "加入分组降智历史", exact: true })
+  await share.getByLabel("目标分组", { exact: true }).selectOption("101")
+  await share.getByRole("button", { name: "加入分组历史", exact: true }).click()
+  await dialog.getByText(/已加入“甲组”的分组历史/).waitFor()
+  const importWrite = writes.filter((write) => write.path.endsWith("/degradation/import")).at(-1)
+  assert.equal(importWrite.path, "/api/relay-stations/1/groups/101/degradation/import")
+  assert.deepEqual(importWrite.body, { account_external_id: 11, account_result_id: accountHistories.get("1:11")[0].id })
+  await dialog.getByRole("button", { name: "Close", exact: true }).click()
+  await page.getByRole("button", { name: "配置甲组降智监控", exact: true }).click()
+  const publishedDialog = page.getByRole("dialog", { name: "分组降智监测配置", exact: true })
+  await publishedDialog.locator('[data-history-origin="account"]').first().waitFor()
+  assert.match(await publishedDialog.locator("[data-degradation-history] [data-history-row]").first().textContent(), /账号测试/)
+  await publishedDialog.getByRole("button", { name: "Close", exact: true }).click()
+  console.log("PASS: account test can be published into the chosen group history")
 
   // 账号降智记录可清空
   await page.getByRole("button", { name: "测试测试账号降智能力", exact: true }).click()
@@ -307,11 +466,15 @@ try {
   await dialog.getByRole("switch", { name: "未开启", exact: true }).click()
   await dialog.getByRole("button", { name: "保存配置", exact: true }).click()
   await dialog.getByText("配置已保存", { exact: true }).waitFor()
+  groupRunGate = new Promise((resolve) => { releaseGroupRun = resolve })
   await dialog.getByRole("button", { name: "立即检测", exact: true }).click()
   await dialog.getByRole("button", { name: "Close", exact: true }).click()
   await page.getByRole("button", { name: "配置甲组降智监控", exact: true }).click()
   dialog = page.getByRole("dialog", { name: "分组降智监测配置", exact: true })
   await dialog.getByRole("button", { name: "检测中", exact: true }).waitFor({ timeout: 3000 })
+  releaseGroupRun()
+  groupRunGate = null
+  releaseGroupRun = null
   await dialog.getByText("检测完成，结果已保存", { exact: true }).waitFor()
   const groupRunRow = dialog.locator("[data-degradation-history] [data-history-row]").nth(0)
   assert.match(await groupRunRow.textContent(), /调用账号 上游账号A/)
@@ -341,10 +504,11 @@ try {
   await publicBars.first().waitFor()
   assert.equal(await publicBars.count(), 2)
   await publicBars.first().hover()
-  await page.getByText("疑似降智", { exact: true }).last().waitFor()
-  assert.ok(await page.getByText("未通过检测，疑似降智", { exact: true }).last().isVisible())
+  const visiblePublicTooltip = page.locator('[data-slot="tooltip-content"]:visible')
+  await visiblePublicTooltip.locator(":scope > p").filter({ hasText: /^疑似降智$/ }).waitFor()
+  await visiblePublicTooltip.locator(":scope > p").filter({ hasText: /^未通过检测，疑似降智$/ }).waitFor()
   await publicBars.last().hover()
-  await page.getByText("通过检测", { exact: true }).last().waitFor()
+  await visiblePublicTooltip.locator(":scope > p").filter({ hasText: /^通过检测$/ }).waitFor()
   console.log("PASS: hidden public results still explain pass or fail on hover")
 
   // “展示预览”时悬浮说明测试项目；调用失败的记录不展示
@@ -352,8 +516,8 @@ try {
   await showBars.first().waitFor()
   assert.equal(await showBars.count(), 2)
   await showBars.first().hover()
-  const previewCard = page.locator("[data-slot='hover-card-content']").last()
-  await previewCard.getByText("测试项目：糖果测试 · candidate", { exact: true }).waitFor()
+  const previewCard = page.locator("[data-slot='hover-card-content']:visible")
+  await previewCard.getByText("测试类型：糖果测试（斜纹） · candidate", { exact: true }).waitFor()
   await previewCard.getByText("疑似降智", { exact: true }).waitFor()
   console.log("PASS: preview mode names the test item and hides failed calls")
   await page.getByRole("button", { name: "打开动态监测", exact: true }).click()

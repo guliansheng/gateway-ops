@@ -1,15 +1,16 @@
 "use client"
 
 import { useEffect, useId, useRef, useState } from "react"
-import { BrainCircuit, Loader2, Play, Trash2 } from "lucide-react"
+import { BrainCircuit, Loader2, Play, Share2, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
-import { Dialog, DialogBody, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { ResultDialog, ResultFrame } from "@/components/monitor/group-degradation-settings"
 import { DegradationModelSelect, DegradationProtocolSelect } from "@/components/monitor/degradation-model-select"
 import { apiFetch } from "@/lib/api"
-import { defaultDegradationConfig, degradationStatusMeta, type GroupDegradationResult } from "@/lib/group-degradation"
+import { defaultDegradationConfig, degradationStatusMeta, type GroupDegradationResult, type GroupDegradationView } from "@/lib/group-degradation"
+import type { RelayGroupView, RelayOverview } from "@/lib/api-types"
 import { degradationRunKey, startDegradationRun, useDegradationRun } from "@/lib/degradation-runs"
 import { cn } from "@/lib/utils"
 
@@ -36,6 +37,12 @@ function AccountTestForm({ stationID, accountID, onResult, onClear, onDelete, hi
   const [selected, setSelected] = useState<GroupDegradationResult | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<GroupDegradationResult | null>(null)
   const [deleting, setDeleting] = useState(false)
+  const [shareTarget, setShareTarget] = useState<GroupDegradationResult | null>(null)
+  const [groups, setGroups] = useState<RelayGroupView[]>([])
+  const [groupsLoading, setGroupsLoading] = useState(false)
+  const [shareGroup, setShareGroup] = useState("")
+  const [sharing, setSharing] = useState(false)
+  const [shareError, setShareError] = useState("")
   const controller = useRef<AbortController | null>(null)
   const mutation = useRef(false)
   const endpoint = `/relay-stations/${stationID}/accounts/${accountID}/degradation`
@@ -45,6 +52,7 @@ function AccountTestForm({ stationID, accountID, onResult, onClear, onDelete, hi
     controller.current = abort
     mutation.current = false
     setLoading(true); setLoaded(false); setError(""); setMessage(""); setSelected(null); setResults([]); setModels([]); setDeleting(false); setDeleteTarget(null)
+    setShareTarget(null); setSharing(false); setShareError(""); setShareGroup("")
     setModelsLoading(true); setModelsError("")
     void apiFetch<{ results: GroupDegradationResult[] }>(endpoint, { signal: abort.signal }).then((data) => {
       if (!abort.signal.aborted) { setResults(data.results ?? []); setLoaded(true) }
@@ -96,6 +104,39 @@ function AccountTestForm({ stationID, accountID, onResult, onClear, onDelete, hi
       setError(requestError instanceof Error ? requestError.message : "删除记录失败")
     } finally { setDeleting(false) }
   }
+  /**
+   * Publishing one account test into a group history: the copy keeps the verdict
+   * and the original test time, so the group monitor page shows the same evidence.
+   * Only groups of this station can be chosen, and the server rejects an account
+   * result that does not belong to the account.
+   */
+  async function openShare(result: GroupDegradationResult) {
+    setError(""); setShareError(""); setShareGroup(""); setShareTarget(result); setGroupsLoading(true)
+    try {
+      const data = await apiFetch<RelayOverview>(`/relay-stations/${stationID}`)
+      setGroups(data.groups ?? [])
+    } catch (requestError) {
+      setShareError(requestError instanceof Error ? requestError.message : "分组读取失败")
+    } finally { setGroupsLoading(false) }
+  }
+
+  async function shareResult() {
+    const target = shareTarget
+    const group = groups.find((entry) => String(entry.external_id) === shareGroup)
+    if (!target || !group || sharing) return
+    setSharing(true); setShareError("")
+    try {
+      const data = await apiFetch<{ imported: boolean; view: GroupDegradationView }>(`/relay-stations/${stationID}/groups/${group.external_id}/degradation/import`, { method: "POST", body: JSON.stringify({ account_external_id: accountID, account_result_id: target.id }) })
+      const listed = (data.view?.results ?? []).some((row) => row.source_account_id === accountID && row.created_at === target.created_at)
+      const notes = [data.imported ? `已加入“${group.name}”的分组历史` : `该测试已在“${group.name}”的分组历史中`]
+      if (data.imported && !listed) notes.push("记录早于分组保留的最新条数，暂时不在列表中")
+      if (!group.monitor_enabled) notes.push("该分组未开启监控，暂不显示在渠道状态页")
+      if (!data.view?.config?.enabled) notes.push("该分组未开启降智检测，暂不显示在渠道状态页")
+      setShareTarget(null); setMessage(notes.join("；"))
+    } catch (requestError) {
+      setShareError(requestError instanceof Error ? requestError.message : "加入分组历史失败")
+    } finally { setSharing(false) }
+  }
 
   if (loading) return <p role="status" className="flex items-center gap-2 py-6 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />读取测试记录</p>
   if (!loaded) return <div className="space-y-3"><p role="alert" className="text-sm text-danger">{error}</p><Button variant="outline" onClick={() => setVersion((current) => current + 1)}>重新读取记录</Button></div>
@@ -114,10 +155,21 @@ function AccountTestForm({ stationID, accountID, onResult, onClear, onDelete, hi
     {message ? <p role="status" className="text-sm text-success">{message}</p> : null}
     <section aria-label="账号降智测试历史" className="space-y-2"><div className="flex items-center justify-between gap-2"><h3 className="text-sm font-medium">测试记录</h3><div className="flex items-center gap-1"><Button variant="ghost" size="sm" className="gap-1.5 text-danger" disabled={running || clearing || !results.length} onClick={() => { setError(""); setClearConfirm(true) }}><Trash2 className="size-3.5" />清空记录</Button><Button variant="ghost" size="sm" disabled={running} onClick={() => setVersion((current) => current + 1)}>刷新记录</Button></div></div><div className="space-y-3">{results.length ? results.map((result) => {
       const meta = degradationStatusMeta[result.status] ?? degradationStatusMeta.inconclusive
-      return <article key={result.id} className="grid min-w-0 gap-3 border-b border-border py-3 sm:grid-cols-[minmax(0,1fr)_160px]"><div className="min-w-0 space-y-2 text-xs"><button type="button" onClick={() => setSelected(result)} className="min-w-0 space-y-2 break-words text-left"><span className="block truncate font-medium">{result.method === "pelican" ? "鹈鹕测试" : "糖果测试"} · {result.model || "未记录模型"}</span><time className="block text-muted-foreground">{new Date(result.created_at).toLocaleString("zh-CN")}</time><span className={cn("block", meta.tone)}>{meta.label}</span><span className="block text-brand">查看详情</span></button><Button type="button" variant="ghost" size="sm" className="h-7 gap-1 px-2 text-[11px] text-danger" disabled={running || deleting} aria-label={`删除 ${new Date(result.created_at).toLocaleString("zh-CN")} 的测试记录`} onClick={() => { setError(""); setDeleteTarget(result) }}><Trash2 className="size-3" />删除记录</Button></div><div className="w-[160px] max-w-full"><ResultFrame result={result} compact /></div></article>
+      return <article key={result.id} className="grid min-w-0 gap-3 border-b border-border py-3 sm:grid-cols-[minmax(0,1fr)_160px]"><div className="min-w-0 space-y-2 text-xs"><button type="button" onClick={() => setSelected(result)} className="min-w-0 space-y-2 break-words text-left"><span className="block truncate font-medium">{result.method === "pelican" ? "鹈鹕测试" : "糖果测试"} · {result.model || "未记录模型"}</span><time className="block text-muted-foreground">{new Date(result.created_at).toLocaleString("zh-CN")}</time><span className={cn("block", meta.tone)}>{meta.label}</span><span className="block text-brand">查看详情</span></button><div className="flex flex-wrap items-center gap-1"><Button type="button" variant="ghost" size="sm" className="h-7 gap-1 px-2 text-[11px]" disabled={running || deleting || sharing} aria-label={`把 ${new Date(result.created_at).toLocaleString("zh-CN")} 的测试加入分组历史`} onClick={() => void openShare(result)}><Share2 className="size-3" />加入分组历史</Button><Button type="button" variant="ghost" size="sm" className="h-7 gap-1 px-2 text-[11px] text-danger" disabled={running || deleting} aria-label={`删除 ${new Date(result.created_at).toLocaleString("zh-CN")} 的测试记录`} onClick={() => { setError(""); setDeleteTarget(result) }}><Trash2 className="size-3" />删除记录</Button></div></div><div className="w-[160px] max-w-full"><ResultFrame result={result} compact /></div></article>
     }) : <p className="py-4 text-xs text-muted-foreground">暂无测试记录</p>}</div></section>
     <AlertDialog open={clearConfirm} onOpenChange={(open) => { if (!clearing) setClearConfirm(open) }}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>清空测试记录？</AlertDialogTitle><AlertDialogDescription>仅清空该账号的降智测试历史，无法恢复。不影响其他账号、测试标准或分组检测。</AlertDialogDescription></AlertDialogHeader>{error ? <p role="alert" className="text-sm text-danger">{error}</p> : null}<AlertDialogFooter><AlertDialogCancel disabled={clearing}>取消</AlertDialogCancel><Button type="button" variant="destructive" disabled={clearing} onClick={() => void clearHistory()}>{clearing ? <Loader2 className="mr-1.5 size-4 animate-spin" /> : null}确认清空</Button></AlertDialogFooter></AlertDialogContent></AlertDialog>
     <AlertDialog open={Boolean(deleteTarget)} onOpenChange={(open) => { if (!open && !deleting) setDeleteTarget(null) }}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>删除这条测试记录？</AlertDialogTitle><AlertDialogDescription>{deleteTarget ? `${new Date(deleteTarget.created_at).toLocaleString("zh-CN")} · ${deleteTarget.method === "pelican" ? "鹈鹕测试" : "糖果测试"}，删除后无法恢复。不影响其他记录、测试标准或分组检测。` : ""}</AlertDialogDescription></AlertDialogHeader>{error ? <p role="alert" className="text-sm text-danger">{error}</p> : null}<AlertDialogFooter><AlertDialogCancel disabled={deleting}>取消</AlertDialogCancel><Button type="button" variant="destructive" disabled={deleting} onClick={() => void deleteResult()}>{deleting ? <Loader2 className="mr-1.5 size-4 animate-spin" /> : null}确认删除</Button></AlertDialogFooter></AlertDialogContent></AlertDialog>
+    <Dialog open={Boolean(shareTarget)} onOpenChange={(open) => { if (!open && !sharing) setShareTarget(null) }}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader><DialogTitle>加入分组降智历史</DialogTitle><DialogDescription>{shareTarget ? `${shareTarget.method === "pelican" ? "鹈鹕测试" : "糖果测试"} · ${shareTarget.model || "未记录模型"} · ${new Date(shareTarget.created_at).toLocaleString("zh-CN")}` : ""}</DialogDescription></DialogHeader>
+        <DialogBody className="space-y-3">
+          <p className="text-xs leading-5 text-muted-foreground">把这条账号测试复制到所选分组的降智历史，判定和生成内容保持原样，时间沿用原测试时间；重复导入同一条记录不会产生副本。</p>
+          <label htmlFor={`${id}-share-group`} className="block space-y-2 text-xs font-medium"><span>目标分组</span><select id={`${id}-share-group`} aria-label="目标分组" className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm" disabled={groupsLoading || sharing} value={shareGroup} onChange={(event) => setShareGroup(event.target.value)}><option value="">{groupsLoading ? "读取分组…" : groups.length ? "请选择分组" : "暂无分组"}</option>{groups.map((group) => <option key={group.external_id} value={String(group.external_id)}>{group.name}{group.monitor_enabled ? "" : "（未开启监控）"}</option>)}</select></label>
+          {shareError ? <p role="alert" className="text-sm text-danger">{shareError}</p> : null}
+        </DialogBody>
+        <DialogFooter className="gap-2 px-4 pb-4 sm:px-6"><Button type="button" variant="outline" disabled={sharing} onClick={() => setShareTarget(null)}>取消</Button><Button type="button" className="gap-2" disabled={sharing || !shareGroup} onClick={() => void shareResult()}>{sharing ? <Loader2 className="size-4 animate-spin" /> : <Share2 className="size-4" />}加入分组历史</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
     <ResultDialog result={selected} onClose={() => setSelected(null)} />
   </div>
 }

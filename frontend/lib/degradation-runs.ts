@@ -8,32 +8,34 @@ import type { GroupDegradationResult } from "@/lib/group-degradation"
  *
  * 请求不绑定组件生命周期：关闭弹窗、切换页签都不会中断检测，结束后后端照旧
  * 写入历史。重新打开弹窗时订阅到「运行中」状态，完成后自动把结果补进列表。
+ * 重新评审复用同一套机制（结果类型换成整个分组视图），因为一次评审同样可能
+ * 跑上几分钟，关掉弹窗不能把已经花掉的评审调用丢掉。
  */
 export type DegradationRunScope = "group" | "account"
 
-export interface DegradationRunState {
+export interface DegradationRunState<T = GroupDegradationResult> {
   running: boolean
   /** 本次运行的开始与结束时间戳，用于区分不同的运行批次。 */
   startedAt: number
   finishedAt: number
-  result: GroupDegradationResult | null
+  result: T | null
   error: string
 }
 
-const idleState: DegradationRunState = { running: false, startedAt: 0, finishedAt: 0, result: null, error: "" }
+const idleState: DegradationRunState<never> = { running: false, startedAt: 0, finishedAt: 0, result: null, error: "" }
 
-const states = new Map<string, DegradationRunState>()
+const states = new Map<string, DegradationRunState<unknown>>()
 const listeners = new Map<string, Set<() => void>>()
 
 export function degradationRunKey(scope: DegradationRunScope, stationID: number, targetID: number) {
   return `${scope}:${stationID}:${targetID}`
 }
 
-export function getDegradationRun(key: string): DegradationRunState {
-  return states.get(key) ?? idleState
+export function getDegradationRun<T = GroupDegradationResult>(key: string): DegradationRunState<T> {
+  return (states.get(key) ?? (idleState as DegradationRunState<T>)) as DegradationRunState<T>
 }
 
-function publish(key: string, state: DegradationRunState) {
+function publish(key: string, state: DegradationRunState<unknown>) {
   states.set(key, state)
   listeners.get(key)?.forEach((listener) => listener())
 }
@@ -49,7 +51,7 @@ export function subscribeDegradationRun(key: string, listener: () => void) {
 }
 
 /** 启动一次后台运行。同一目标已有运行任务时直接返回，避免重复计费。 */
-export function startDegradationRun(key: string, request: () => Promise<GroupDegradationResult>) {
+export function startDegradationRun<T = GroupDegradationResult>(key: string, request: () => Promise<T>) {
   const current = states.get(key)
   if (current?.running) return
   const startedAt = Date.now()
@@ -61,10 +63,10 @@ export function startDegradationRun(key: string, request: () => Promise<GroupDeg
   })
 }
 
-export function useDegradationRun(key: string) {
+export function useDegradationRun<T = GroupDegradationResult>(key: string) {
   return useSyncExternalStore(
     useCallback((listener: () => void) => subscribeDegradationRun(key, listener), [key]),
-    useCallback(() => getDegradationRun(key), [key]),
-    useCallback(() => idleState, []),
+    useCallback(() => getDegradationRun<T>(key), [key]),
+    useCallback(() => idleState as DegradationRunState<T>, []),
   )
 }

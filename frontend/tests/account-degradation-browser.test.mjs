@@ -159,6 +159,8 @@ try {
 	await dialog.getByText("测试完成，记录已保存",{exact:true}).waitFor()
 	await dialog.getByRole("region",{name:"账号降智测试历史"}).waitFor()
 	assert.equal(writes.filter((write)=>write.accountID===11).length,1)
+	// 账号历史行提供“加入分组历史”入口；分组选择与导入结果在分组设置验收用例中覆盖
+	assert.ok(await dialog.getByRole("region",{name:"账号降智测试历史"}).getByRole("button",{name:/加入分组历史/}).count() >= 1)
 	// 单条历史可删除，删除后列表同步
 	const historyRegion = dialog.getByRole("region",{name:"账号降智测试历史"})
 	const historyCount = histories.get(11).length
