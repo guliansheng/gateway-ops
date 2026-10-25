@@ -106,6 +106,74 @@ func (s *Service) UpdateGroupDegradationResult(ctx context.Context, stationID ui
 	return view, err
 }
 
+// ReviewGroupDegradation re-evaluates one archived history row and stamps the
+// fresh machine verdict back onto it. Unlike a manual PATCH the admin never
+// chooses the outcome here: reviewing re-runs the code check for candy rows and
+// the static-source judge for pelican rows, using the stored HTML/answer as
+// evidence, then replaces the verdict with SaveGroupDegradationVerdict.
+func (s *Service) ReviewGroupDegradation(ctx context.Context, stationID uint, groupID int64, resultID uint) (storage.GroupDegradationView, error) {
+	config, err := s.stations.GroupDegradationConfigFor(ctx, stationID, groupID)
+	if err != nil {
+		return storage.GroupDegradationView{}, err
+	}
+	if !config.Enabled {
+		return storage.GroupDegradationView{}, storage.ErrGroupDegradationDisabled
+	}
+	stored, err := s.stations.GroupDegradationResultByID(ctx, stationID, groupID, resultID)
+	if err != nil {
+		return storage.GroupDegradationView{}, err
+	}
+	prompts, err := s.stations.GetDegradationPromptSettings(ctx, stationID)
+	if err != nil {
+		return storage.GroupDegradationView{}, err
+	}
+	verdict, reason := s.reviewDegradationEvidence(ctx, stationID, groupID, config, stored, prompts)
+	if err := s.stations.SaveGroupDegradationVerdict(ctx, stationID, groupID, resultID, verdict, reason); err != nil {
+		return storage.GroupDegradationView{}, err
+	}
+	view, err := s.stations.GroupDegradationView(ctx, stationID, groupID, false)
+	if err == nil {
+		s.invalidatePublicMonitor(stationID)
+	}
+	return view, err
+}
+
+// reviewDegradationEvidence re-runs the machine verdict for one archived row.
+// candy rows are checked against the reference answer in code; pelican rows send
+// the compacted stored drawing to the configured judge. No generation happens —
+// the evidence is already persisted — so the review never rewrites HTML/answer.
+func (s *Service) reviewDegradationEvidence(ctx context.Context, stationID uint, groupID int64, config storage.GroupDegradationConfig, stored storage.GroupDegradationResult, prompts storage.DegradationPromptSettings) (string, string) {
+	if stored.Method == "candy" {
+		return candyDegradationVerdict(stored.Answer, prompts.CandyExpectedAnswer)
+	}
+	station, key, _, err := s.groupGatewayCredentialWithOwner(ctx, stationID, groupID)
+	if err != nil {
+		return "inconclusive", "重新评审失败：无法获取当前分组的有效管理员密钥"
+	}
+	judgeModel := config.JudgeModel
+	if judgeModel == "" {
+		judgeModel = config.Model
+	}
+	secrets := []string{key}
+	if s.cipher != nil {
+		if adminKey, decryptErr := s.cipher.Decrypt(station.APIKeyCipher); decryptErr == nil && adminKey != "" {
+			secrets = append(secrets, adminKey)
+		}
+	}
+	chat := func(ctx context.Context, model, effort, system, prompt string, timeout time.Duration, limit int) (string, error) {
+		protocol := config.Protocol
+		if model != config.Model {
+			protocol = "" // A separate judge may belong to a different model family.
+		}
+		return s.degradationChat(ctx, station.BaseURL, key, model, effort, system, prompt, timeout, limit, protocol)
+	}
+	status, reason, err := judgeDegradation(ctx, chat, judgeModel, config.Effort, prompts, prompts.PelicanPrompt, stored.HTML, secrets...)
+	if err != nil {
+		return "inconclusive", "重新评审失败：" + err.Error()
+	}
+	return status, "静态源码评审（未进行视觉验证）：" + reason
+}
+
 // acquireDegradationSlot takes one slot from a fixed pool, so no unbounded queue
 // can build up behind a slow upstream.
 func acquireDegradationSlot(pool []sync.Mutex) (func(), bool) {

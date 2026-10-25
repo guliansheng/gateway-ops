@@ -26,6 +26,7 @@ func registerGroupDegradation(g *gin.RouterGroup, d *Deps) {
 	g.DELETE(groupDegradationRoute+"/history", func(c *gin.Context) { clearGroupDegradationHistory(c, d) })
 	g.DELETE(groupDegradationRoute+"/history/:result_id", func(c *gin.Context) { deleteGroupDegradationResult(c, d) })
 	g.PATCH(groupDegradationRoute+"/history/:result_id", func(c *gin.Context) { patchGroupDegradationResult(c, d) })
+	g.POST(groupDegradationRoute+"/history/:result_id/review", func(c *gin.Context) { reviewGroupDegradation(c, d) })
 	g.GET(degradationPromptsRoute, func(c *gin.Context) { getDegradationPrompts(c, d) })
 	g.PUT(degradationPromptsRoute, func(c *gin.Context) { putDegradationPrompts(c, d) })
 	g.GET("/relay-stations/:id/accounts/:external_id/degradation", func(c *gin.Context) { getAccountDegradation(c, d) })
@@ -238,6 +239,27 @@ func clearGroupDegradationHistory(c *gin.Context, d *Deps) {
 	// The filter narrows which rows are removed (error/success/pelican/candy);
 	// invalid values are rejected inside the storage transaction with a 400.
 	view, err := d.Relay.ClearGroupDegradationHistory(c.Request.Context(), stationID, groupID, c.Query("filter"))
+	if err != nil {
+		failGroupDegradation(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": view})
+}
+
+// Re-review one history row: re-run the machine verdict on the stored evidence
+// and stamp the fresh outcome back. The body is intentionally ignored — the
+// judge decides, never the caller.
+func reviewGroupDegradation(c *gin.Context, d *Deps) {
+	stationID, groupID, ok := groupDegradationParams(c, d)
+	if !ok {
+		return
+	}
+	resultID, err := uintParam(c, "result_id")
+	if err != nil || resultID == 0 {
+		fail(c, http.StatusBadRequest, errors.New("检测记录 ID 无效"))
+		return
+	}
+	view, err := d.Relay.ReviewGroupDegradation(c.Request.Context(), stationID, groupID, resultID)
 	if err != nil {
 		failGroupDegradation(c, err)
 		return

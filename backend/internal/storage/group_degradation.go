@@ -479,6 +479,54 @@ func (r *RelayStations) UpdateGroupDegradationResult(ctx context.Context, statio
 	})
 }
 
+// SaveGroupDegradationVerdict stamps a fresh machine verdict onto one history
+// row during a re-review. Unlike the manual override path, there is no superseded
+// verdict worth keeping: the re-judge outcome replaces the row outright, clears
+// any earlier manual marker, and leaves the stored evidence untouched.
+func (r *RelayStations) SaveGroupDegradationVerdict(ctx context.Context, stationID uint, groupID int64, resultID uint, status, reason string) error {
+	status = strings.TrimSpace(status)
+	if !ValidGroupDegradationStatus(status) {
+		return ErrInvalidGroupDegradationConfig
+	}
+	if _, err := r.groupDegradationScope(ctx, stationID, groupID); err != nil {
+		return err
+	}
+	return r.db.WithContext(ctx).Model(&GroupDegradationResult{}).
+		Where("id = ? AND station_id = ? AND group_external_id = ?", resultID, stationID, groupID).
+		Updates(map[string]any{
+			"status": status, "reason": reason,
+			"original_status": "", "adjusted_at": nil,
+		}).Error
+}
+
+// GroupDegradationResultByID reads one archived history row for a re-review.
+// The read is scoped to the station and group so a foreign id is reported as
+// missing instead of leaking another group's evidence.
+func (r *RelayStations) GroupDegradationResultByID(ctx context.Context, stationID uint, groupID int64, resultID uint) (GroupDegradationResult, error) {
+	var result GroupDegradationResult
+	if _, err := r.groupDegradationScope(ctx, stationID, groupID); err != nil {
+		return result, err
+	}
+	err := r.db.WithContext(ctx).
+		Where("id = ? AND station_id = ? AND group_external_id = ?", resultID, stationID, groupID).
+		First(&result).Error
+	return result, err
+}
+
+// GroupDegradationConfigFor reads the config needed to re-run one group's
+// degradation check. History is deliberately not loaded: the re-review flow
+// reads the archived row separately, so this call stays a single scoped read.
+func (r *RelayStations) GroupDegradationConfigFor(ctx context.Context, stationID uint, groupID int64) (GroupDegradationConfig, error) {
+	var config GroupDegradationConfig
+	if _, err := r.groupDegradationScope(ctx, stationID, groupID); err != nil {
+		return config, err
+	}
+	err := r.db.WithContext(ctx).
+		Where("station_id = ? AND group_external_id = ?", stationID, groupID).
+		First(&config).Error
+	return config, err
+}
+
 // mergeDegradationBuckets restores the single created_at DESC, id DESC order a
 // one-query fetch would have produced. The two-bucket reads each cap their own
 // limit so failing checks never evict other verdicts; equal timestamps tie-break

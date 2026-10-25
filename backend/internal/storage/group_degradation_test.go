@@ -956,3 +956,77 @@ func TestUpdateGroupDegradationResultValidatesBeforeWriting(t *testing.T) {
 		t.Fatalf("result outside scope err=%v state=%+v", err, state)
 	}
 }
+
+func TestSaveGroupDegradationVerdictReplacesVerdictOnly(t *testing.T) {
+	update := degradationSQLStep{contains: `UPDATE "group_degradation_results"`, check: func(query string, args []driver.NamedValue) {
+		if status, ok := degradationUpdateArg(args, query, "status"); !ok || status != "normal" {
+			t.Errorf("status=%v query=%s", status, query)
+		}
+		if reason, ok := degradationUpdateArg(args, query, "reason"); !ok || !strings.Contains(fmt.Sprint(reason), "静态源码评审") {
+			t.Errorf("reason=%v query=%s", reason, query)
+		}
+		// A fresh machine verdict supersedes an earlier manual review.
+		if original, ok := degradationUpdateArg(args, query, "original_status"); !ok || original != "" {
+			t.Errorf("original_status=%v query=%s", original, query)
+		}
+		if adjusted, ok := degradationUpdateArg(args, query, "adjusted_at"); !ok || adjusted != nil {
+			t.Errorf("adjusted_at=%v query=%s", adjusted, query)
+		}
+		for _, evidence := range []string{`"html"`, `"answer"`, `"input_tokens"`, `"actual_cost"`} {
+			if strings.Contains(query, evidence) {
+				t.Errorf("re-judge rewrote %s: %s", evidence, query)
+			}
+		}
+		if !strings.Contains(query, `WHERE id = $`) || !strings.Contains(query, "station_id = $") || !strings.Contains(query, "group_external_id = $") {
+			t.Errorf("verdict update lost its group scope: %s", query)
+		}
+	}}
+	steps := append(degradationScopeSteps(true), update)
+	repo, _ := newDegradationSQL(t, steps...)
+	if err := repo.SaveGroupDegradationVerdict(context.Background(), 1, 9, 59, "normal", "静态源码评审（未进行视觉验证）：源码满足参考标准"); err != nil {
+		t.Fatalf("verdict err=%v", err)
+	}
+}
+
+func TestSaveGroupDegradationVerdictValidatesBeforeWriting(t *testing.T) {
+	repo, state := newDegradationSQL(t)
+	if err := repo.SaveGroupDegradationVerdict(context.Background(), 1, 9, 59, "passed", "理由"); !errors.Is(err, ErrInvalidGroupDegradationConfig) || state.commits+state.rollbacks != 0 {
+		t.Fatalf("invalid verdict err=%v state=%+v", err, state)
+	}
+	unknownStation := degradationScopeSteps(true)[:1]
+	unknownStation[0].rows = nil
+	repo, state = newDegradationSQL(t, unknownStation...)
+	if err := repo.SaveGroupDegradationVerdict(context.Background(), 1, 9, 59, "normal", "理由"); !errors.Is(err, gorm.ErrRecordNotFound) || state.commits+state.rollbacks != 0 {
+		t.Fatalf("unknown station err=%v state=%+v", err, state)
+	}
+}
+
+func TestGroupDegradationResultReadsStayInGroupScope(t *testing.T) {
+	row := degradationResultRow(59, "error", "", nil)
+	row.columns = append(row.columns, "method", "html")
+	row.rows[0] = append(row.rows[0], "pelican", "<html><svg/></html>")
+	row.check = func(query string, args []driver.NamedValue) {
+		if !strings.Contains(query, "id = $1 AND station_id = $2 AND group_external_id = $3") || len(args) != 4 || args[0].Value != int64(59) || args[1].Value != int64(1) || args[2].Value != int64(9) || args[3].Value != int64(1) {
+			t.Errorf("scoped read args=%v query=%s", args, query)
+		}
+	}
+	repo, _ := newDegradationSQL(t, append(degradationScopeSteps(true), row)...)
+	stored, err := repo.GroupDegradationResultByID(context.Background(), 1, 9, 59)
+	if err != nil || stored.ID != 59 || stored.Method != "pelican" || stored.HTML == "" {
+		t.Fatalf("stored=%+v err=%v", stored, err)
+	}
+	foreign := degradationResultRow(59, "normal", "", nil)
+	foreign.rows = nil
+	repo, _ = newDegradationSQL(t, append(degradationScopeSteps(true), foreign)...)
+	if _, err := repo.GroupDegradationResultByID(context.Background(), 1, 9, 59); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("foreign result err=%v", err)
+	}
+}
+
+func TestGroupDegradationConfigForReadsWithoutHistory(t *testing.T) {
+	repo, _ := newDegradationSQL(t, append(degradationScopeSteps(true), degradationConfigStep(true, nil))...)
+	config, err := repo.GroupDegradationConfigFor(context.Background(), 1, 9)
+	if err != nil || !config.Enabled || config.HistoryLimit != 100 {
+		t.Fatalf("config=%+v err=%v", config, err)
+	}
+}
