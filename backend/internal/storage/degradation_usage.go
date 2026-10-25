@@ -122,7 +122,10 @@ func (r *RelayStations) DegradationUsage(ctx context.Context, stationID uint, sc
 	rows := make([]DegradationUsageItem, 0, window*2)
 	if scope != DegradationUsageScopeAccount {
 		var groups []GroupDegradationResult
-		if err := r.db.WithContext(ctx).Select(usageColumns+", group_external_id").Where("station_id = ?", stationID).
+		// Imported rows are copies of an account run that the account side
+		// already reports, so the group side skips them: counting both would
+		// inflate the run count of the merged report.
+		if err := r.db.WithContext(ctx).Select(usageColumns+", group_external_id").Where("station_id = ? AND source_result_id = 0", stationID).
 			Order("created_at DESC").Order("id DESC").Limit(window).Find(&groups).Error; err != nil {
 			return result, err
 		}
@@ -188,7 +191,7 @@ const usageColumns = "id, method, model, judge_model, status, created_at, used_a
 
 func (r *RelayStations) degradationUsageTotals(ctx context.Context, stationID uint, scope string) (DegradationUsageTotals, int64, error) {
 	totals := DegradationUsageTotals{}
-	sum := func(model any) error {
+	sum := func(model any, where string) error {
 		row := struct {
 			Runs         int64
 			InputTokens  int64
@@ -196,9 +199,13 @@ func (r *RelayStations) degradationUsageTotals(ctx context.Context, stationID ui
 			BaseCost     float64
 			ActualCost   float64
 		}{}
-		err := r.db.WithContext(ctx).Model(model).Select(
+		query := r.db.WithContext(ctx).Model(model).Select(
 			"COUNT(*) AS runs, COALESCE(SUM(input_tokens),0) AS input_tokens, COALESCE(SUM(output_tokens),0) AS output_tokens, COALESCE(SUM(base_cost),0) AS base_cost, COALESCE(SUM(actual_cost),0) AS actual_cost",
-		).Where("station_id = ?", stationID).Scan(&row).Error
+		).Where("station_id = ?", stationID)
+		if where != "" {
+			query = query.Where(where)
+		}
+		err := query.Scan(&row).Error
 		if err != nil {
 			return err
 		}
@@ -210,12 +217,12 @@ func (r *RelayStations) degradationUsageTotals(ctx context.Context, stationID ui
 		return nil
 	}
 	if scope != DegradationUsageScopeAccount {
-		if err := sum(&GroupDegradationResult{}); err != nil {
+		if err := sum(&GroupDegradationResult{}, "source_result_id = 0"); err != nil {
 			return totals, 0, err
 		}
 	}
 	if scope != DegradationUsageScopeGroup {
-		if err := sum(&AccountDegradationResult{}); err != nil {
+		if err := sum(&AccountDegradationResult{}, ""); err != nil {
 			return totals, 0, err
 		}
 	}

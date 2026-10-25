@@ -27,6 +27,7 @@ func registerGroupDegradation(g *gin.RouterGroup, d *Deps) {
 	g.DELETE(groupDegradationRoute+"/history/:result_id", func(c *gin.Context) { deleteGroupDegradationResult(c, d) })
 	g.PATCH(groupDegradationRoute+"/history/:result_id", func(c *gin.Context) { patchGroupDegradationResult(c, d) })
 	g.POST(groupDegradationRoute+"/history/:result_id/review", func(c *gin.Context) { reviewGroupDegradation(c, d) })
+	g.POST(groupDegradationRoute+"/import", func(c *gin.Context) { importGroupDegradationResult(c, d) })
 	g.GET(degradationPromptsRoute, func(c *gin.Context) { getDegradationPrompts(c, d) })
 	g.PUT(degradationPromptsRoute, func(c *gin.Context) { putDegradationPrompts(c, d) })
 	g.GET("/relay-stations/:id/accounts/:external_id/degradation", func(c *gin.Context) { getAccountDegradation(c, d) })
@@ -311,6 +312,31 @@ func patchGroupDegradationResult(c *gin.Context, d *Deps) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": view})
+}
+
+// Copy one account test into this group's history. The account must belong to
+// the same station, and the account result must belong to that account, so an
+// id from another tenant can never be imported.
+func importGroupDegradationResult(c *gin.Context, d *Deps) {
+	stationID, groupID, ok := groupDegradationParams(c, d)
+	if !ok {
+		return
+	}
+	var body struct {
+		AccountExternalID int64 `json:"account_external_id"`
+		AccountResultID   uint  `json:"account_result_id"`
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4*1024)
+	if err := decodeDegradationObject(c.Request.Body, &body); err != nil || body.AccountExternalID <= 0 || body.AccountResultID == 0 {
+		fail(c, http.StatusBadRequest, errors.New("请求体必须包含有效的 account_external_id 与 account_result_id"))
+		return
+	}
+	view, created, err := d.Relay.ImportGroupDegradationResult(c.Request.Context(), stationID, groupID, body.AccountExternalID, body.AccountResultID)
+	if err != nil {
+		failGroupDegradation(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"imported": created, "view": view}})
 }
 
 func getAccountDegradation(c *gin.Context, d *Deps) {

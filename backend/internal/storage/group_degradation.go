@@ -479,6 +479,57 @@ func (r *RelayStations) UpdateGroupDegradationResult(ctx context.Context, statio
 	})
 }
 
+// ImportAccountDegradationResult copies one account test into a group history so
+// a manual account run can be published on the group monitor page. The copy
+// keeps the original test time and verdict, and drops the accounting columns on
+// purpose: the same run is already reported from the account table, so copying
+// tokens or cost here would double count the usage report. Importing the same
+// account result twice returns the existing row instead of a duplicate.
+func (r *RelayStations) ImportAccountDegradationResult(ctx context.Context, stationID uint, groupID int64, accountID int64, resultID uint) (GroupDegradationResult, bool, error) {
+	var imported GroupDegradationResult
+	if _, err := r.groupDegradationScope(ctx, stationID, groupID); err != nil {
+		return imported, false, err
+	}
+	created := false
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var source AccountDegradationResult
+		if err := tx.Where("id = ? AND station_id = ? AND account_external_id = ?", resultID, stationID, accountID).First(&source).Error; err != nil {
+			return err
+		}
+		var existing GroupDegradationResult
+		err := tx.Where("station_id = ? AND group_external_id = ? AND source_result_id = ?", stationID, groupID, resultID).First(&existing).Error
+		if err == nil {
+			imported = existing
+			return nil
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		name := source.UsedAccountName
+		var account RelayAccount
+		if err := tx.Select("name").Where("relay_station_id = ? AND external_id = ?", stationID, accountID).First(&account).Error; err == nil && account.Name != "" {
+			name = account.Name
+		}
+		copied := GroupDegradationResult{
+			StationID: stationID, GroupExternalID: groupID,
+			Method: source.Method, Model: source.Model, JudgeModel: source.JudgeModel, Effort: source.Effort,
+			Status: source.Status, Reason: source.Reason, HTML: source.HTML, Answer: source.Answer,
+			UsedAccountID: source.UsedAccountID, UsedAccountName: source.UsedAccountName,
+			CreatedAt:       source.CreatedAt,
+			SourceAccountID: accountID, SourceAccountName: name, SourceResultID: resultID,
+		}
+		if copied.CreatedAt.IsZero() {
+			copied.CreatedAt = time.Now()
+		}
+		if err := tx.Create(&copied).Error; err != nil {
+			return err
+		}
+		imported, created = copied, true
+		return nil
+	})
+	return imported, created, err
+}
+
 // SaveGroupDegradationVerdict stamps a fresh machine verdict onto one history
 // row during a re-review. Unlike the manual override path, there is no superseded
 // verdict worth keeping: the re-judge outcome replaces the row outright, clears

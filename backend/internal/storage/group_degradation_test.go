@@ -863,7 +863,6 @@ func TestDeleteGroupDegradationResultRejectsUnknownScope(t *testing.T) {
 		t.Fatalf("delete outside scope err=%v state=%+v", err, state)
 	}
 }
-
 func TestValidGroupDegradationStatusAcceptsTrimmedVerdicts(t *testing.T) {
 	for _, status := range []string{"normal", "degraded", "inconclusive", "error", " normal "} {
 		if !ValidGroupDegradationStatus(status) {
@@ -1029,4 +1028,124 @@ func TestGroupDegradationConfigForReadsWithoutHistory(t *testing.T) {
 	if err != nil || !config.Enabled || config.HistoryLimit != 100 {
 		t.Fatalf("config=%+v err=%v", config, err)
 	}
+}
+
+// degradationInsertArg reads one column out of a GORM struct insert, so
+// assertions do not depend on column order or on the driver argument layout.
+func degradationInsertArg(args []driver.NamedValue, query, column string) (driver.Value, bool) {
+	columns := regexp.MustCompile(`INSERT INTO "[^"]+" \(([^)]*)\) VALUES`).FindStringSubmatch(query)
+	values := regexp.MustCompile(`VALUES \(([^)]*)\)`).FindStringSubmatch(query)
+	if columns == nil || values == nil {
+		return nil, false
+	}
+	names, slots := strings.Split(columns[1], ","), strings.Split(values[1], ",")
+	if len(names) != len(slots) {
+		return nil, false
+	}
+	for i, name := range names {
+		if strings.Trim(name, `" `) != column {
+			continue
+		}
+		index, err := strconv.Atoi(strings.TrimPrefix(strings.TrimSpace(slots[i]), "$"))
+		if err != nil || index < 1 || index > len(args) {
+			return nil, false
+		}
+		return args[index-1].Value, true
+	}
+	return nil, false
+}
+
+// degradationAccountResultStep is the account test a group history import
+// copies from, including the accounting columns that must not be copied.
+func degradationAccountResultStep(createdAt time.Time) degradationSQLStep {
+	return degradationSQLStep{
+		contains: `FROM "account_degradation_results"`,
+		columns:  []string{"id", "station_id", "account_external_id", "method", "model", "judge_model", "effort", "status", "reason", "html", "answer", "used_account_id", "used_account_name", "input_tokens", "output_tokens", "actual_cost", "created_at"},
+		rows:     [][]driver.Value{{int64(42), int64(1), int64(11), "pelican", "gpt-6.1-sol", "judge-model", "medium", "degraded", "左脚悬空并压住踏板", "<html>evidence</html>", "answer", int64(3), "station account", int64(1200), int64(300), 0.42, createdAt}},
+	}
+}
+
+func TestImportAccountDegradationResultCopiesVerdictWithoutAccounting(t *testing.T) {
+	sourceTime := time.Now().Add(-2 * time.Hour).UTC().Truncate(time.Microsecond)
+	steps := append(degradationScopeSteps(true), degradationAccountResultStep(sourceTime))
+	steps = append(steps, degradationSQLStep{contains: `FROM "group_degradation_results"`, columns: []string{"id"}})
+	steps = append(steps, degradationSQLStep{contains: `FROM "relay_accounts"`, columns: []string{"name"}, rows: [][]driver.Value{{"relay account"}}})
+	steps = append(steps, degradationSQLStep{contains: `INSERT INTO "group_degradation_results"`, columns: []string{"id"}, rows: [][]driver.Value{{int64(77)}}, check: func(query string, args []driver.NamedValue) {
+		for column, want := range map[string]driver.Value{
+			"station_id": int64(1), "group_external_id": int64(9),
+			"source_account_id": int64(11), "source_result_id": int64(42), "source_account_name": "relay account",
+			"method": "pelican", "model": "gpt-6.1-sol", "judge_model": "judge-model", "effort": "medium",
+			"status": "degraded", "reason": "左脚悬空并压住踏板",
+		} {
+			if got, ok := degradationInsertArg(args, query, column); !ok || got != want {
+				t.Errorf("copied %s=%v want=%v query=%s", column, got, want, query)
+			}
+		}
+		created, ok := degradationInsertArg(args, query, "created_at")
+		if !ok {
+			t.Fatalf("created_at missing from import: %s", query)
+		}
+		if at, isTime := created.(time.Time); !isTime || !at.Equal(sourceTime) {
+			t.Errorf("import rewrote the test time: %v", created)
+		}
+		// The same run is already counted in the account table; copying usage
+		// would make the usage report count these tokens and the cost twice. The
+		// insert lists every column, so the check is that they are all zero.
+		for column, want := range map[string]driver.Value{
+			"input_tokens": int64(0), "output_tokens": int64(0),
+			"base_cost": float64(0), "cost_multiplier": float64(0), "actual_cost": float64(0),
+			"started_at": nil, "usage_synced_at": nil,
+		} {
+			if got, ok := degradationInsertArg(args, query, column); !ok || got != want {
+				t.Errorf("imported row wrote %s=%v, want %v", column, got, want)
+			}
+		}
+	}})
+	repo, state := newDegradationSQL(t, steps...)
+	imported, created, err := repo.ImportAccountDegradationResult(context.Background(), 1, 9, 11, 42)
+	if err != nil || !created || state.commits != 1 || state.rollbacks != 0 {
+		t.Fatalf("imported=%+v created=%v err=%v state=%+v", imported, created, err, state)
+	}
+	if imported.ID != 77 || imported.SourceAccountID != 11 || imported.SourceResultID != 42 || imported.SourceAccountName != "relay account" || imported.Status != "degraded" || !imported.CreatedAt.Equal(sourceTime) {
+		t.Fatalf("imported row lost provenance: %+v", imported)
+	}
+}
+
+func TestImportAccountDegradationResultDeduplicatesAndValidatesSource(t *testing.T) {
+	sourceTime := time.Now().Add(-time.Hour).UTC().Truncate(time.Microsecond)
+	t.Run("duplicate", func(t *testing.T) {
+		steps := append(degradationScopeSteps(true), degradationAccountResultStep(sourceTime))
+		steps = append(steps, degradationSQLStep{contains: `FROM "group_degradation_results"`, columns: []string{"id", "status", "source_result_id"}, rows: [][]driver.Value{{int64(88), "normal", int64(42)}}})
+		repo, state := newDegradationSQL(t, steps...)
+		imported, created, err := repo.ImportAccountDegradationResult(context.Background(), 1, 9, 11, 42)
+		if err != nil || created || imported.ID != 88 || state.commits != 1 {
+			t.Fatalf("duplicate import created a row: imported=%+v created=%v err=%v", imported, created, err)
+		}
+	})
+	t.Run("source name fallback", func(t *testing.T) {
+		steps := append(degradationScopeSteps(true), degradationAccountResultStep(sourceTime))
+		steps = append(steps, degradationSQLStep{contains: `FROM "group_degradation_results"`, columns: []string{"id"}})
+		steps = append(steps, degradationSQLStep{contains: `FROM "relay_accounts"`, columns: []string{"name"}})
+		steps = append(steps, degradationSQLStep{contains: `INSERT INTO "group_degradation_results"`, columns: []string{"id"}, rows: [][]driver.Value{{int64(77)}}, check: func(query string, args []driver.NamedValue) {
+			if name, ok := degradationInsertArg(args, query, "source_account_name"); !ok || name != "station account" {
+				t.Errorf("fallback account name=%v query=%s", name, query)
+			}
+		}})
+		repo, _ := newDegradationSQL(t, steps...)
+		imported, created, err := repo.ImportAccountDegradationResult(context.Background(), 1, 9, 11, 42)
+		if err != nil || !created || imported.SourceAccountName != "station account" {
+			t.Fatalf("fallback imported=%+v created=%v err=%v", imported, created, err)
+		}
+	})
+	t.Run("result outside account scope", func(t *testing.T) {
+		foreign := degradationSQLStep{contains: `FROM "account_degradation_results"`, columns: []string{"id"}, check: func(query string, args []driver.NamedValue) {
+			if !strings.Contains(query, "id = $1 AND station_id = $2 AND account_external_id = $3") || len(args) != 4 || args[0].Value != int64(42) || args[1].Value != int64(1) || args[2].Value != int64(11) {
+				t.Errorf("account result not scoped to the station/account: %s %+v", query, args)
+			}
+		}}
+		repo, state := newDegradationSQL(t, append(degradationScopeSteps(true), foreign)...)
+		if _, created, err := repo.ImportAccountDegradationResult(context.Background(), 1, 9, 11, 42); !errors.Is(err, gorm.ErrRecordNotFound) || created || state.rollbacks != 1 {
+			t.Fatalf("foreign result imported: created=%v err=%v state=%+v", created, err, state)
+		}
+	})
 }

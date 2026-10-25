@@ -106,6 +106,22 @@ func (s *Service) UpdateGroupDegradationResult(ctx context.Context, stationID ui
 	return view, err
 }
 
+// ImportGroupDegradationResult copies one account test into this group's history
+// and returns the refreshed admin view plus whether a new row was inserted (false
+// when the account result was already imported). The account-side authoritative
+// row is preserved by storage; the relay only refreshes the view afterwards.
+func (s *Service) ImportGroupDegradationResult(ctx context.Context, stationID uint, groupID int64, accountID int64, resultID uint) (storage.GroupDegradationView, bool, error) {
+	_, created, err := s.stations.ImportAccountDegradationResult(ctx, stationID, groupID, accountID, resultID)
+	if err != nil {
+		return storage.GroupDegradationView{}, false, err
+	}
+	view, err := s.stations.GroupDegradationView(ctx, stationID, groupID, false)
+	if err == nil {
+		s.invalidatePublicMonitor(stationID)
+	}
+	return view, created, err
+}
+
 // ReviewGroupDegradation re-evaluates one archived history row and stamps the
 // fresh machine verdict back onto it. Unlike a manual PATCH the admin never
 // chooses the outcome here: reviewing re-runs the code check for candy rows and

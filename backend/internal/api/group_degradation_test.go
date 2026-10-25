@@ -41,6 +41,7 @@ func TestGroupDegradationRouteContract(t *testing.T) {
 		"DELETE /api/relay-stations/:id/groups/:external_id/degradation/history":                 true,
 		"DELETE /api/relay-stations/:id/groups/:external_id/degradation/history/:result_id":      true,
 		"PATCH /api/relay-stations/:id/groups/:external_id/degradation/history/:result_id":       true,
+		"POST /api/relay-stations/:id/groups/:external_id/degradation/import":                    true,
 		"POST /api/relay-stations/:id/groups/:external_id/degradation/history/:result_id/review": true,
 		"GET /api/relay-stations/:id/degradation-prompts":                                        true,
 		"PUT /api/relay-stations/:id/degradation-prompts":                                        true,
@@ -84,6 +85,11 @@ func TestGroupDegradationReviewAndImportValidation(t *testing.T) {
 		{http.MethodPatch, "/api/relay-stations/1/groups/9/degradation/history/5", `{"status":"ok"}`},
 		{http.MethodPatch, "/api/relay-stations/1/groups/9/degradation/history/5", `{"status":null}`},
 		{http.MethodPatch, "/api/relay-stations/1/groups/9/degradation/history/5", `{"status":"normal","api_key":"secret"}`},
+		{http.MethodPost, "/api/relay-stations/1/groups/9/degradation/import", `null`},
+		{http.MethodPost, "/api/relay-stations/1/groups/9/degradation/import", `{}`},
+		{http.MethodPost, "/api/relay-stations/1/groups/9/degradation/import", `{"account_external_id":0,"account_result_id":3}`},
+		{http.MethodPost, "/api/relay-stations/1/groups/9/degradation/import", `{"account_external_id":11,"account_result_id":0}`},
+		{http.MethodPost, "/api/relay-stations/1/groups/9/degradation/import", `{"account_external_id":"11","account_result_id":3}`},
 	}
 	for _, tc := range cases {
 		w := httptest.NewRecorder()
