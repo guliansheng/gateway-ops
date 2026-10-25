@@ -69,8 +69,11 @@ func (s *Service) UpdateDegradationPrompts(ctx context.Context, stationID uint, 
 	return storage.NormalizeDegradationPromptSettings(prompts)
 }
 
-func (s *Service) ClearGroupDegradationHistory(ctx context.Context, stationID uint, groupID int64) (storage.GroupDegradationView, error) {
-	view, err := s.stations.ClearGroupDegradationHistory(ctx, stationID, groupID)
+func (s *Service) ClearGroupDegradationHistory(ctx context.Context, stationID uint, groupID int64, filter string) (storage.GroupDegradationView, error) {
+	if _, err := s.stations.ClearGroupDegradationHistory(ctx, stationID, groupID, filter); err != nil {
+		return storage.GroupDegradationView{}, err
+	}
+	view, err := s.stations.GroupDegradationView(ctx, stationID, groupID, false)
 	if err == nil {
 		s.invalidatePublicMonitor(stationID)
 	}

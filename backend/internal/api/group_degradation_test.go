@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -316,6 +317,18 @@ func degradationAPIStationStep() degradationAPISQLStep {
 	return degradationAPISQLStep{contains: `FROM "relay_stations"`, columns: []string{"id"}, rows: [][]driver.Value{{int64(1)}}}
 }
 
+// 清空 / 删除 / 改判都会重新读一次管理端视图，测试要按真实顺序排队：
+// 站点 → 分组 → 配置 → 成功桶 → 失败桶。
+func degradationAPIViewSteps(historyLimit int, completedRows [][]driver.Value) []degradationAPISQLStep {
+	return []degradationAPISQLStep{
+		degradationAPIStationStep(),
+		{contains: `FROM "relay_groups"`, columns: []string{"relay_station_id", "external_id"}, rows: [][]driver.Value{{int64(1), int64(9)}}},
+		{contains: `FROM "group_degradation_configs"`, columns: []string{"id", "station_id", "group_external_id", "enabled", "history_limit"}, rows: [][]driver.Value{{int64(7), int64(1), int64(9), true, int64(historyLimit)}}},
+		{contains: `FROM "group_degradation_results"`, columns: []string{"id"}, rows: completedRows},
+		{contains: `FROM "group_degradation_results"`, columns: []string{"id"}},
+	}
+}
+
 func TestDegradationPromptsGetPutResponseAndStationErrors(t *testing.T) {
 	for _, tc := range []struct {
 		method                   string
@@ -446,6 +459,18 @@ func TestGroupDegradationClearHistoryHTTPContract(t *testing.T) {
 					steps = append(steps, clear)
 				}
 			}
+			// 清空成功后会重读视图：只清“错误”时剩下的成功记录必须一起返回。
+			wantResults := 0
+			if !tc.busy && !tc.missingGroup && !tc.dbError {
+				if tc.missingConfig {
+					steps = append(steps, degradationAPIStationStep(),
+						degradationAPISQLStep{contains: `FROM "relay_groups"`, columns: []string{"relay_station_id", "external_id"}, rows: [][]driver.Value{{int64(1), int64(9)}}},
+						degradationAPISQLStep{contains: `FROM "group_degradation_configs"`, columns: []string{"id"}})
+				} else {
+					steps = append(steps, degradationAPIViewSteps(27, [][]driver.Value{{int64(5)}})...)
+					wantResults = 1
+				}
+			}
 			r, state := newDegradationAPISQL(t, steps...)
 			w := httptest.NewRecorder()
 			r.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/api/relay-stations/1/groups/9/degradation/history", nil))
@@ -469,7 +494,7 @@ func TestGroupDegradationClearHistoryHTTPContract(t *testing.T) {
 			var response struct {
 				Data storage.GroupDegradationView `json:"data"`
 			}
-			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || response.Data.Results == nil || len(response.Data.Results) != 0 || state.commits != 1 {
+			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || response.Data.Results == nil || len(response.Data.Results) != wantResults || state.commits != 1 {
 				t.Fatalf("clear response=%s err=%v", w.Body.String(), err)
 			}
 			wantLimit := 27
@@ -478,6 +503,51 @@ func TestGroupDegradationClearHistoryHTTPContract(t *testing.T) {
 			}
 			if response.Data.Config.HistoryLimit != wantLimit || strings.Contains(w.Body.String(), "candy_prompt") || strings.Contains(w.Body.String(), "candy_expected_answer") {
 				t.Fatalf("clear config/secret contract=%s", w.Body.String())
+			}
+		})
+	}
+}
+
+// 清空接口把 filter 原样透传：非法筛选返回 400 且不落库，
+// 前端的“清空当前列表”依赖这条约定，不能退化成删全表。
+func TestGroupDegradationClearHistoryHTTPFilter(t *testing.T) {
+	for _, tc := range []struct {
+		filter   string
+		wantCode int
+		scope    string
+	}{
+		{filter: "error", wantCode: http.StatusOK, scope: "status = $"},
+		{filter: "success", wantCode: http.StatusOK, scope: "status <> $"},
+		{filter: "candy", wantCode: http.StatusOK, scope: "method = $"},
+		{filter: "全部", wantCode: http.StatusBadRequest},
+	} {
+		t.Run(tc.filter, func(t *testing.T) {
+			group := degradationAPISQLStep{contains: `FROM "relay_groups"`, columns: []string{"relay_station_id", "external_id"}, rows: [][]driver.Value{{int64(1), int64(9)}}}
+			config := degradationAPISQLStep{contains: "FOR UPDATE", columns: []string{"id", "station_id", "group_external_id", "enabled", "history_limit", "lease_until"}, rows: [][]driver.Value{{int64(7), int64(1), int64(9), true, int64(27), nil}}}
+			steps := []degradationAPISQLStep{degradationAPIStationStep(), group, config}
+			if tc.wantCode == http.StatusOK {
+				steps = append(steps, degradationAPISQLStep{contains: `DELETE FROM "group_degradation_results"`, check: func(query string, args []driver.NamedValue) {
+					if !strings.Contains(query, tc.scope) || len(args) != 3 || args[1].Value != int64(1) || args[2].Value != int64(9) {
+						t.Errorf("filtered clear SQL=%s args=%+v", query, args)
+					}
+				}})
+			}
+			if tc.wantCode == http.StatusOK {
+				steps = append(steps, degradationAPIViewSteps(27, nil)...)
+			}
+			r, state := newDegradationAPISQL(t, steps...)
+			w := httptest.NewRecorder()
+			target := "/api/relay-stations/1/groups/9/degradation/history?filter=" + url.QueryEscape(tc.filter)
+			r.ServeHTTP(w, httptest.NewRequest(http.MethodDelete, target, nil))
+			if w.Code != tc.wantCode {
+				t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+			}
+			if tc.wantCode == http.StatusOK {
+				if state.commits != 1 {
+					t.Fatalf("filtered clear didn't commit")
+				}
+			} else if state.rollbacks != 1 || state.commits != 0 {
+				t.Fatalf("rejected filter committed: commits=%d rollbacks=%d", state.commits, state.rollbacks)
 			}
 		})
 	}

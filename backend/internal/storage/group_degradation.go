@@ -20,6 +20,7 @@ var (
 	ErrGroupDegradationBusy          = errors.New("降智检测正在运行，请稍后重试")
 	ErrInvalidGroupDegradationConfig = errors.New("降智检测配置无效")
 	ErrGroupDegradationLeaseLost     = errors.New("降智检测执行租约已失效")
+	ErrInvalidDegradationFilter      = errors.New("降智检测历史筛选方式无效")
 )
 
 // These rows deliberately have no relation to the replaceable relay_groups snapshot.
@@ -391,7 +392,7 @@ func pruneGroupDegradationHistory(tx *gorm.DB, stationID uint, groupID int64, li
 
 // ClearGroupDegradationHistory shares the claim/completion row lock and leaves
 // configuration, scheduling state, and station-owned prompts untouched.
-func (r *RelayStations) ClearGroupDegradationHistory(ctx context.Context, stationID uint, groupID int64) (GroupDegradationView, error) {
+func (r *RelayStations) ClearGroupDegradationHistory(ctx context.Context, stationID uint, groupID int64, filter string) (GroupDegradationView, error) {
 	view := GroupDegradationView{Config: DefaultGroupDegradationConfig(), Results: []GroupDegradationResult{}}
 	if _, err := r.groupDegradationScope(ctx, stationID, groupID); err != nil {
 		return view, err
@@ -411,8 +412,20 @@ func (r *RelayStations) ClearGroupDegradationHistory(ctx context.Context, statio
 		}
 		config.HistoryLimit = groupDegradationHistoryLimit(config.HistoryLimit)
 		view.Config = config
-		return tx.Where("station_id = ? AND group_external_id = ?", stationID, groupID).
-			Delete(&GroupDegradationResult{}).Error
+		query := tx
+		switch strings.TrimSpace(filter) {
+		case "", "all":
+			// No narrowing clause: the whole scoped history is cleared.
+		case "error":
+			query = query.Where("status = ?", "error")
+		case "success":
+			query = query.Where("status <> ?", "error")
+		case "pelican", "candy":
+			query = query.Where("method = ?", filter)
+		default:
+			return ErrInvalidDegradationFilter
+		}
+		return query.Where("station_id = ? AND group_external_id = ?", stationID, groupID).Delete(&GroupDegradationResult{}).Error
 	})
 	return view, err
 }

@@ -177,7 +177,7 @@ func failGroupDegradation(c *gin.Context, err error) {
 		fail(c, http.StatusConflict, storage.ErrGroupDegradationDisabled)
 	case errors.Is(err, storage.ErrGroupDegradationBusy):
 		fail(c, http.StatusConflict, storage.ErrGroupDegradationBusy)
-	case errors.Is(err, storage.ErrInvalidGroupDegradationConfig):
+	case errors.Is(err, storage.ErrInvalidGroupDegradationConfig), errors.Is(err, storage.ErrInvalidDegradationFilter):
 		fail(c, http.StatusBadRequest, err)
 	default:
 		// Database and upstream errors can include credentials or raw responses.
@@ -234,7 +234,9 @@ func clearGroupDegradationHistory(c *gin.Context, d *Deps) {
 	if !ok {
 		return
 	}
-	view, err := d.Relay.ClearGroupDegradationHistory(c.Request.Context(), stationID, groupID)
+	// The filter narrows which rows are removed (error/success/pelican/candy);
+	// invalid values are rejected inside the storage transaction with a 400.
+	view, err := d.Relay.ClearGroupDegradationHistory(c.Request.Context(), stationID, groupID, c.Query("filter"))
 	if err != nil {
 		failGroupDegradation(c, err)
 		return

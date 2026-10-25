@@ -173,13 +173,13 @@ func TestGroupSettingsAcceptancePromptsRetentionAndScopedClear(t *testing.T) {
 	if err := db.Model(&GroupDegradationConfig{}).Where("station_id = ? AND group_external_id = ?", station.ID, 1).Updates(map[string]any{"lease_until": until, "lease_token": "active"}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.ClearGroupDegradationHistory(ctx, station.ID, 1); !errors.Is(err, ErrGroupDegradationBusy) {
+	if _, err := repo.ClearGroupDegradationHistory(ctx, station.ID, 1, "all"); !errors.Is(err, ErrGroupDegradationBusy) {
 		t.Fatalf("active run must block clear: %v", err)
 	}
 	if err := db.Model(&GroupDegradationConfig{}).Where("station_id = ? AND group_external_id = ?", station.ID, 1).Updates(map[string]any{"lease_until": nil, "lease_token": ""}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.ClearGroupDegradationHistory(ctx, station.ID, 1); err != nil {
+	if _, err := repo.ClearGroupDegradationHistory(ctx, station.ID, 1, "all"); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Model(&GroupDegradationResult{}).Where("station_id = ? AND group_external_id = ?", station.ID, 1).Count(&count).Error; err != nil || count != 0 {

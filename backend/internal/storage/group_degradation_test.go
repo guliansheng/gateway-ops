@@ -707,7 +707,7 @@ func TestGroupDegradationClearHistoryLocksAndPreservesSchedule(t *testing.T) {
 				steps = append(steps, deleteStep)
 			}
 			repo, state := newDegradationSQL(t, steps...)
-			view, err := repo.ClearGroupDegradationHistory(context.Background(), 1, 9)
+			view, err := repo.ClearGroupDegradationHistory(context.Background(), 1, 9, "all")
 			if active {
 				if !errors.Is(err, ErrGroupDegradationBusy) || state.rollbacks != 1 {
 					t.Fatalf("cleared active lease: %v", err)
@@ -747,11 +747,75 @@ func TestGroupDegradationClearHistoryValidatesStationAndGroup(t *testing.T) {
 			}
 		}
 		repo, state := newDegradationSQL(t, steps...)
-		_, err := repo.ClearGroupDegradationHistory(context.Background(), 1, 9)
+		_, err := repo.ClearGroupDegradationHistory(context.Background(), 1, 9, "all")
 		if !errors.Is(err, gorm.ErrRecordNotFound) || state.commits != 0 || state.rollbacks != 0 {
 			t.Fatalf("clear invalid scope err=%v", err)
 		}
 	}
+}
+
+// 清空历史按当前筛选收窄：错误 / 成功 / 单一测试方式各删自己那份，未知筛选
+// 直接拒绝而不落库，避免手写错参数后误删整段历史。
+func TestGroupDegradationClearHistoryHonorsFilter(t *testing.T) {
+	for _, tc := range []struct {
+		filter string
+		scope  string
+		values []any
+	}{
+		{filter: "all"},
+		{filter: "", scope: "", values: nil},
+		{filter: "error", scope: "status =", values: []any{"error"}},
+		{filter: "success", scope: "status <>", values: []any{"error"}},
+		{filter: "pelican", scope: "method =", values: []any{"pelican"}},
+		{filter: "candy", scope: "method =", values: []any{"candy"}},
+	} {
+		name := tc.filter
+		if name == "" {
+			name = "empty"
+		}
+		t.Run(name, func(t *testing.T) {
+			config := degradationConfigStep(true, nil)
+			config.contains = "FOR UPDATE"
+			clear := degradationSQLStep{contains: `DELETE FROM "group_degradation_results"`, check: func(query string, args []driver.NamedValue) {
+				if !strings.Contains(query, "station_id = $") || !strings.Contains(query, "group_external_id = $") {
+					t.Errorf("clear lost scope: %s", query)
+				}
+				if tc.scope == "" {
+					if strings.Contains(query, "status") || strings.Contains(query, "method") {
+						t.Errorf("clear narrowed an unfiltered delete: %s", query)
+					}
+				} else if !strings.Contains(query, tc.scope) {
+					t.Errorf("clear missing %q: %s", tc.scope, query)
+				}
+				if len(args) != 2+len(tc.values) {
+					t.Fatalf("clear args=%+v", args)
+				}
+				for _, want := range append([]any{int64(1), int64(9)}, tc.values...) {
+					found := false
+					for _, arg := range args {
+						if arg.Value == want {
+							found = true
+						}
+					}
+					if !found {
+						t.Errorf("clear args missing %v: %+v", want, args)
+					}
+				}
+			}}
+			repo, state := newDegradationSQL(t, append(degradationScopeSteps(true), config, clear)...)
+			if _, err := repo.ClearGroupDegradationHistory(context.Background(), 1, 9, tc.filter); err != nil || state.commits != 1 || state.rollbacks != 0 {
+				t.Fatalf("clear %q err=%v commits=%d rollbacks=%d", tc.filter, err, state.commits, state.rollbacks)
+			}
+		})
+	}
+	t.Run("unknown filter", func(t *testing.T) {
+		config := degradationConfigStep(true, nil)
+		config.contains = "FOR UPDATE"
+		repo, state := newDegradationSQL(t, append(degradationScopeSteps(true), config)...)
+		if _, err := repo.ClearGroupDegradationHistory(context.Background(), 1, 9, "errr"); !errors.Is(err, ErrInvalidDegradationFilter) || state.commits != 0 || state.rollbacks != 1 {
+			t.Fatalf("unknown filter err=%v commits=%d rollbacks=%d", err, state.commits, state.rollbacks)
+		}
+	})
 }
 
 func TestGroupDegradationHistoryMigrationPreservesPositiveChoices(t *testing.T) {
