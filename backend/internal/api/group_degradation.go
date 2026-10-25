@@ -25,6 +25,7 @@ func registerGroupDegradation(g *gin.RouterGroup, d *Deps) {
 	g.POST(groupDegradationRoute+"/run", func(c *gin.Context) { runGroupDegradation(c, d) })
 	g.DELETE(groupDegradationRoute+"/history", func(c *gin.Context) { clearGroupDegradationHistory(c, d) })
 	g.DELETE(groupDegradationRoute+"/history/:result_id", func(c *gin.Context) { deleteGroupDegradationResult(c, d) })
+	g.PATCH(groupDegradationRoute+"/history/:result_id", func(c *gin.Context) { patchGroupDegradationResult(c, d) })
 	g.GET(degradationPromptsRoute, func(c *gin.Context) { getDegradationPrompts(c, d) })
 	g.PUT(degradationPromptsRoute, func(c *gin.Context) { putDegradationPrompts(c, d) })
 	g.GET("/relay-stations/:id/accounts/:external_id/degradation", func(c *gin.Context) { getAccountDegradation(c, d) })
@@ -255,6 +256,34 @@ func deleteGroupDegradationResult(c *gin.Context, d *Deps) {
 		return
 	}
 	view, err := d.Relay.DeleteGroupDegradationResult(c.Request.Context(), stationID, groupID, resultID)
+	if err != nil {
+		failGroupDegradation(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": view})
+}
+
+// Manual review of one history row. The verdict is the only thing an admin can
+// change: the judge's reason and the stored HTML/answer stay as evidence.
+func patchGroupDegradationResult(c *gin.Context, d *Deps) {
+	stationID, groupID, ok := groupDegradationParams(c, d)
+	if !ok {
+		return
+	}
+	resultID, err := uintParam(c, "result_id")
+	if err != nil || resultID == 0 {
+		fail(c, http.StatusBadRequest, errors.New("检测记录 ID 无效"))
+		return
+	}
+	var body struct {
+		Status string `json:"status"`
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4*1024)
+	if err := decodeDegradationObject(c.Request.Body, &body); err != nil || !storage.ValidGroupDegradationStatus(body.Status) {
+		fail(c, http.StatusBadRequest, errors.New("判定状态必须是 normal、degraded、inconclusive 或 error"))
+		return
+	}
+	view, err := d.Relay.UpdateGroupDegradationResult(c.Request.Context(), stationID, groupID, resultID, body.Status)
 	if err != nil {
 		failGroupDegradation(c, err)
 		return

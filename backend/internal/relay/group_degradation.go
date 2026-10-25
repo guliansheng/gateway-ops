@@ -93,6 +93,19 @@ func (s *Service) DeleteGroupDegradationResult(ctx context.Context, stationID ui
 	return view, err
 }
 
+// UpdateGroupDegradationResult applies a manual review verdict to one history row
+// and returns the refreshed admin view. The stored evidence is untouched.
+func (s *Service) UpdateGroupDegradationResult(ctx context.Context, stationID uint, groupID int64, resultID uint, status string) (storage.GroupDegradationView, error) {
+	if err := s.stations.UpdateGroupDegradationResult(ctx, stationID, groupID, resultID, status); err != nil {
+		return storage.GroupDegradationView{}, err
+	}
+	view, err := s.stations.GroupDegradationView(ctx, stationID, groupID, false)
+	if err == nil {
+		s.invalidatePublicMonitor(stationID)
+	}
+	return view, err
+}
+
 // acquireDegradationSlot takes one slot from a fixed pool, so no unbounded queue
 // can build up behind a slow upstream.
 func acquireDegradationSlot(pool []sync.Mutex) (func(), bool) {

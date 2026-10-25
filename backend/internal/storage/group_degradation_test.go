@@ -863,3 +863,96 @@ func TestDeleteGroupDegradationResultRejectsUnknownScope(t *testing.T) {
 		t.Fatalf("delete outside scope err=%v state=%+v", err, state)
 	}
 }
+
+func TestValidGroupDegradationStatusAcceptsTrimmedVerdicts(t *testing.T) {
+	for _, status := range []string{"normal", "degraded", "inconclusive", "error", " normal "} {
+		if !ValidGroupDegradationStatus(status) {
+			t.Errorf("rejected verdict %q", status)
+		}
+	}
+	for _, status := range []string{"", " ", "ok", "NORMAL", "degradedx", "degraded;"} {
+		if ValidGroupDegradationStatus(status) {
+			t.Errorf("accepted verdict %q", status)
+		}
+	}
+}
+
+// degradationResultRow is the locked read of one history row before a manual
+// verdict change; only the columns that drive the decision are returned.
+func degradationResultRow(id int64, status, original string, adjusted driver.Value) degradationSQLStep {
+	return degradationSQLStep{
+		contains: `FROM "group_degradation_results"`,
+		columns:  []string{"id", "status", "original_status", "adjusted_at"},
+		rows:     [][]driver.Value{{id, status, original, adjusted}},
+	}
+}
+
+func TestUpdateGroupDegradationResultKeepsJudgeEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name, current, original, set string
+		wantStatus, wantOriginal     string
+		wantAdjusted                 bool
+	}{
+		{"override", "degraded", "", "normal", "normal", "degraded", true},
+		{"second override keeps automatic verdict", "normal", "degraded", "inconclusive", "inconclusive", "degraded", true},
+		{"revert clears marker", "normal", "degraded", "degraded", "degraded", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lock := degradationResultRow(59, tc.current, tc.original, nil)
+			lock.contains = "FOR UPDATE"
+			lock.check = func(query string, args []driver.NamedValue) {
+				if !strings.Contains(query, "id = $1 AND station_id = $2 AND group_external_id = $3") || len(args) != 4 || args[0].Value != int64(59) || args[1].Value != int64(1) || args[2].Value != int64(9) {
+					t.Errorf("history row not locked inside the group scope: %s %+v", query, args)
+				}
+			}
+			update := degradationSQLStep{contains: `UPDATE "group_degradation_results"`, check: func(query string, args []driver.NamedValue) {
+				if status, ok := degradationUpdateArg(args, query, "status"); !ok || status != tc.wantStatus {
+					t.Errorf("status=%v want=%q query=%s", status, tc.wantStatus, query)
+				}
+				if original, ok := degradationUpdateArg(args, query, "original_status"); !ok || original != tc.wantOriginal {
+					t.Errorf("original_status=%v want=%q query=%s", original, tc.wantOriginal, query)
+				}
+				adjusted, ok := degradationUpdateArg(args, query, "adjusted_at")
+				if !ok {
+					t.Fatalf("manual marker missing from update: %s", query)
+				}
+				if tc.wantAdjusted && adjusted == nil {
+					t.Errorf("adjusted_at not stamped: %s", query)
+				}
+				if !tc.wantAdjusted && adjusted != nil {
+					t.Errorf("adjusted_at not cleared: %s", query)
+				}
+				for _, invalid := range []string{`"reason"`, `"html"`, `"answer"`, `"status" = `} {
+					if strings.Contains(query, invalid) {
+						t.Errorf("manual review rewrote judge evidence %q: %s", invalid, query)
+					}
+				}
+			}}
+			steps := append(degradationScopeSteps(true), lock, update)
+			repo, state := newDegradationSQL(t, steps...)
+			if err := repo.UpdateGroupDegradationResult(context.Background(), 1, 9, 59, tc.set); err != nil || state.commits != 1 || state.rollbacks != 0 {
+				t.Fatalf("update err=%v state=%+v", err, state)
+			}
+		})
+	}
+}
+
+func TestUpdateGroupDegradationResultValidatesBeforeWriting(t *testing.T) {
+	repo, state := newDegradationSQL(t)
+	if err := repo.UpdateGroupDegradationResult(context.Background(), 1, 9, 59, "ok"); !errors.Is(err, ErrInvalidGroupDegradationConfig) || state.commits+state.rollbacks != 0 {
+		t.Fatalf("invalid status err=%v state=%+v", err, state)
+	}
+	unknownStation := degradationScopeSteps(true)[:1]
+	unknownStation[0].rows = nil
+	repo, state = newDegradationSQL(t, unknownStation...)
+	if err := repo.UpdateGroupDegradationResult(context.Background(), 1, 9, 59, "normal"); !errors.Is(err, gorm.ErrRecordNotFound) || state.commits+state.rollbacks != 0 {
+		t.Fatalf("unknown station err=%v state=%+v", err, state)
+	}
+	foreign := degradationResultRow(59, "degraded", "", nil)
+	foreign.contains = "FOR UPDATE"
+	foreign.rows = nil
+	repo, state = newDegradationSQL(t, append(degradationScopeSteps(true), foreign)...)
+	if err := repo.UpdateGroupDegradationResult(context.Background(), 1, 9, 59, "normal"); !errors.Is(err, gorm.ErrRecordNotFound) || state.rollbacks != 1 || state.commits != 0 {
+		t.Fatalf("result outside scope err=%v state=%+v", err, state)
+	}
+}

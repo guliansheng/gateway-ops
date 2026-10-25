@@ -40,6 +40,7 @@ func TestGroupDegradationRouteContract(t *testing.T) {
 		"POST /api/relay-stations/:id/groups/:external_id/degradation/run":                    true,
 		"DELETE /api/relay-stations/:id/groups/:external_id/degradation/history":              true,
 		"DELETE /api/relay-stations/:id/groups/:external_id/degradation/history/:result_id":   true,
+		"PATCH /api/relay-stations/:id/groups/:external_id/degradation/history/:result_id":    true,
 		"GET /api/relay-stations/:id/degradation-prompts":                                     true,
 		"PUT /api/relay-stations/:id/degradation-prompts":                                     true,
 		"GET /api/public/relay-stations/:id/groups/:external_id/degradation":                  true,
@@ -62,11 +63,37 @@ func TestGroupDegradationRouteContract(t *testing.T) {
 	if len(want) != 0 {
 		t.Fatalf("missing routes: %v", want)
 	}
-	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, httptest.NewRequest(method, "/api/public/relay-stations/1/groups/9/degradation/run", nil))
 		if w.Code != http.StatusNotFound {
 			t.Fatalf("public execution/mutation exposed: %s = %d", method, w.Code)
+		}
+	}
+}
+
+// Both review endpoints must reject a bad id/status/body before touching the
+// database: the test router has no storage service at all.
+func TestGroupDegradationReviewAndImportValidation(t *testing.T) {
+	r := degradationTestRouter()
+	cases := []struct{ method, path, body string }{
+		{http.MethodPatch, "/api/relay-stations/1/groups/9/degradation/history/abc", `{"status":"normal"}`},
+		{http.MethodPatch, "/api/relay-stations/1/groups/9/degradation/history/0", `{"status":"normal"}`},
+		{http.MethodPatch, "/api/relay-stations/1/groups/9/degradation/history/5", `{}`},
+		{http.MethodPatch, "/api/relay-stations/1/groups/9/degradation/history/5", `{"status":"ok"}`},
+		{http.MethodPatch, "/api/relay-stations/1/groups/9/degradation/history/5", `{"status":null}`},
+		{http.MethodPatch, "/api/relay-stations/1/groups/9/degradation/history/5", `{"status":"normal","api_key":"secret"}`},
+	}
+	for _, tc := range cases {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+		req.Header.Set("Content-Type", "application/json")
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("%s %s body=%s code=%d", tc.method, tc.path, tc.body, w.Code)
+		}
+		if strings.Contains(w.Body.String(), "secret") {
+			t.Fatal("request credential echoed")
 		}
 	}
 }

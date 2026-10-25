@@ -441,6 +441,44 @@ func (r *RelayStations) DeleteGroupDegradationResult(ctx context.Context, statio
 		Delete(&GroupDegradationResult{}).Error
 }
 
+func ValidGroupDegradationStatus(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "normal", "degraded", "inconclusive", "error":
+		return true
+	}
+	return false
+}
+
+// UpdateGroupDegradationResult overwrites the verdict of one history row, for
+// the case where an admin reviewed the evidence and disagrees with the judge.
+// The judge's reason is never rewritten: OriginalStatus keeps the superseded
+// verdict so the row still shows what was overridden. Setting the row back to
+// its automatic verdict clears the manual marker instead of stacking overrides.
+func (r *RelayStations) UpdateGroupDegradationResult(ctx context.Context, stationID uint, groupID int64, resultID uint, status string) error {
+	status = strings.TrimSpace(status)
+	if !ValidGroupDegradationStatus(status) {
+		return ErrInvalidGroupDegradationConfig
+	}
+	if _, err := r.groupDegradationScope(ctx, stationID, groupID); err != nil {
+		return err
+	}
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current GroupDegradationResult
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND station_id = ? AND group_external_id = ?", resultID, stationID, groupID).First(&current).Error; err != nil {
+			return err
+		}
+		original := current.OriginalStatus
+		if original == "" {
+			original = current.Status
+		}
+		if status == original {
+			return tx.Model(&current).Updates(map[string]any{"status": status, "original_status": "", "adjusted_at": nil}).Error
+		}
+		return tx.Model(&current).Updates(map[string]any{"status": status, "original_status": original, "adjusted_at": time.Now()}).Error
+	})
+}
+
 // mergeDegradationBuckets restores the single created_at DESC, id DESC order a
 // one-query fetch would have produced. The two-bucket reads each cap their own
 // limit so failing checks never evict other verdicts; equal timestamps tie-break
