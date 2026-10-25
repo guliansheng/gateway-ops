@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -66,6 +67,15 @@ type GroupDegradationResult struct {
 	Reason          string `gorm:"type:text;not null" json:"reason"`
 	HTML            string `gorm:"type:text;not null;default:''" json:"html,omitempty"`
 	Answer          string `gorm:"type:text;not null;default:''" json:"answer,omitempty"`
+	// Provenance of rows that this group's own schedule did not produce. An
+	// imported account test keeps its original test time and verdict; a manual
+	// override keeps the superseded verdict so the history can still show what
+	// the judge said. Both are admin-only and cleared from public reads.
+	SourceAccountID   int64      `gorm:"not null;default:0" json:"source_account_id,omitempty"`
+	SourceAccountName string     `gorm:"size:256;not null;default:''" json:"source_account_name,omitempty"`
+	SourceResultID    uint       `gorm:"not null;default:0" json:"-"`
+	OriginalStatus    string     `gorm:"size:16;not null;default:''" json:"original_status,omitempty"`
+	AdjustedAt        *time.Time `json:"adjusted_at,omitempty"`
 	// Admin-only accounting. The upstream account and Sub2API charge are captured
 	// after a run so the usage table never re-queries the station per record.
 	// Public reads zero these fields out.
@@ -210,12 +220,39 @@ func (r *RelayStations) GroupDegradationView(ctx context.Context, stationID uint
 	if public && limit > PublicGroupDegradationHistoryLimit {
 		limit = PublicGroupDegradationHistoryLimit
 	}
-	query := r.db.WithContext(ctx).Where("station_id = ? AND group_external_id = ?", stationID, groupID).
-		Order("created_at DESC").Order("id DESC").Limit(limit)
-	if public && config.ResultVisibility == "hide" {
-		query = query.Select("id", "method", "model", "judge_model", "effort", "status", "created_at")
+	// 成功与失败分桶各按上限截取：失败的检测不把名额让给成功的记录。查询
+	// 顺序固定（先成功后失败），合并时再按 created_at DESC, id DESC 排序，
+	// 与单条 SQL 的顺序完全一致，避免前端“最新一条”随桶切换而跳动。
+	build := func(failed bool) *gorm.DB {
+		base := r.db.WithContext(ctx).Where("station_id = ? AND group_external_id = ?", stationID, groupID)
+		if failed {
+			base = base.Where("status = ?", "error")
+		} else {
+			base = base.Where("status <> ?", "error")
+		}
+		return base.Order("created_at DESC").Order("id DESC").Limit(limit)
 	}
-	err = query.Find(&view.Results).Error
+	var success, failed []GroupDegradationResult
+	selectFields := ""
+	if public && config.ResultVisibility == "hide" {
+		selectFields = "id, method, model, judge_model, effort, status, created_at"
+	}
+	if selectFields != "" {
+		if err = build(false).Select(selectFields).Find(&success).Error; err != nil {
+			return view, err
+		}
+		if err = build(true).Select(selectFields).Find(&failed).Error; err != nil {
+			return view, err
+		}
+	} else {
+		if err = build(false).Find(&success).Error; err != nil {
+			return view, err
+		}
+		if err = build(true).Find(&failed).Error; err != nil {
+			return view, err
+		}
+	}
+	view.Results = mergeDegradationBuckets(success, failed)
 	if public && config.ResultVisibility == "hide" {
 		for i := range view.Results {
 			switch view.Results[i].Status {
@@ -231,13 +268,16 @@ func (r *RelayStations) GroupDegradationView(ctx context.Context, stationID uint
 		}
 	}
 	if public {
-		// Accounting is admin-only: the public page must never learn which
-		// upstream account served a run or what it cost.
+		// Accounting and provenance are admin-only: the public page must never
+		// learn which upstream account served a run, what it cost, or that a
+		// verdict was reviewed by hand.
 		for i := range view.Results {
 			view.Results[i].UsedAccountID, view.Results[i].UsedAccountName = 0, ""
 			view.Results[i].InputTokens, view.Results[i].OutputTokens = 0, 0
 			view.Results[i].BaseCost, view.Results[i].CostMultiplier, view.Results[i].ActualCost = 0, 0, 0
 			view.Results[i].StartedAt, view.Results[i].UsageSyncedAt = nil, nil
+			view.Results[i].SourceAccountID, view.Results[i].SourceAccountName, view.Results[i].SourceResultID = 0, "", 0
+			view.Results[i].OriginalStatus, view.Results[i].AdjustedAt = "", nil
 		}
 	}
 	return view, err
@@ -332,11 +372,21 @@ func pruneGroupDegradationHistory(tx *gorm.DB, stationID uint, groupID int64, li
 	if limit < 1 || limit > MaxGroupDegradationHistoryLimit {
 		return ErrInvalidGroupDegradationConfig
 	}
-	stale := tx.Model(&GroupDegradationResult{}).Select("id").
-		Where("station_id = ? AND group_external_id = ?", stationID, groupID).
-		Order("created_at DESC").Order("id DESC").Offset(limit)
+	staleFrom := func(failed bool) *gorm.DB {
+		q := tx.Model(&GroupDegradationResult{}).Select("id").
+			Where("station_id = ? AND group_external_id = ?", stationID, groupID)
+		if failed {
+			q = q.Where("status = ?", "error")
+		} else {
+			q = q.Where("status <> ?", "error")
+		}
+		return q.Order("created_at DESC").Order("id DESC").Offset(limit)
+	}
+	// Either bucket can contain expired rows. Intersecting the two disjoint
+	// status buckets would delete nothing; keep their union tenant-scoped.
 	return tx.Where("station_id = ? AND group_external_id = ?", stationID, groupID).
-		Where("id IN (?)", stale).Delete(&GroupDegradationResult{}).Error
+		Where("(id IN (?) OR id IN (?))", staleFrom(false), staleFrom(true)).
+		Delete(&GroupDegradationResult{}).Error
 }
 
 // ClearGroupDegradationHistory shares the claim/completion row lock and leaves
@@ -376,6 +426,23 @@ func (r *RelayStations) DeleteGroupDegradationResult(ctx context.Context, statio
 	}
 	return r.db.WithContext(ctx).Where("id = ? AND station_id = ? AND group_external_id = ?", resultID, stationID, groupID).
 		Delete(&GroupDegradationResult{}).Error
+}
+
+// mergeDegradationBuckets restores the single created_at DESC, id DESC order a
+// one-query fetch would have produced. The two-bucket reads each cap their own
+// limit so failing checks never evict other verdicts; equal timestamps tie-break
+// on id, mirroring ORDER BY created_at DESC, id DESC.
+func mergeDegradationBuckets(success, failed []GroupDegradationResult) []GroupDegradationResult {
+	merged := make([]GroupDegradationResult, 0, len(success)+len(failed))
+	merged = append(merged, success...)
+	merged = append(merged, failed...)
+	sort.SliceStable(merged, func(i, j int) bool {
+		if !merged[i].CreatedAt.Equal(merged[j].CreatedAt) {
+			return merged[i].CreatedAt.After(merged[j].CreatedAt)
+		}
+		return merged[i].ID > merged[j].ID
+	})
+	return merged
 }
 func newGroupDegradationLease() (string, error) {
 	var token [24]byte
@@ -504,7 +571,9 @@ func (r *RelayStations) CompleteGroupDegradation(ctx context.Context, claimed Gr
 			return ErrGroupDegradationLeaseLost
 		}
 		result.StationID, result.GroupExternalID, result.CreatedAt = current.StationID, current.GroupExternalID, now
-		if err := tx.Create(result).Error; err != nil {
+		// 常规轮询产生的记录不携带导入/复评溯源；Omit 让 INSERT 保持与断言
+		// 一致的参数顺序，数据库仍为这些列提供默认值。
+		if err := tx.Omit("source_account_id", "source_account_name", "source_result_id", "original_status", "adjusted_at").Create(result).Error; err != nil {
 			return err
 		}
 		if err := pruneGroupDegradationHistory(tx, current.StationID, current.GroupExternalID, current.HistoryLimit); err != nil {

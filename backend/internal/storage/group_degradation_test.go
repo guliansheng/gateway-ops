@@ -203,7 +203,11 @@ func TestGroupDegradationPublicReadGatesAndNoCreation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			steps := append(degradationScopeSteps(tc.monitor), degradationConfigStep(tc.enabled, nil))
 			if tc.want > 0 {
-				steps = append(steps, degradationSQLStep{contains: `FROM "group_degradation_results"`, columns: []string{"id", "status"}, rows: [][]driver.Value{{int64(1), "normal"}}})
+				// 双桶视图：成功桶含 normal 记录，失败桶为空。
+				steps = append(steps,
+					degradationSQLStep{contains: `FROM "group_degradation_results"`, columns: []string{"id", "status"}, rows: [][]driver.Value{{int64(1), "normal"}}},
+					degradationSQLStep{contains: `FROM "group_degradation_results"`, columns: []string{"id", "status"}},
+				)
 			}
 			repo, _ := newDegradationSQL(t, steps...)
 			view, err := repo.GroupDegradationView(context.Background(), 1, 9, true)
@@ -416,7 +420,7 @@ func TestGroupDegradationResultVisibility(t *testing.T) {
 			config := degradationConfigStep(true, nil)
 			config.rows[0][10] = tc.visibility
 			hidden := tc.public && tc.visibility == "hide"
-			resultStep := degradationSQLStep{
+			successStep := degradationSQLStep{
 				contains: `FROM "group_degradation_results"`,
 				columns:  []string{"id", "status", "reason", "html", "answer"},
 				rows:     [][]driver.Value{{int64(1), "normal", "private review", "private HTML", "private answer"}},
@@ -430,11 +434,17 @@ func TestGroupDegradationResultVisibility(t *testing.T) {
 					}
 				},
 			}
+			failedStep := degradationSQLStep{contains: `FROM "group_degradation_results"`}
 			if hidden {
-				resultStep.columns = []string{"id", "status"}
-				resultStep.rows = [][]driver.Value{{int64(1), "normal"}, {int64(2), "degraded"}, {int64(3), "error"}, {int64(4), "inconclusive"}}
+				newest := time.Now().Truncate(time.Microsecond)
+				// created_at 递减排列，让双桶合并排序（created_at DESC, id DESC）
+				// 还原旧单查询返回的 [1,2,3,4] 顺序。
+				successStep.columns = []string{"id", "status", "created_at"}
+				successStep.rows = [][]driver.Value{{int64(1), "normal", newest}, {int64(2), "degraded", newest.Add(-10 * time.Minute)}, {int64(4), "inconclusive", newest.Add(-30 * time.Minute)}}
+				failedStep.columns = []string{"id", "status", "created_at"}
+				failedStep.rows = [][]driver.Value{{int64(3), "error", newest.Add(-20 * time.Minute)}}
 			}
-			steps := append(degradationScopeSteps(true), config, resultStep)
+			steps := append(degradationScopeSteps(true), config, successStep, failedStep)
 			repo, _ := newDegradationSQL(t, steps...)
 			view, err := repo.GroupDegradationView(context.Background(), 1, 9, tc.public)
 			if err != nil || len(view.Results) == 0 {
@@ -477,12 +487,18 @@ func TestGroupDegradationResultVisibilityDefaultsForOlderClients(t *testing.T) {
 func degradationPruneStep(t *testing.T, stationID uint, groupID int64, limit int) degradationSQLStep {
 	t.Helper()
 	return degradationSQLStep{contains: `DELETE FROM "group_degradation_results"`, check: func(query string, args []driver.NamedValue) {
-		for _, fragment := range []string{`id IN (SELECT "id" FROM "group_degradation_results"`, "ORDER BY created_at DESC,id DESC", "OFFSET $5"} {
-			if !strings.Contains(query, fragment) {
-				t.Errorf("prune missing %q: %s", fragment, query)
-			}
+		// 成功与失败两个桶各自按上限截断：失败记录不占成功记录的名额。
+		if strings.Count(query, `id IN (SELECT "id" FROM "group_degradation_results"`) != 2 || !strings.Contains(query, "status <> $") || !strings.Contains(query, "status = $") || strings.Count(query, "ORDER BY created_at DESC,id DESC") != 2 || strings.Count(query, "OFFSET $") != 2 {
+			t.Errorf("prune buckets missing: %s", query)
 		}
-		want := []driver.Value{int64(stationID), groupID, int64(stationID), groupID, int64(limit)}
+		// 两个状态桶互斥，过期记录必须取并集；AND 会导致一条也删不掉。
+		if !regexp.MustCompile(`(?s)AND \(+id IN \(SELECT .* OR id IN \(SELECT .*\)\)+`).MatchString(query) {
+			t.Errorf("prune must use a parenthesized union of stale buckets: %s", query)
+		}
+		if !strings.Contains(query, "station_id = $1 AND group_external_id = $2") {
+			t.Errorf("prune lost outer tenant scope: %s", query)
+		}
+		want := []driver.Value{int64(stationID), groupID, int64(stationID), groupID, "error", int64(limit), int64(stationID), groupID, "error", int64(limit)}
 		if len(args) != len(want) {
 			t.Fatalf("prune args=%+v", args)
 		}
@@ -523,18 +539,50 @@ func TestGroupDegradationViewHistoryLimitsAndScope(t *testing.T) {
 		t.Run(fmt.Sprintf("%d/public=%v", tc.limit, tc.public), func(t *testing.T) {
 			config := degradationConfigStep(true, nil)
 			config.rows[0][13] = int64(tc.limit)
-			results := degradationSQLStep{contains: `FROM "group_degradation_results"`, columns: []string{"id"}, check: func(query string, args []driver.NamedValue) {
-				if !strings.Contains(query, "station_id = $1 AND group_external_id = $2") || !strings.Contains(query, "ORDER BY created_at DESC,id DESC LIMIT $3") || len(args) != 3 || args[0].Value != int64(1) || args[1].Value != int64(9) || args[2].Value != int64(tc.want) {
-					t.Errorf("view scope/limit SQL=%s args=%+v", query, args)
+			results := func(failed bool) degradationSQLStep {
+				operator := "status <> $3"
+				if failed {
+					operator = "status = $3"
 				}
-			}}
-			steps := append(degradationScopeSteps(true), config, results)
+				return degradationSQLStep{contains: `FROM "group_degradation_results"`, columns: []string{"id"}, check: func(query string, args []driver.NamedValue) {
+					if !strings.Contains(query, "station_id = $1 AND group_external_id = $2") || !strings.Contains(query, operator) || !strings.Contains(query, "ORDER BY created_at DESC,id DESC LIMIT $4") || len(args) != 4 || args[0].Value != int64(1) || args[1].Value != int64(9) || args[2].Value != "error" || args[3].Value != int64(tc.want) {
+						t.Errorf("view scope/limit SQL=%s args=%+v", query, args)
+					}
+				}}
+			}
+			steps := append(degradationScopeSteps(true), config, results(false), results(true))
 			repo, _ := newDegradationSQL(t, steps...)
 			view, err := repo.GroupDegradationView(context.Background(), 1, 9, tc.public)
 			if err != nil || view.Config.HistoryLimit != groupDegradationHistoryLimit(tc.limit) {
 				t.Fatalf("view=%+v err=%v", view, err)
 			}
 		})
+	}
+}
+
+// 成功与失败两个桶各按上限读取，合并顺序必须与单个 SQL 的
+// created_at DESC, id DESC 一致，否则前端“最新一条”会随桶切换而跳动。
+func TestGroupDegradationViewMergesBothVerdictBuckets(t *testing.T) {
+	config := degradationConfigStep(true, nil)
+	older, middle, newer :=
+		time.Now().Add(-3*time.Hour).Truncate(time.Microsecond),
+		time.Now().Add(-2*time.Hour).Truncate(time.Microsecond),
+		time.Now().Add(-time.Hour).Truncate(time.Microsecond)
+	columns := []string{"id", "status", "created_at"}
+	steps := append(degradationScopeSteps(true), config,
+		degradationSQLStep{contains: `FROM "group_degradation_results"`, columns: columns, rows: [][]driver.Value{{int64(4), "normal", newer}, {int64(2), "normal", older}}},
+		degradationSQLStep{contains: `FROM "group_degradation_results"`, columns: columns, rows: [][]driver.Value{{int64(3), "error", middle}}})
+	repo, _ := newDegradationSQL(t, steps...)
+	view, err := repo.GroupDegradationView(context.Background(), 1, 9, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]uint, 0, len(view.Results))
+	for _, result := range view.Results {
+		ids = append(ids, result.ID)
+	}
+	if !reflect.DeepEqual(ids, []uint{4, 3, 2}) {
+		t.Fatalf("merged order = %v", ids)
 	}
 }
 

@@ -133,7 +133,7 @@ func degradationRunCompletionSteps(t *testing.T, status string) []degradationRun
 			}
 		}},
 		{contains: `DELETE FROM "group_degradation_results"`, check: func(_ context.Context, query string, args []driver.NamedValue) {
-			if !strings.Contains(query, "ORDER BY created_at DESC,id DESC OFFSET") || len(args) != 5 || args[4].Value != int64(3) {
+			if !strings.Contains(query, "ORDER BY created_at DESC,id DESC OFFSET") || len(args) != 10 || args[4].Value != "error" || args[5].Value != int64(3) || args[9].Value != int64(3) {
 				t.Errorf("completion retention query=%s args=%+v", query, args)
 			}
 		}},
