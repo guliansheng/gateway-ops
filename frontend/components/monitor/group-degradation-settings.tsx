@@ -102,8 +102,8 @@ export function GroupDegradationStatus({ stationID, groupID }: { stationID: numb
   const results = rawResults.filter((result) => result.status !== "error")
   const showResults = view.config.result_visibility !== "hide"
   return <section className="mt-4 border-t border-border/70 pt-3" aria-label="降智检测">
-    <div className="flex items-baseline justify-between gap-2"><h3 className="text-xs font-semibold">降智检测</h3>{showResults && results.length ? <span className="shrink-0 text-[10px] font-medium text-foreground/70">悬浮预览，点击查看详情</span> : null}</div>
-    {results.length ? <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-muted-foreground" role="group" aria-label="降智检测图例">
+    <div className="flex items-baseline justify-between gap-2"><h3 className="text-xs font-semibold">降智检测</h3>{showResults && results.length ? <span className="shrink-0 text-xs font-medium text-foreground/70">悬浮预览，点击查看详情</span> : null}</div>
+    {results.length ? <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground" role="group" aria-label="降智检测图例">
       <span className="font-medium">类型</span>
       <span className="inline-flex items-center gap-1"><i aria-hidden="true" className="size-3 rounded-[2px] bg-emerald-500" />鹈鹕</span>
       <span className="inline-flex items-center gap-1"><i aria-hidden="true" className="size-3 rounded-[2px] bg-emerald-500" style={{ backgroundImage: "repeating-linear-gradient(135deg, transparent 0 2px, rgba(0, 0, 0, 0.65) 2px 4px)" }} />糖果</span>
@@ -134,7 +134,7 @@ export function GroupDegradationStatus({ stationID, groupID }: { stationID: numb
         </HoverCard>
       })}
     </div>
-    {!results.length ? <p className="py-2 text-[11px] text-muted-foreground">{rawResults.length ? "最近只有调用失败的检测，暂不展示" : "等待首次检测"}</p> : null}
+    {!results.length ? <p className="py-2 text-xs text-muted-foreground">{rawResults.length ? "最近只有调用失败的检测，暂不展示" : "等待首次检测"}</p> : null}
     {showResults ? <ResultDialog result={selected} onClose={() => setSelected(null)} minimal /> : null}
   </section>
 
