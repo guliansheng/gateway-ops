@@ -20,11 +20,12 @@ import { DegradationUsageButton } from "@/components/monitor/degradation-usage-d
 import { AccountDegradationTestButton } from "@/components/monitor/account-degradation-test"
 import { BatchAccountDegradationTestButton } from "@/components/monitor/batch-account-degradation-test"
 import { AccountDegradationSettingsButton } from "@/components/monitor/account-degradation-config"
-import type { GroupDegradationConfig, GroupDegradationResult } from "@/lib/group-degradation"
+import { defaultDegradationConfig, limitDegradationHistory, type GroupDegradationConfig, type GroupDegradationResult } from "@/lib/group-degradation"
 import { useConfirm } from "@/components/ui/confirm-dialog"
 import { apiFetch } from "@/lib/api"
 import type { RelayAccountBatchActionResult, RelayAccountBatchCloneGroup, RelayAccountBatchCloneResult, RelayUsageRange, RelayAccountTestResult, RelayAccountView, RelayDynamicMonitorConfig, RelayGroupOption, RelayGroupTestResult, RelayGroupView, RelayOverview, RelayRecentUsage, RelayStation } from "@/lib/api-types"
 import { useRelayOverview, useRelayRecentUsage, useRelayStations, useRelayUsage, useRelayUserBalanceHistory, useSyncSettings } from "@/lib/queries"
+import { degradationRunKey, useDegradationRun } from "@/lib/degradation-runs"
 import { RelayAdjustmentLog } from "@/components/monitor/relay-adjustment-log"
 import { UserManagement } from "@/components/relay/user-management"
 import { DynamicMonitorDialog } from "@/components/relay/dynamic-monitor-dialog"
@@ -1324,6 +1325,8 @@ function GroupManagementRow({ stationID, group, accounts, onUpdate, onTest, onDe
   const [degradationConfig, setDegradationConfig] = useState<GroupDegradationConfig | null>(null)
   const [degradationResults, setDegradationResults] = useState<GroupDegradationResult[]>([])
   const [degradationOpen, setDegradationOpen] = useState(false)
+  const degradationRun = useDegradationRun(degradationRunKey("group", stationID, group.external_id))
+  const publishedDegradationRun = useRef(degradationRun.finishedAt)
   const [name, setName] = useState(group.name)
   const [description, setDescription] = useState(group.description ?? "")
   const [rate, setRate] = useState(String(group.rate_multiplier))
@@ -1342,6 +1345,14 @@ function GroupManagementRow({ stationID, group, accounts, onUpdate, onTest, onDe
     setModelTypes((group.model_types ?? []).join(", "))
   }, [dirty, group.name, group.description, group.rate_multiplier, group.model_types])
   useEffect(() => { if (dirty && !changed) setDirty(false) }, [changed, dirty])
+  useEffect(() => {
+    // 表格订阅后台任务，弹窗关闭后也要立即更新最近检测结果。
+    if (degradationRun.running || !degradationRun.finishedAt || degradationRun.finishedAt === publishedDegradationRun.current) return
+    publishedDegradationRun.current = degradationRun.finishedAt
+    const result = degradationRun.result
+    if (!result) return
+    setDegradationResults((current) => limitDegradationHistory([result, ...current.filter((entry) => entry.id !== result.id)], degradationConfig?.history_limit ?? defaultDegradationConfig.history_limit))
+  }, [degradationRun, degradationConfig?.history_limit])
 
   async function update(patch: RelayGroupPatch) {
     setBusy(true)
@@ -1370,7 +1381,7 @@ function GroupManagementRow({ stationID, group, accounts, onUpdate, onTest, onDe
       <div><Input value={description} onChange={(event) => { setDescription(event.target.value); setDirty(true) }} aria-label={`${group.name}分组描述`} placeholder="暂无描述" className="h-10 min-w-0 text-sm" disabled={busy} /></div>
       <div><Input value={rate} onChange={(event) => { setRate(event.target.value); setDirty(true) }} aria-label={`${group.name}分组倍率`} inputMode="decimal" className="h-10 font-mono text-sm tabular-nums" disabled={busy} /></div>
       <div><Input value={modelTypes} onChange={(event) => { setModelTypes(event.target.value); setDirty(true) }} aria-label={`${group.name}模型类型`} placeholder="gpt, claude" className="h-10 min-w-0 text-sm" disabled={busy} /></div>
-      <div className="flex min-h-11 min-w-0 items-center justify-between gap-3 lg:justify-start"><span className="text-xs text-muted-foreground lg:hidden">最近降智检测</span><GroupDegradationLatest result={degradationResults[0]} groupName={group.name} onOpen={() => setDegradationOpen(true)} disabled={busy || deleting} /></div>
+      <div className="flex min-h-11 min-w-0 items-center justify-between gap-3 lg:justify-start"><span className="text-xs text-muted-foreground lg:hidden">最近降智检测</span><GroupDegradationLatest result={degradationResults[0]} groupName={group.name} onOpen={() => setDegradationOpen(true)} disabled={busy || deleting} running={degradationRun.running} /></div>
       <div className="flex min-h-11 items-center justify-between gap-3 lg:justify-start"><span className="text-xs text-muted-foreground lg:hidden">类型</span><div className="flex items-center gap-2"><Switch checked={Boolean(group.is_exclusive)} onCheckedChange={(checked) => void update({ is_exclusive: checked, monitor_enabled: !checked, model_pricing_enabled: !checked })} disabled={busy} aria-label={`${group.name}切换为${group.is_exclusive ? "公开" : "专属"}分组`} title="公开自动开启监控和模型价格，专属自动关闭" /><span className={cn("text-xs font-medium", group.is_exclusive ? "text-warning" : "text-brand")}>{group.is_exclusive ? "专属" : "公开"}</span></div></div>
       <div className="flex min-h-11 items-center justify-between gap-3 lg:justify-start"><span className="text-xs text-muted-foreground lg:hidden">监控</span><div className="flex items-center gap-2"><Switch checked={group.monitor_enabled} onCheckedChange={(checked) => void update({ monitor_enabled: checked })} disabled={busy} aria-label={`${group.name}${group.monitor_enabled ? "关闭" : "开启"}公开监控`} /><span className={cn("text-xs font-medium", group.monitor_enabled ? "text-brand" : "text-muted-foreground")}>{group.monitor_enabled ? "已监控" : "未监控"}</span></div></div>
       <div className="flex min-h-11 items-center justify-between gap-3 lg:justify-start"><span className="text-xs text-muted-foreground lg:hidden">降智监控</span><GroupDegradationToggle stationID={stationID} groupID={group.external_id} groupName={group.name} config={degradationConfig} onConfigChange={setDegradationConfig} onResults={setDegradationResults} /></div>

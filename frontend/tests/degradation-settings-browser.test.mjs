@@ -55,6 +55,7 @@ let failHistoryClear = true
 // A fixed delay can expire before the close/reopen interaction finishes.
 let groupRunGate = null
 let releaseGroupRun = null
+let failNextGroupRun = false
 let browser
 try {
   await server.listen()
@@ -150,14 +151,17 @@ try {
     if (!match[3]) { assert.equal(method, "PUT"); writes.push({ path: url.pathname, method, body: request.postDataJSON() }); return route.fulfill({ json: { data: request.postDataJSON() } }) }
     if (match[4] === "run") {
       const runMethod = url.searchParams.get("method") || "candy"
-      const result = { ...record(9), method: runMethod, created_at: "2026-01-01T12:09:00Z" }
-      histories.set(key, [result, ...(histories.get(key) || [])].slice(0, configs.get(key)?.history_limit || 100))
+      const fail = failNextGroupRun
+      failNextGroupRun = false
       writes.push({ path: url.pathname, method })
       if (groupRunGate) {
         await groupRunGate
       } else {
         await new Promise((done) => setTimeout(done, 400))
       }
+      if (fail) return route.fulfill({ status: 503, json: { error: "模拟检测请求失败" } })
+      const result = { ...record(9), method: runMethod, created_at: "2026-01-01T12:09:00Z" }
+      histories.set(key, [result, ...(histories.get(key) || [])].slice(0, configs.get(key)?.history_limit || 100))
       return route.fulfill({ json: { data: result } })
     }
     if (match[4] === "import") {
@@ -222,6 +226,15 @@ try {
   const latestCellBox = await latestDetection.locator("xpath=../..").boundingBox()
   const latestHeaderBox = await page.locator("[data-group-management-header]").locator(":scope > *").nth(6).boundingBox()
   assert.ok(Math.abs(latestCellBox.x - latestHeaderBox.x) < 1 && Math.abs(latestCellBox.width - latestHeaderBox.width) < 1, "latest detection cell matches its header column")
+  const groupLatestCell = page.locator('input[aria-label="甲组分组名称"]').locator("xpath=../..").locator(":scope > div").nth(6)
+  async function assertRunningBadge(cell) {
+    const badge = cell.getByRole("status")
+    await badge.waitFor({ timeout: 3000 })
+    assert.equal(await badge.innerText(), "正在检测")
+    assert.equal(await badge.getAttribute("data-slot"), "badge")
+    assert.equal(await badge.locator("svg.animate-spin").count(), 1)
+    assert.equal(await badge.locator("svg").getAttribute("aria-hidden"), "true")
+  }
   const priceSwitch = page.getByRole("switch", { name: "甲组关闭模型价格", exact: true })
   await priceSwitch.click()
   await page.getByRole("switch", { name: "甲组开启模型价格", exact: true }).waitFor()
@@ -469,17 +482,27 @@ try {
   groupRunGate = new Promise((resolve) => { releaseGroupRun = resolve })
   await dialog.getByRole("button", { name: "立即检测", exact: true }).click()
   await dialog.getByRole("button", { name: "Close", exact: true }).click()
+  await assertRunningBadge(groupLatestCell)
+  assert.match(await groupLatestCell.innerText(), /糖果 · candidate/)
   await page.getByRole("button", { name: "配置甲组降智监控", exact: true }).click()
   dialog = page.getByRole("dialog", { name: "分组降智监测配置", exact: true })
   await dialog.getByRole("button", { name: "检测中", exact: true }).waitFor({ timeout: 3000 })
+  assert.ok(await dialog.getByRole("button", { name: "检测中", exact: true }).isDisabled())
+  await dialog.getByRole("button", { name: "Close", exact: true }).click()
+  await assertRunningBadge(groupLatestCell)
   releaseGroupRun()
   groupRunGate = null
   releaseGroupRun = null
-  await dialog.getByText("检测完成，结果已保存", { exact: true }).waitFor()
+  await groupLatestCell.getByText("鹈鹕 · candidate", { exact: true }).waitFor({ timeout: 8000 })
+  assert.equal(await groupLatestCell.getByRole("status").count(), 0)
+  assert.match(await groupLatestCell.innerText(), /正常/)
+  await page.getByRole("button", { name: "配置甲组降智监控", exact: true }).click()
+  dialog = page.getByRole("dialog", { name: "分组降智监测配置", exact: true })
+  await dialog.locator("[data-degradation-history] [data-history-row]").first().waitFor()
   const groupRunRow = dialog.locator("[data-degradation-history] [data-history-row]").nth(0)
   assert.match(await groupRunRow.textContent(), /调用账号 上游账号A/)
   await dialog.getByRole("button", { name: "Close", exact: true }).click()
-  console.log("PASS: closing the dialog keeps the group run running in the background")
+  console.log("PASS: group loading badge survives dialog close/reopen and the latest result updates with the dialog closed")
 
   // 费用统计：分页表格、范围筛选与实际扣费合计
   accountHistories.set("1:11", Array.from({ length: 24 }, (_, index) => ({ ...record(30 + index), created_at: `2026-01-02T00:${String(index).padStart(2, "0")}:00Z` })))
@@ -533,6 +556,44 @@ try {
   await dialog.getByRole("button", { name: "Close", exact: true }).click()
   console.log("PASS: protected account selection and disabled error group survive save/reopen")
   await page.getByRole("button", { name: "切换测试站点", exact: true }).click()
+  // 另一站的首次检测：失败恢复空态，重试时不显示“暂无检测”，结束直接显示结果。
+  await groupLatestCell.getByText("暂无检测", { exact: true }).waitFor()
+  await page.getByRole("switch", { name: "甲组开启降智监控", exact: true }).click()
+  await page.getByRole("switch", { name: "甲组关闭降智监控", exact: true }).waitFor()
+  failNextGroupRun = true
+  for (const fail of [true, false]) {
+    await page.getByRole("button", { name: "查看甲组降智检测", exact: true }).click()
+    dialog = page.getByRole("dialog", { name: "分组降智监测配置", exact: true })
+    await dialog.getByRole("combobox", { name: "立即检测方式", exact: true }).click()
+    await page.getByRole("option", { name: "糖果测试", exact: true }).click()
+    groupRunGate = new Promise((done) => { releaseGroupRun = done })
+    await dialog.getByRole("button", { name: "立即检测", exact: true }).click()
+    await dialog.getByRole("button", { name: "Close", exact: true }).click()
+    await assertRunningBadge(groupLatestCell)
+    assert.equal(await groupLatestCell.getByText("暂无检测", { exact: true }).count(), 0)
+    if (!fail) {
+      await page.setViewportSize({ width: 390, height: 844 })
+      const badge = groupLatestCell.getByRole("status")
+      await badge.scrollIntoViewIfNeeded()
+      const bounds = await badge.boundingBox()
+      assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= 390, "mobile running badge bounds")
+      assert.notEqual(await badge.locator("svg").evaluate((svg) => getComputedStyle(svg).animationName), "none")
+      await page.setViewportSize({ width: 1840, height: 1080 })
+    }
+    releaseGroupRun()
+    groupRunGate = null
+    releaseGroupRun = null
+    await groupLatestCell.getByRole("status").waitFor({ state: "detached", timeout: 8000 })
+    if (fail) {
+      await groupLatestCell.getByText("暂无检测", { exact: true }).waitFor()
+      assert.equal(histories.get("2:101")?.length || 0, 0)
+    } else {
+      await groupLatestCell.getByText("糖果 · candidate", { exact: true }).waitFor()
+      assert.match(await groupLatestCell.innerText(), /正常/)
+      assert.equal(await groupLatestCell.getByText("暂无检测", { exact: true }).count(), 0)
+    }
+  }
+  console.log("PASS: first group detection uses a responsive loading badge, clears failed runs and publishes successful retries")
   await settings.click()
   dialog = page.getByRole("dialog", { name: "降智测试设置", exact: true })
   await dialog.getByLabel("糖果题提示词", { exact: true }).waitFor()

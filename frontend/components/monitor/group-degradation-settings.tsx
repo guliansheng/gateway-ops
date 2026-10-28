@@ -3,6 +3,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react"
 import { Download, Eye, Loader2, Pencil, Play, RefreshCw, Save, Settings2, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
 import { AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -47,17 +48,22 @@ export function ResultDialog({ result, onClose, minimal = false }: { result: Gro
   </Dialog>
 }
 
+export function DegradationRunningBadge() {
+  return <Badge role="status" variant="outline" className="rounded-full border-brand/30 bg-brand/10 text-[10px] text-brand"><Loader2 aria-hidden="true" className="size-3 animate-spin" />正在检测</Badge>
+}
+
 /**
  * Group counterpart of the account list's latest test cell: method, model,
  * status, time and the compact preview, opening the group's detection history.
  */
-export function GroupDegradationLatest({ result, groupName, onOpen, disabled = false }: { result?: GroupDegradationResult; groupName: string; onOpen: () => void; disabled?: boolean }) {
+export function GroupDegradationLatest({ result, groupName, onOpen, disabled = false, running = false }: { result?: GroupDegradationResult; groupName: string; onOpen: () => void; disabled?: boolean; running?: boolean }) {
   const meta = result ? degradationStatusMeta[result.status] ?? degradationStatusMeta.inconclusive : null
   const method = result?.method === "candy" ? "糖果" : "鹈鹕"
   const failure = degradationFailureSummary(result)
   return <div className="min-w-0 space-y-1">
     <button type="button" disabled={disabled} onClick={onOpen} className="w-full space-y-1 text-left text-xs hover:underline" aria-label={result ? `查看${groupName}最近降智检测：${method} ${result.model || "未记录模型"}` : `查看${groupName}降智检测`}>
-      <span className={cn("block truncate font-medium", meta ? meta.tone : "text-muted-foreground")}>{result ? `${method} · ${result.model || "未记录模型"}` : "暂无检测"}</span>
+      {running ? <DegradationRunningBadge /> : null}
+      {result || !running ? <span className={cn("block truncate font-medium", meta ? meta.tone : "text-muted-foreground")}>{result ? `${method} · ${result.model || "未记录模型"}` : "暂无检测"}</span> : null}
       {result && meta ? <><span className={cn("block text-[10px]", meta.tone)}>{meta.label}</span><time className="block text-[10px] text-muted-foreground">{formatTime(result.created_at)}</time></> : null}
       {failure ? <span data-degradation-failure title={result?.reason} className="block truncate text-[10px] text-muted-foreground">{failure}</span> : null}
     </button>

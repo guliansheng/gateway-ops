@@ -30,7 +30,9 @@ const errors = []
 const unexpected = []
 const accountConfigs = new Map()
 let failModels = false
-let runDelay = 0
+let runGate = null
+let releaseRuns = null
+let failNextRun = false
 let nextID = 100
 let browser
 try {
@@ -65,10 +67,13 @@ try {
       if (match[4] === "run") {
         const body = request.postDataJSON()
         writes.push({stationID:Number(match[1]),accountID,body})
+        const fail = failNextRun
+        failNextRun = false
+        if (runGate) await runGate
+        if (fail) return route.fulfill({status:503,json:{error:"模拟检测请求失败"}})
         const actualModel = accountID === 12 && body.fallback_model ? body.fallback_model : body.model
         const saved = result(nextID++,body.method,"normal",{model:actualModel,judge_model:body.judge_model || actualModel})
         histories.set(accountID,[saved,...(histories.get(accountID) || [])])
-        if (runDelay) await new Promise((done) => setTimeout(done, runDelay))
         return respond(saved)
       }
       if (match[4] === "history") {
@@ -108,8 +113,17 @@ try {
   await selectFilter("全部账号")
   console.log("PASS: definitive normal/degraded filters exclude failed, inconclusive and untested accounts")
 
-  // 关闭弹窗后「最近降智检测」列常驻显示正在测试，切去测别的账号也不丢
-  runDelay = 1500
+  async function assertRunningBadge(cell) {
+    const badge = cell.getByRole("status")
+    await badge.waitFor({timeout:3000})
+    assert.equal(await badge.innerText(),"正在检测")
+    assert.equal(await badge.getAttribute("data-slot"),"badge")
+    assert.equal(await badge.locator("svg.animate-spin").count(),1)
+    assert.equal(await badge.locator("svg").getAttribute("aria-hidden"),"true")
+  }
+
+  // 已有历史时保留上一条结果；关闭弹窗、并行检测其他账号都不丢运行标签。
+  runGate = new Promise((done) => { releaseRuns = done })
   const runningCell = page.getByRole("button",{name:"查看降智账号降智测试历史",exact:true}).locator("xpath=..")
   assert.match(await runningCell.innerText(),/鹈鹕 · candidate/)
   await page.getByRole("button",{name:"查看降智账号降智测试历史",exact:true}).click()
@@ -117,24 +131,58 @@ try {
   await runningDialog.getByLabel("测试题目").selectOption("candy")
   await runningDialog.getByRole("button",{name:"立即测试",exact:true}).click()
   await runningDialog.getByRole("button",{name:"Close",exact:true}).click()
-  await runningCell.getByText("正在测试",{exact:true}).waitFor({timeout:3000})
-  const runningText = await runningCell.innerText()
-  assert.match(runningText,/鹈鹕 · candidate/)
-  assert.match(runningText,/疑似降智/)
-  // 另一个账号开始测试时，前一个账号的运行状态必须仍在
+  await assertRunningBadge(runningCell)
+  assert.match(await runningCell.innerText(),/鹈鹕 · candidate/)
+  assert.match(await runningCell.innerText(),/疑似降智/)
   const otherCell = page.getByRole("button",{name:"查看失败账号降智测试历史",exact:true}).locator("xpath=..")
   await page.getByRole("button",{name:"查看失败账号降智测试历史",exact:true}).click()
   runningDialog = page.getByRole("dialog",{name:"账号降智测试",exact:true})
   await runningDialog.getByRole("button",{name:"立即测试",exact:true}).click()
   await runningDialog.getByRole("button",{name:"Close",exact:true}).click()
-  await runningCell.getByText("正在测试",{exact:true}).waitFor({timeout:3000})
-  await otherCell.getByText("正在测试",{exact:true}).waitFor({timeout:3000})
+  await assertRunningBadge(runningCell)
+  await assertRunningBadge(otherCell)
+  releaseRuns()
+  runGate = null
+  releaseRuns = null
   await runningCell.getByText("糖果 · backup",{exact:true}).waitFor({timeout:8000})
-  assert.equal(await runningCell.getByText("正在测试",{exact:true}).count(),0)
+  assert.equal(await runningCell.getByRole("status").count(),0)
   assert.match(await runningCell.innerText(),/正常/)
   await otherCell.getByText("鹈鹕 · candidate",{exact:true}).waitFor({timeout:8000})
-  runDelay = 0
-  console.log("PASS: latest column keeps the running state across dialog close and another account's test")
+  console.log("PASS: running badges keep previous results across dialog close and concurrent account tests")
+
+  // 首次检测从配置弹窗触发，同样在表格显示标签，而不是“暂无测试”。
+  const firstCell = page.getByRole("button",{name:"查看未测试账号降智测试历史",exact:true}).locator("xpath=..")
+  await firstCell.getByText("暂无测试",{exact:true}).waitFor()
+  runGate = new Promise((done) => { releaseRuns = done })
+  await page.getByRole("button",{name:"配置未测试账号降智测试",exact:true}).click()
+  runningDialog = page.getByRole("dialog",{name:"账号降智测试配置",exact:true})
+  await runningDialog.getByRole("button",{name:"立即测试",exact:true}).click()
+  await runningDialog.getByRole("button",{name:"Close",exact:true}).click()
+  await assertRunningBadge(firstCell)
+  assert.equal(await firstCell.getByText("暂无测试",{exact:true}).count(),0)
+  releaseRuns()
+  runGate = null
+  releaseRuns = null
+  await firstCell.getByText("鹈鹕 · candidate",{exact:true}).waitFor({timeout:8000})
+  assert.equal(await firstCell.getByRole("status").count(),0)
+  assert.match(await firstCell.innerText(),/正常/)
+  console.log("PASS: first account detection shows a loading badge and publishes its result with the config dialog closed")
+
+  // 请求失败后退出运行状态，上一条检测结果不被清空。
+  const previousResult = await otherCell.innerText()
+  failNextRun = true
+  runGate = new Promise((done) => { releaseRuns = done })
+  await page.getByRole("button",{name:"查看失败账号降智测试历史",exact:true}).click()
+  runningDialog = page.getByRole("dialog",{name:"账号降智测试",exact:true})
+  await runningDialog.getByRole("button",{name:"立即测试",exact:true}).click()
+  await runningDialog.getByRole("button",{name:"Close",exact:true}).click()
+  await assertRunningBadge(otherCell)
+  releaseRuns()
+  runGate = null
+  releaseRuns = null
+  await otherCell.getByRole("status").waitFor({state:"detached",timeout:8000})
+  assert.equal(await otherCell.innerText(),previousResult)
+  console.log("PASS: failed account requests remove loading without discarding the previous result")
 
 	await page.getByRole("button",{name:"配置正常账号降智测试",exact:true}).click()
 	let dialog = page.getByRole("dialog",{name:"账号降智测试配置",exact:true})
