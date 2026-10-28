@@ -101,7 +101,8 @@ export function degradationFailureKind(result?: Partial<GroupDegradationResult> 
   if (!result || result.status !== "error") return ""
   if (degradationHasEvidence(result)) return "judge"
   const reason = (result.reason ?? "").trim()
-  if (/评审|判定/.test(reason)) return "judge"
+  // 只认「评审」：生成失败的原因里也会出现「不能用于能力判定」，不能据此归为评审问题。
+  if (/评审/.test(reason)) return "judge"
   return requestFailurePattern.test(reason) ? "request" : "gateway"
 }
 

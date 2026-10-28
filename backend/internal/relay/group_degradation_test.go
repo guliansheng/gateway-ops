@@ -164,7 +164,7 @@ func TestGroupDegradationJudgeFailurePreservesOutputAndRedacts(t *testing.T) {
 	s := &Service{client: server.Client()}
 	result := s.evaluateGroupDegradation(context.Background(), server.URL, "local-secret", storage.GroupDegradationConfig{Method: "pelican", Model: "candidate", Effort: "low"}, "local-secret", "admin-secret")
 	serialized, _ := json.Marshal(result)
-	if result.Status != "error" || result.HTML == "" || !strings.Contains(result.Reason, "HTTP 502") {
+	if result.Status != "inconclusive" || result.HTML == "" || !strings.Contains(result.Reason, "HTTP 502") || !strings.Contains(result.Reason, "人工确认") {
 		t.Fatalf("result = %+v", result)
 	}
 	for _, secret := range []string{"local-secret", "admin-secret", "sk-unsafe123", "leaked123", "raw upstream details"} {

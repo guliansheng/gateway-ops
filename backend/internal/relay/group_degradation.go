@@ -411,7 +411,9 @@ func (s *Service) evaluateDegradation(ctx context.Context, config storage.GroupD
 	}
 	status, reason, err := judgeDegradation(ctx, chat, judgeModel, config.Effort, prompts, prompt, result.HTML, secrets...)
 	if err != nil {
-		result.Reason = "评审失败：" + err.Error()
+		// The drawing already exists, so a judge failure is not a failed test:
+		// keep the evidence and leave the verdict for the admin to confirm.
+		result.Status, result.Reason = "inconclusive", "评审失败，鹈鹕已生成，请人工确认："+err.Error()
 		return result
 	}
 	result.Status, result.Reason = status, "静态源码评审（未进行视觉验证）："+reason
