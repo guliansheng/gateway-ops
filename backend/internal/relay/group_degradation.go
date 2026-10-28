@@ -305,7 +305,7 @@ func (s *Service) runClaimedGroupDegradation(ctx context.Context, config storage
 	if result.JudgeModel == "" {
 		result.JudgeModel = config.Model
 	}
-	keyOwner := ""
+	var keyOwner groupKeyOwner
 	// Capture settings exactly once before credential discovery or any model
 	// call. A settings failure is a saved error, never a fallback/default run.
 	prompts, promptErr := s.stations.GetDegradationPromptSettings(ctx, config.StationID)
@@ -345,7 +345,7 @@ func (s *Service) runClaimedGroupDegradation(ctx context.Context, config storage
 	s.startDegradationUsageSync(degradationUsageJob{
 		Scope: storage.DegradationUsageScopeGroup, StationID: config.StationID, GroupID: config.GroupExternalID,
 		ResultID: result.ID, Models: []string{result.Model, result.JudgeModel}, StartedAt: started, FinishedAt: time.Now(),
-		FallbackAccountName: keyOwner,
+		RequesterUserID: keyOwner.UserID, RequesterLabel: keyOwner.Label,
 	})
 	return result, nil
 }

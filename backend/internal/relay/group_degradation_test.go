@@ -525,3 +525,75 @@ func TestCompactDegradationEvidenceKeepsEveryElement(t *testing.T) {
 		t.Fatalf("compaction did not shrink the evidence: %d -> %d", len(source), len(compacted))
 	}
 }
+
+func TestDegradationUsageAttributesGroupRunByRequester(t *testing.T) {
+	start := time.Now().Add(-time.Minute)
+	at := start.Add(10 * time.Second).Format(time.RFC3339Nano)
+	job := degradationUsageJob{GroupID: 81, Models: []string{"gpt-5"}, StartedAt: start, FinishedAt: time.Now(), RequesterUserID: 1, RequesterLabel: "admin"}
+	var queries []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.RawQuery)
+		page := remoteUsagePage{Pages: 1, Items: []remoteUsage{
+			// Another user's call in the same group, time and model must not win.
+			{UserID: 9, UserEmail: "someone@example.com", AccountID: 500, AccountName: "other", GroupID: 81, Model: "gpt-5", CreatedAt: at},
+			{UserID: 9, UserEmail: "someone@example.com", AccountID: 500, AccountName: "other", GroupID: 81, Model: "gpt-5", CreatedAt: at},
+			{UserID: 1, UserEmail: "admin@sub2api.local", AccountID: 2420, AccountName: "served", GroupID: 81, Model: "gpt-5", CreatedAt: at, TotalCost: 0.5},
+			{UserID: 1, AccountID: 2421, GroupID: 82, Model: "gpt-5", CreatedAt: at},
+		}}
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": page})
+	}))
+	defer server.Close()
+	s := &Service{client: server.Client()}
+	items, err := s.fetchDegradationUsageRows(context.Background(), server.URL, "key", job, start.Add(-time.Minute), time.Now().Add(time.Minute))
+	if err != nil || len(items) != 4 {
+		t.Fatalf("items=%d err=%v", len(items), err)
+	}
+	if !strings.Contains(queries[0], "user_id=1") || !strings.Contains(queries[0], "group_id=81") || !strings.Contains(queries[0], "page=1") {
+		t.Fatalf("query = %s", queries[0])
+	}
+	requester := degradationRequester(job)
+	matched := 0
+	for _, item := range items {
+		if item.GroupID == job.GroupID && requester.matches(item) {
+			matched++
+			if item.AccountID != 2420 {
+				t.Fatalf("matched account %d", item.AccountID)
+			}
+		}
+	}
+	if matched != 1 {
+		t.Fatalf("matched = %d", matched)
+	}
+}
+
+func TestDegradationRequesterFallsBackToBuiltInAdminEmail(t *testing.T) {
+	filter := degradationRequester(degradationUsageJob{})
+	if !filter.matches(remoteUsage{UserEmail: "Admin@Sub2API.local"}) {
+		t.Fatal("built-in admin email should match when the key owner is unknown")
+	}
+	if filter.matches(remoteUsage{UserEmail: "someone@example.com"}) {
+		t.Fatal("other users must not match")
+	}
+	if !filter.matches(remoteUsage{}) {
+		t.Fatal("rows without requester fields are kept for older Sub2API builds")
+	}
+}
+
+func TestDegradationUsageRowsStopAfterWindowStart(t *testing.T) {
+	since := time.Now().Add(-time.Hour)
+	pages := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pages++
+		created := since.Add(time.Minute)
+		if r.URL.Query().Get("page") == "2" {
+			created = since.Add(-time.Minute)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": remoteUsagePage{Pages: 5, Items: []remoteUsage{{CreatedAt: created.Format(time.RFC3339Nano)}}}})
+	}))
+	defer server.Close()
+	s := &Service{client: server.Client()}
+	items, err := s.fetchDegradationUsageRows(context.Background(), server.URL, "key", degradationUsageJob{GroupID: 1}, since, time.Now())
+	if err != nil || pages != 2 || len(items) != 2 {
+		t.Fatalf("pages=%d items=%d err=%v", pages, len(items), err)
+	}
+}

@@ -21,21 +21,31 @@ const (
 	degradationUsageRetryDelay  = 4 * time.Second
 	degradationUsageSyncTimeout = 60 * time.Second
 	degradationUsageLookupLimit = 100
+	// A busy group can log more than one page inside the run window, so the
+	// lookup walks newest-first pages until it passes the window start.
+	degradationUsageLookupPages = 10
+	// Group runs call Sub2API with a key owned by this built-in admin. It is the
+	// requester filter when the key owner could not be resolved for a run.
+	defaultDegradationRequesterEmail = "admin@sub2api.local"
 )
 
 // degradationUsageJob describes one finished run. It is deliberately free of
 // request state so the lookup survives a closed dialog or browser tab.
 type degradationUsageJob struct {
-	Scope               string
-	StationID           uint
-	GroupID             int64
-	AccountID           int64
-	ResultID            uint
-	Models              []string
-	StartedAt           time.Time
-	FinishedAt          time.Time
-	FallbackAccountID   int64
-	FallbackAccountName string
+	Scope             string
+	StationID         uint
+	GroupID           int64
+	AccountID         int64
+	ResultID          uint
+	Models            []string
+	StartedAt         time.Time
+	FinishedAt        time.Time
+	FallbackAccountID int64
+	// RequesterUserID/RequesterLabel identify the Sub2API admin user whose key
+	// issued the group run. They narrow usage rows to this run's calls; they are
+	// never recorded as the serving account.
+	RequesterUserID int64
+	RequesterLabel  string
 }
 
 // startDegradationUsageSync runs the lookup detached from the request context.
@@ -75,13 +85,16 @@ func (s *Service) syncDegradationUsage(ctx context.Context, job degradationUsage
 		usage = storage.DegradationUsage{CostMultiplier: 1}
 	}
 	if usage.UsedAccountID == 0 && usage.UsedAccountName == "" {
-		usage.UsedAccountID, usage.UsedAccountName = job.FallbackAccountID, job.FallbackAccountName
-		if usage.UsedAccountName == "" && usage.UsedAccountID > 0 {
-			// Resolve the name here rather than in the run path so detection
-			// latency stays independent of this bookkeeping.
-			if account, accountErr := s.stations.FindAccountByExternalID(job.StationID, usage.UsedAccountID); accountErr == nil {
-				usage.UsedAccountName = account.Name
-			}
+		// Only account runs know their serving account up front. A group run
+		// without a matching usage row stays unattributed instead of showing the
+		// requesting admin as if it were the upstream account.
+		usage.UsedAccountID = job.FallbackAccountID
+	}
+	if usage.UsedAccountName == "" && usage.UsedAccountID > 0 {
+		// Resolve the name here rather than in the run path so detection
+		// latency stays independent of this bookkeeping.
+		if account, accountErr := s.stations.FindAccountByExternalID(job.StationID, usage.UsedAccountID); accountErr == nil {
+			usage.UsedAccountName = account.Name
 		}
 	}
 	if usage.CostMultiplier <= 0 {
@@ -108,9 +121,8 @@ func (s *Service) lookupDegradationUsage(ctx context.Context, job degradationUsa
 	}
 	since := job.StartedAt.Add(-degradationUsageSlackBefore)
 	until := job.FinishedAt.Add(degradationUsageSlackAfter)
-	endpoint := degradationUsageEndpoint(station.BaseURL, since, until, job.GroupID, job.AccountID)
-	var page remoteUsagePage
-	if err := s.get(ctx, endpoint, key, &page); err != nil {
+	items, err := s.fetchDegradationUsageRows(ctx, station.BaseURL, key, job, since, until)
+	if err != nil {
 		return usage, err
 	}
 	models := map[string]struct{}{}
@@ -127,7 +139,8 @@ func (s *Service) lookupDegradationUsage(ctx context.Context, job degradationUsa
 	baseCost, charged := 0.0, 0.0
 	var inputTokens, outputTokens int64
 	matched := 0
-	for _, item := range page.Items {
+	requester := degradationRequester(job)
+	for _, item := range items {
 		created, ok := parseMonitorTime(item.CreatedAt)
 		if !ok || created.Before(since) || created.After(until) {
 			continue
@@ -145,6 +158,9 @@ func (s *Service) lookupDegradationUsage(ctx context.Context, job degradationUsa
 			continue
 		}
 		if job.AccountID == 0 && job.GroupID > 0 && item.GroupID > 0 && item.GroupID != job.GroupID {
+			continue
+		}
+		if job.AccountID == 0 && !requester.matches(item) {
 			continue
 		}
 		matched++
@@ -191,6 +207,62 @@ func (s *Service) lookupDegradationUsage(ctx context.Context, job degradationUsa
 	return usage, nil
 }
 
+// fetchDegradationUsageRows reads newest-first usage pages until the oldest row
+// on a page predates the run window, so a busy group never pushes this run's
+// rows past the first page.
+func (s *Service) fetchDegradationUsageRows(ctx context.Context, baseURL, key string, job degradationUsageJob, since, until time.Time) ([]remoteUsage, error) {
+	items := make([]remoteUsage, 0, degradationUsageLookupLimit)
+	for pageNumber := 1; pageNumber <= degradationUsageLookupPages; pageNumber++ {
+		var page remoteUsagePage
+		if err := s.get(ctx, degradationUsageEndpoint(baseURL, since, until, job, pageNumber), key, &page); err != nil {
+			if pageNumber == 1 {
+				return nil, err
+			}
+			break // Earlier pages already cover the newest rows of the window.
+		}
+		items = append(items, page.Items...)
+		if len(page.Items) == 0 || (page.Pages > 0 && pageNumber >= page.Pages) {
+			break
+		}
+		if oldest, ok := parseMonitorTime(page.Items[len(page.Items)-1].CreatedAt); ok && oldest.Before(since) {
+			break
+		}
+	}
+	return items, nil
+}
+
+// degradationRequesterFilter keeps only usage rows issued by the admin key of a
+// group run. Rows without any requester information are kept, because older
+// Sub2API builds omit the user fields and the group/time/model filters still
+// apply to them.
+type degradationRequesterFilter struct {
+	userID int64
+	labels map[string]struct{}
+}
+
+func degradationRequester(job degradationUsageJob) degradationRequesterFilter {
+	filter := degradationRequesterFilter{userID: job.RequesterUserID, labels: map[string]struct{}{}}
+	for _, label := range []string{job.RequesterLabel, defaultDegradationRequesterEmail} {
+		if label = strings.ToLower(strings.TrimSpace(label)); label != "" {
+			filter.labels[label] = struct{}{}
+		}
+	}
+	return filter
+}
+
+func (f degradationRequesterFilter) matches(item remoteUsage) bool {
+	if f.userID > 0 && item.UserID > 0 {
+		return item.UserID == f.userID
+	}
+	email, name := strings.ToLower(strings.TrimSpace(item.UserEmail)), strings.ToLower(strings.TrimSpace(item.UserName))
+	if email == "" && name == "" {
+		return true
+	}
+	_, emailOK := f.labels[email]
+	_, nameOK := f.labels[name]
+	return (email != "" && emailOK) || (name != "" && nameOK)
+}
+
 func (s *Service) accountCostMultiplier(ctx context.Context, stationID uint, accountID int64, groupID int64) (float64, error) {
 	if accountID > 0 {
 		accounts, err := s.stations.ListAccounts(stationID)
@@ -225,9 +297,13 @@ func (s *Service) accountCostMultiplier(ctx context.Context, stationID uint, acc
 	return 1, nil
 }
 
-func degradationUsageEndpoint(baseURL string, since, until time.Time, groupID, accountID int64) string {
+func degradationUsageEndpoint(baseURL string, since, until time.Time, job degradationUsageJob, pageNumber int) string {
+	groupID, accountID := job.GroupID, job.AccountID
+	if pageNumber < 1 {
+		pageNumber = 1
+	}
 	query := []string{
-		"page=1",
+		"page=" + strconv.Itoa(pageNumber),
 		"page_size=" + strconv.Itoa(degradationUsageLookupLimit),
 		"sort_by=created_at",
 		"sort_order=desc",
@@ -239,6 +315,10 @@ func degradationUsageEndpoint(baseURL string, since, until time.Time, groupID, a
 	}
 	if accountID > 0 {
 		query = append(query, "account_id="+strconv.FormatInt(accountID, 10))
+	} else if job.RequesterUserID > 0 {
+		// The admin endpoint narrows by requester; the client-side filter still
+		// applies when a station ignores this parameter.
+		query = append(query, "user_id="+strconv.FormatInt(job.RequesterUserID, 10))
 	}
 	return strings.TrimRight(baseURL, "/") + "/api/v1/admin/usage?" + strings.Join(query, "&")
 }

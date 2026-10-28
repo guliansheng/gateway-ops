@@ -3196,25 +3196,33 @@ func (s *Service) groupGatewayCredential(ctx context.Context, stationID uint, gr
 	return station, key, err
 }
 
-// groupGatewayCredentialWithOwner also reports the admin account that owns the
-// selected key. Degradation history shows that name to operators only.
-func (s *Service) groupGatewayCredentialWithOwner(ctx context.Context, stationID uint, groupID int64) (*storage.RelayStation, string, string, error) {
+// groupKeyOwner is the Sub2API admin user that owns the selected group key. It
+// is the requester of every detection call, never the upstream account; usage
+// attribution filters by its ID to find the account that actually served.
+type groupKeyOwner struct {
+	UserID int64
+	Label  string
+}
+
+// groupGatewayCredentialWithOwner also reports the admin user that owns the
+// selected key, so usage attribution can narrow Sub2API records to its calls.
+func (s *Service) groupGatewayCredentialWithOwner(ctx context.Context, stationID uint, groupID int64) (*storage.RelayStation, string, groupKeyOwner, error) {
 	station, err := s.stations.FindByID(stationID)
 	if err != nil {
-		return nil, "", "", err
+		return nil, "", groupKeyOwner{}, err
 	}
 	if _, err := s.stations.FindGroupByExternalID(stationID, groupID); err != nil {
-		return nil, "", "", errors.New("中转站分组不存在，请先同步分组")
+		return nil, "", groupKeyOwner{}, errors.New("中转站分组不存在，请先同步分组")
 	}
 	adminKey, err := s.cipher.Decrypt(station.APIKeyCipher)
 	if err != nil {
-		return nil, "", "", fmt.Errorf("decrypt admin API key: %w", err)
+		return nil, "", groupKeyOwner{}, fmt.Errorf("decrypt admin API key: %w", err)
 	}
 	for page := 1; page <= 1000; page++ {
 		var keys remoteGroupAPIKeyPage
 		endpoint := fmt.Sprintf("%s/api/v1/admin/groups/%d/api-keys?page=%d&page_size=100", station.BaseURL, groupID, page)
 		if err := s.get(ctx, endpoint, adminKey, &keys); err != nil {
-			return nil, "", "", fmt.Errorf("查询分组的管理员 API 密钥失败: %w", err)
+			return nil, "", groupKeyOwner{}, fmt.Errorf("查询分组的管理员 API 密钥失败: %w", err)
 		}
 		if key, owner := selectAdminGroupAPIKeyOwner(keys.Items, groupID); key != "" {
 			return station, key, owner, nil
@@ -3223,7 +3231,7 @@ func (s *Service) groupGatewayCredentialWithOwner(ctx context.Context, stationID
 			break
 		}
 	}
-	return nil, "", "", ErrGroupAdminAPIKeyMissing
+	return nil, "", groupKeyOwner{}, ErrGroupAdminAPIKeyMissing
 }
 
 func selectAdminGroupAPIKey(items []remoteGroupAPIKey, groupID int64) string {
@@ -3232,8 +3240,8 @@ func selectAdminGroupAPIKey(items []remoteGroupAPIKey, groupID int64) string {
 }
 
 // selectAdminGroupAPIKeyOwner returns the active admin key of a group together
-// with its owning account label (username, falling back to the email).
-func selectAdminGroupAPIKeyOwner(items []remoteGroupAPIKey, groupID int64) (string, string) {
+// with its owning admin user (ID plus username, falling back to the email).
+func selectAdminGroupAPIKeyOwner(items []remoteGroupAPIKey, groupID int64) (string, groupKeyOwner) {
 	for _, item := range items {
 		if strings.TrimSpace(item.Key) == "" || !strings.EqualFold(strings.TrimSpace(item.Status), "active") || item.User == nil || !strings.EqualFold(strings.TrimSpace(item.User.Role), "admin") {
 			continue
@@ -3241,13 +3249,13 @@ func selectAdminGroupAPIKeyOwner(items []remoteGroupAPIKey, groupID int64) (stri
 		if item.GroupID != nil && *item.GroupID != groupID {
 			continue
 		}
-		owner := strings.TrimSpace(item.User.Username)
-		if owner == "" {
-			owner = strings.TrimSpace(item.User.Email)
+		label := strings.TrimSpace(item.User.Username)
+		if label == "" {
+			label = strings.TrimSpace(item.User.Email)
 		}
-		return strings.TrimSpace(item.Key), owner
+		return strings.TrimSpace(item.Key), groupKeyOwner{UserID: item.User.ID, Label: label}
 	}
-	return "", ""
+	return "", groupKeyOwner{}
 }
 
 func (s *Service) testGroupCall(ctx context.Context, baseURL, gatewayKey, model string, index int) GroupTestCallResult {

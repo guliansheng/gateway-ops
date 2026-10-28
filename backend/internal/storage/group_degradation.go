@@ -254,6 +254,11 @@ func (r *RelayStations) GroupDegradationView(ctx context.Context, stationID uint
 		}
 	}
 	view.Results = mergeDegradationBuckets(success, failed)
+	if !public {
+		if err = r.fillDegradationAccountNames(ctx, stationID, view.Results); err != nil {
+			return view, err
+		}
+	}
 	if public && config.ResultVisibility == "hide" {
 		for i := range view.Results {
 			switch view.Results[i].Status {
@@ -593,6 +598,35 @@ func mergeDegradationBuckets(success, failed []GroupDegradationResult) []GroupDe
 		return merged[i].ID > merged[j].ID
 	})
 	return merged
+}
+
+// fillDegradationAccountNames resolves the serving account name for rows whose
+// usage sync stored only the account ID (Sub2API usage rows often omit
+// account_name). Stored names win; unknown IDs stay unnamed.
+func (r *RelayStations) fillDegradationAccountNames(ctx context.Context, stationID uint, results []GroupDegradationResult) error {
+	ids := make([]int64, 0)
+	for _, result := range results {
+		if result.UsedAccountID > 0 && strings.TrimSpace(result.UsedAccountName) == "" {
+			ids = append(ids, result.UsedAccountID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	var accounts []RelayAccount
+	if err := r.db.WithContext(ctx).Select("external_id", "name").Where("relay_station_id = ? AND external_id IN ?", stationID, ids).Find(&accounts).Error; err != nil {
+		return err
+	}
+	names := make(map[int64]string, len(accounts))
+	for _, account := range accounts {
+		names[account.ExternalID] = account.Name
+	}
+	for i := range results {
+		if results[i].UsedAccountID > 0 && strings.TrimSpace(results[i].UsedAccountName) == "" {
+			results[i].UsedAccountName = names[results[i].UsedAccountID]
+		}
+	}
+	return nil
 }
 func newGroupDegradationLease() (string, error) {
 	var token [24]byte

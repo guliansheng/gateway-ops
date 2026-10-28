@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -254,6 +255,10 @@ func (r *RelayStations) degradationUsageNames(ctx context.Context, stationID uin
 			items[i].ScopeName = accountNames[items[i].ScopeExternalID]
 		} else {
 			items[i].ScopeName = groupNames[items[i].ScopeExternalID]
+		}
+		// Usage sync often stores only the serving account ID.
+		if items[i].UsedAccountID > 0 && strings.TrimSpace(items[i].UsedAccountName) == "" {
+			items[i].UsedAccountName = accountNames[items[i].UsedAccountID]
 		}
 	}
 	return nil
