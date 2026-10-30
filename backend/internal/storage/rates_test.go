@@ -54,3 +54,14 @@ func TestCapConsumptionToNet(t *testing.T) {
 		t.Fatalf("expected negative consumption to be clamped to zero, got %.8f", got)
 	}
 }
+
+func TestRechargeBalanceUnitsRespectChannelMultiplier(t *testing.T) {
+	got := rechargeBalanceUnits(balanceRangeBound{RechargeMultiplier: 0.1}, 10)
+	if got != 100 {
+		t.Fatalf("automatic recharge units = %v, want 100", got)
+	}
+	got = rechargeBalanceUnits(balanceRangeBound{BalanceMode: BalanceModeManual, RechargeMultiplier: 0.1}, 10)
+	if got != 10 {
+		t.Fatalf("manual recharge units = %v, want 10", got)
+	}
+}

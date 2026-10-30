@@ -227,6 +227,13 @@ type ChannelDailyBalance struct {
 	Day        time.Time `gorm:"type:date;not null;uniqueIndex:idx_channel_daily_balance" json:"day"`
 	Balance    float64   `gorm:"not null" json:"balance"`
 	CapturedAt time.Time `gorm:"not null;index" json:"captured_at"`
+	// Reliable means the opening balance was observed before or exactly at
+	// midnight. Late first samples and legacy rows default to false, so their
+	// already-included recharges cannot be added again after snapshot cleanup.
+	Reliable bool `gorm:"not null;default:false" json:"reliable"`
+	// SourceSampledAt is the timestamp of the balance observation, not the
+	// daily-row write. Legacy rows have no verified source timestamp.
+	SourceSampledAt *time.Time `json:"source_sampled_at,omitempty"`
 }
 
 func (ChannelDailyBalance) TableName() string { return "channel_daily_balances" }

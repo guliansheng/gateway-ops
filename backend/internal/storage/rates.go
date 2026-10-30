@@ -316,10 +316,10 @@ func appendBalanceSnapshot(tx *gorm.DB, s *BalanceSnapshot) error {
 }
 
 // CaptureDailyBalances stores one balance for every channel on the local day
-// containing at. The last known balance before midnight is preferred. If that
-// value was a transient zero, the first valid positive balance observed during
-// the day is used instead. A unique (channel_id, day) key makes both the
-// midnight job and startup recovery safe to run repeatedly.
+// containing at. The last known balance before midnight is preferred, including
+// a real zero balance. A late first sample is retained as an untrusted fallback;
+// its source time prevents already-reflected recharges from being counted twice.
+// A unique (channel_id, day) key makes capture and startup recovery idempotent.
 func (r *Rates) CaptureDailyBalances(at time.Time) (int64, error) {
 	if at.IsZero() {
 		at = time.Now()
@@ -334,20 +334,22 @@ func (r *Rates) CaptureDailyBalances(at time.Time) (int64, error) {
 	var captured int64
 	err := r.db.Transaction(func(tx *gorm.DB) error {
 		for _, channel := range channels {
-			balance, err := dailyBalanceCandidate(tx, channel, dayStart, dayEnd)
+			balance, sourceAt, reliable, err := dailyBalanceCandidate(tx, channel, dayStart, dayEnd)
 			if err != nil {
 				return err
 			}
-			if balance == nil || *balance <= validBalanceEpsilon {
+			if balance == nil || *balance < 0 || (*balance <= validBalanceEpsilon && !reliable) {
 				continue
 			}
 			result := tx.Exec(`
-				INSERT INTO channel_daily_balances (channel_id, day, balance, captured_at)
-				VALUES (?, CAST(? AS date), ?, ?)
+				INSERT INTO channel_daily_balances (channel_id, day, balance, captured_at, reliable, source_sampled_at)
+				VALUES (?, CAST(? AS date), ?, ?, ?, ?)
 				ON CONFLICT (channel_id, day) DO UPDATE
-				SET balance = EXCLUDED.balance, captured_at = EXCLUDED.captured_at
-				WHERE channel_daily_balances.balance <= ?
-			`, channel.ID, day, *balance, at, validBalanceEpsilon)
+				SET balance = EXCLUDED.balance, captured_at = EXCLUDED.captured_at,
+					reliable = EXCLUDED.reliable, source_sampled_at = EXCLUDED.source_sampled_at
+				WHERE channel_daily_balances.reliable = false
+					AND (channel_daily_balances.balance <= ? OR EXCLUDED.reliable = true)
+			`, channel.ID, day, *balance, at, reliable, sourceAt, validBalanceEpsilon)
 			if result.Error != nil {
 				return result.Error
 			}
@@ -358,13 +360,16 @@ func (r *Rates) CaptureDailyBalances(at time.Time) (int64, error) {
 	return captured, err
 }
 
-// ChannelConsumptionTotals returns balance decreases grouped by channel. A
-// zero balance followed by a near-complete recovery within a short window is
-// treated as an upstream sampling reset, not a real consumption event. When a
-// reliable range start and end balance are available, the result is capped at
-// the net balance decrease so a reset/recovery pair cannot be double-counted.
+// ChannelConsumptionTotals returns consumption in each channel's balance units.
+// Explicit upstream recharges reconcile the opening and closing balance, even
+// when a recharge and consumption cancel out between two samples. Without a
+// matching recharge, retain the observed-decrease/reset-filtering fallback.
 func (r *Rates) ChannelConsumptionTotals(since time.Time) (map[uint]float64, error) {
-	query := r.db.Model(&BalanceChangeLog{})
+	return r.channelConsumptionTotals(since, time.Now())
+}
+
+func (r *Rates) channelConsumptionTotals(since, until time.Time) (map[uint]float64, error) {
+	query := r.db.Model(&BalanceChangeLog{}).Where("detected_at <= ?", until)
 	if !since.IsZero() {
 		query = query.Where("detected_at >= ?", since)
 	}
@@ -382,121 +387,188 @@ func (r *Rates) ChannelConsumptionTotals(since time.Time) (map[uint]float64, err
 		}
 		totals[change.ChannelID] += -change.Delta
 	}
-	if since.IsZero() {
-		return totals, nil
-	}
-	bounds, err := r.rangeBalanceBounds(since)
+	bounds, err := r.rangeBalanceBounds(since, until)
 	if err != nil {
 		return nil, err
 	}
-	for channelID, amount := range totals {
-		if bound, ok := bounds[channelID]; ok {
-			totals[channelID] = capConsumptionToNet(amount, bound.Start, bound.End)
+	// Iterate bounds, not just negative changes: a channel can consume credits
+	// while its balance stays unchanged or increases after a recharge.
+	for channelID, bound := range bounds {
+		if bound.RechargeAmount > 0 {
+			if bound.ReliableStart && bound.Start != nil && bound.End != nil {
+				rechargeUnits := rechargeBalanceUnits(bound, bound.RechargeAmount)
+				totals[channelID] = math.Max(0, *bound.Start+rechargeUnits-*bound.End)
+			}
+			// An untrusted opening boundary cannot reconcile a recharge. Do not
+			// apply the old net-decrease cap either: it would make a recharge
+			// shrink even the consumption that was directly observed.
+			continue
+		}
+		if !since.IsZero() && bound.ReliableStart {
+			totals[channelID] = capConsumptionToNet(totals[channelID], bound.Start, bound.End)
 		}
 	}
 	return totals, nil
 }
 
 type balanceRangeBound struct {
-	Start *float64
-	End   *float64
+	Start              *float64
+	End                *float64
+	StartAt            *time.Time
+	EndAt              *time.Time
+	ReliableStart      bool
+	BalanceMode        BalanceMode
+	RechargeMultiplier float64
+	RechargeAmount     float64
 }
 
-func (r *Rates) rangeBalanceBounds(since time.Time) (map[uint]balanceRangeBound, error) {
-	localSince := since.In(time.Local)
-	day := localSince.Format("2006-01-02")
+// Automatic-channel balances are upstream credits; the ledger records paid
+// currency. Manual balances already use paid currency.
+func rechargeBalanceUnits(bound balanceRangeBound, amount float64) float64 {
+	if bound.BalanceMode == BalanceModeManual {
+		return amount
+	}
+	return amount / (Channel{RechargeMultiplier: bound.RechargeMultiplier}).EffectiveRechargeMultiplier()
+}
+
+func (r *Rates) rangeBalanceBounds(since, until time.Time) (map[uint]balanceRangeBound, error) {
+	dayStart, _ := localDayBounds(since)
+	useDaily := !since.IsZero() && since.Equal(dayStart)
 	type row struct {
-		ChannelID uint
-		Start     *float64
-		End       *float64
+		ChannelID          uint        `gorm:"column:channel_id"`
+		Start              *float64    `gorm:"column:start"`
+		End                *float64    `gorm:"column:end"`
+		StartAt            *time.Time  `gorm:"column:start_at"`
+		EndAt              *time.Time  `gorm:"column:end_at"`
+		ReliableStart      bool        `gorm:"column:reliable_start"`
+		BalanceMode        BalanceMode `gorm:"column:balance_mode"`
+		RechargeMultiplier float64     `gorm:"column:recharge_multiplier"`
+		RechargeAmount     float64     `gorm:"column:recharge_amount"`
 	}
 	var rows []row
+	// Zero is a real sampled balance, not a missing boundary. The daily row is
+	// defined as the local-day opening balance, even when midnight capture ran
+	// a little late; CapturedAt records write time, not the balance's source time.
 	err := r.db.Raw(`
-		SELECT c.id AS channel_id,
-			COALESCE(
-				NULLIF((SELECT d.balance
-					FROM channel_daily_balances d
-					WHERE d.channel_id = c.id AND d.day = CAST(? AS date)
-					LIMIT 1), 0),
-				NULLIF((SELECT b.balance
-					FROM balance_snapshots b
-					WHERE b.channel_id = c.id AND b.sampled_at < ?
-					ORDER BY b.sampled_at DESC, b.id DESC
-					LIMIT 1), 0),
-				(SELECT b.balance
-					FROM balance_snapshots b
-					WHERE b.channel_id = c.id AND b.sampled_at >= ? AND b.balance > ?
-					ORDER BY b.sampled_at ASC, b.id ASC
-					LIMIT 1)
-			) AS start,
-			COALESCE(
-				NULLIF(c.last_balance, 0),
-				(SELECT b.balance
-					FROM balance_snapshots b
-					WHERE b.channel_id = c.id AND b.balance > ?
-					ORDER BY b.sampled_at DESC, b.id DESC
-					LIMIT 1)
-			) AS "end"
-		FROM channels c
-		WHERE c.deleted_at IS NULL
-	`, day, since, since, validBalanceEpsilon, validBalanceEpsilon).Scan(&rows).Error
+		WITH bounds AS (
+			SELECT c.id AS channel_id, c.balance_mode, c.recharge_multiplier,
+				COALESCE(previous.balance, CASE WHEN first.sampled_at = @since THEN first.balance END, daily.balance, first.balance) AS start,
+				COALESCE(previous.sampled_at, CASE WHEN first.sampled_at = @since THEN first.sampled_at END,
+					daily.source_sampled_at, first.sampled_at) AS start_at,
+				(previous.sampled_at IS NOT NULL OR COALESCE(daily.reliable, false) OR @since_is_zero OR COALESCE(first.sampled_at = CAST(@since AS timestamptz), false)) AS reliable_start,
+				last.balance AS "end", last.sampled_at AS end_at
+			FROM channels c
+			LEFT JOIN LATERAL (
+				SELECT b.balance, b.sampled_at FROM balance_snapshots b
+				WHERE b.channel_id = c.id AND b.sampled_at < @since
+					AND b.sampled_at <= @until AND b.balance >= 0
+				ORDER BY b.sampled_at DESC, b.id DESC LIMIT 1
+			) previous ON true
+			LEFT JOIN LATERAL (
+				SELECT d.balance, d.source_sampled_at, d.reliable FROM channel_daily_balances d
+				WHERE @use_daily AND d.channel_id = c.id AND d.day = CAST(@day AS date)
+					AND d.captured_at <= @until AND d.balance >= 0
+					AND d.reliable AND d.source_sampled_at <= @since
+				LIMIT 1
+			) daily ON true
+			LEFT JOIN LATERAL (
+				SELECT b.balance, b.sampled_at FROM balance_snapshots b
+				WHERE b.channel_id = c.id AND b.sampled_at >= @since
+					AND b.sampled_at <= @until AND b.balance >= 0
+				ORDER BY b.sampled_at ASC, b.id ASC LIMIT 1
+			) first ON true
+			LEFT JOIN LATERAL (
+				SELECT candidates.balance, candidates.sampled_at FROM (
+					SELECT b.balance, b.sampled_at, b.id FROM balance_snapshots b
+					WHERE b.channel_id = c.id AND b.sampled_at <= @until AND b.balance >= 0
+					UNION ALL
+					SELECT c.last_balance, c.last_balance_at, 0
+					WHERE c.last_balance IS NOT NULL AND c.last_balance_at <= @until AND c.last_balance >= 0
+				) candidates
+				ORDER BY candidates.sampled_at DESC, candidates.id DESC LIMIT 1
+			) last ON true
+			WHERE c.deleted_at IS NULL
+		)
+		SELECT bounds.*, COALESCE(recharges.amount, 0) AS recharge_amount
+		FROM bounds
+		LEFT JOIN LATERAL (
+			SELECT SUM(e.amount) AS amount FROM operation_ledger_entries e
+			WHERE e.channel_id = bounds.channel_id
+				AND e.direction = 'expense' AND e.category = 'upstream_recharge'
+				AND e.occurred_at >= @since
+				AND e.occurred_at > bounds.start_at
+				AND e.occurred_at <= bounds.end_at
+		) recharges ON true
+	`, map[string]any{
+		"since": since, "until": until, "day": dayStart.Format("2006-01-02"),
+		"use_daily": useDaily, "since_is_zero": since.IsZero(),
+	}).Scan(&rows).Error
 	if err != nil {
 		return nil, err
 	}
 	bounds := make(map[uint]balanceRangeBound, len(rows))
 	for _, row := range rows {
-		bounds[row.ChannelID] = balanceRangeBound{Start: row.Start, End: row.End}
+		bounds[row.ChannelID] = balanceRangeBound{
+			Start: row.Start, End: row.End, StartAt: row.StartAt, EndAt: row.EndAt,
+			ReliableStart: row.ReliableStart, BalanceMode: row.BalanceMode,
+			RechargeMultiplier: row.RechargeMultiplier, RechargeAmount: row.RechargeAmount,
+		}
 	}
 	return bounds, nil
 }
 
-func dailyBalanceCandidate(tx *gorm.DB, channel Channel, dayStart, dayEnd time.Time) (*float64, error) {
+func dailyBalanceCandidate(tx *gorm.DB, channel Channel, dayStart, dayEnd time.Time) (*float64, *time.Time, bool, error) {
 	var previous BalanceSnapshot
-	previousErr := tx.Where("channel_id = ? AND sampled_at < ?", channel.ID, dayStart).
+	previousErr := tx.Where("channel_id = ? AND sampled_at < ? AND balance >= 0", channel.ID, dayStart).
 		Order("sampled_at DESC, id DESC").First(&previous).Error
 	if previousErr != nil && previousErr != gorm.ErrRecordNotFound {
-		return nil, previousErr
+		return nil, nil, false, previousErr
 	}
-	if previousErr == nil && previous.Balance > validBalanceEpsilon {
-		return &previous.Balance, nil
+	if previousErr == nil {
+		return &previous.Balance, &previous.SampledAt, true, nil
 	}
 	var first BalanceSnapshot
-	firstErr := tx.Where("channel_id = ? AND sampled_at >= ? AND sampled_at < ? AND balance > ?", channel.ID, dayStart, dayEnd, validBalanceEpsilon).
+	firstErr := tx.Where("channel_id = ? AND sampled_at >= ? AND sampled_at < ? AND balance >= 0", channel.ID, dayStart, dayEnd).
 		Order("sampled_at ASC, id ASC").First(&first).Error
 	if firstErr == nil {
-		return &first.Balance, nil
+		return &first.Balance, &first.SampledAt, first.SampledAt.Equal(dayStart), nil
 	}
 	if firstErr != gorm.ErrRecordNotFound {
-		return nil, firstErr
+		return nil, nil, false, firstErr
 	}
 	if channel.LastBalance != nil && *channel.LastBalance > validBalanceEpsilon {
-		return channel.LastBalance, nil
+		return channel.LastBalance, channel.LastBalanceAt, false, nil
 	}
-	return nil, nil
+	return nil, nil, false, nil
 }
 
 func ensureDailyBalance(tx *gorm.DB, snapshot *BalanceSnapshot) error {
-	if snapshot.Balance <= validBalanceEpsilon {
+	if snapshot.Balance < 0 {
 		return nil
 	}
 	dayStart, _ := localDayBounds(snapshot.SampledAt)
 	day := dayStart.Format("2006-01-02")
 	var previous BalanceSnapshot
-	previousErr := tx.Where("channel_id = ? AND sampled_at < ?", snapshot.ChannelID, dayStart).
+	previousErr := tx.Where("channel_id = ? AND sampled_at < ? AND balance >= 0", snapshot.ChannelID, dayStart).
 		Order("sampled_at DESC, id DESC").First(&previous).Error
 	initial := snapshot.Balance
-	if previousErr == nil && previous.Balance > validBalanceEpsilon {
+	sourceAt := snapshot.SampledAt
+	reliable := sourceAt.Equal(dayStart)
+	if previousErr == nil {
 		initial = previous.Balance
-	} else if previousErr != nil && previousErr != gorm.ErrRecordNotFound {
+		sourceAt = previous.SampledAt
+		reliable = true
+	} else if previousErr != gorm.ErrRecordNotFound {
 		return previousErr
 	}
 	return tx.Exec(`
-		INSERT INTO channel_daily_balances (channel_id, day, balance, captured_at)
-		VALUES (?, CAST(? AS date), ?, ?)
+		INSERT INTO channel_daily_balances (channel_id, day, balance, captured_at, reliable, source_sampled_at)
+		VALUES (?, CAST(? AS date), ?, ?, ?, ?)
 		ON CONFLICT (channel_id, day) DO UPDATE
-		SET balance = EXCLUDED.balance, captured_at = EXCLUDED.captured_at
-		WHERE channel_daily_balances.balance <= ?
-	`, snapshot.ChannelID, day, initial, snapshot.SampledAt, validBalanceEpsilon).Error
+		SET balance = EXCLUDED.balance, captured_at = EXCLUDED.captured_at,
+			reliable = EXCLUDED.reliable, source_sampled_at = EXCLUDED.source_sampled_at
+		WHERE channel_daily_balances.reliable = false AND EXCLUDED.reliable = true
+	`, snapshot.ChannelID, day, initial, snapshot.SampledAt, reliable, sourceAt).Error
 }
 
 func localDayBounds(at time.Time) (time.Time, time.Time) {
