@@ -129,7 +129,7 @@ function MonitorCard({ group, range, stationID }: { group: PublicGroupMonitorGro
     <header className="flex items-start justify-between gap-3">
       <div className="min-w-0">
         <h3 className="break-words text-base font-semibold">{group.name}</h3>
-        <div className="mt-1.5 flex flex-wrap items-center gap-2"><PlatformBadge platform={group.platform} compact /><span className="text-[11px] font-medium text-muted-foreground">倍率 {group.rate_multiplier.toFixed(2)}x</span></div>
+        <div className="mt-1.5 flex flex-wrap items-center gap-2"><PlatformBadge platform={group.platform} compact /><span className="text-[11px] font-medium text-muted-foreground">倍率 {group.rate_multiplier.toFixed(3)}x</span></div>
       </div>
       <span className={cn("shrink-0 rounded-full px-2.5 py-1 text-xs font-medium", meta.tone)}>{meta.label}</span>
     </header>

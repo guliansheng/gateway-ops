@@ -89,7 +89,7 @@ try {
     }
     if (url.pathname.endsWith("/group-monitor")) {
       const now = new Date().toISOString()
-      const groups = [90, 70, 50, 49].map((score, index) => ({ external_id: 101 + index, name: `可用率${score}%`, description: index === 1 ? "测试分组说明，用于验证不同内容长度的卡片保持同行等高，指标按自然顺序排列。" : "", platform: "openai", rate_multiplier: 1, enabled: true, group_status: "active", status: "available", data_complete: true, updated_at: now, success_count: score, failure_count: 100 - score, consecutive_failures: 0, calls: [], cache_rate: 0.5, first_token_ms: 120, buckets: [{ start_at: now, end_at: now, total: 100, success_count: score, failure_count: 100 - score, availability: score / 100, cache_rate: 0.5, first_token_ms: 120, data_complete: true }] }))
+      const groups = [90, 70, 50, 49].map((score, index) => ({ external_id: 101 + index, name: `可用率${score}%`, description: index === 1 ? "测试分组说明，用于验证不同内容长度的卡片保持同行等高，指标按自然顺序排列。" : "", platform: "openai", rate_multiplier: index === 0 ? 1.23456 : 1, enabled: true, group_status: "active", status: "available", data_complete: true, updated_at: now, success_count: score, failure_count: 100 - score, consecutive_failures: 0, calls: [], cache_rate: 0.5, first_token_ms: 120, buckets: [{ start_at: now, end_at: now, total: 100, success_count: score, failure_count: 100 - score, availability: score / 100, cache_rate: 0.5, first_token_ms: 120, data_complete: true }] }))
       groups.push({ ...groups[0], external_id: 105, name: "无请求", success_count: 0, failure_count: 0, buckets: [{ start_at: now, end_at: now, total: 0, success_count: 0, failure_count: 0, data_complete: true }] })
       return route.fulfill({ json: { data: { station_id: 1, station_name: "测试站", range: url.searchParams.get("range") ?? "90m", updated_at: now, groups, summary: { total: 5, available: 4, idle: 1, degraded: 0, unavailable: 0, disabled: 0, unknown: 0 } } } })
     }
@@ -157,6 +157,7 @@ try {
   await page.goto(`${base}/public/relay-monitor/1`)
   await page.getByRole("heading", { name: "可用率90%", exact: true }).waitFor()
   await page.getByRole("heading", { name: "降智检测", exact: true }).first().waitFor()
+  assert.equal(await page.locator("article").filter({ has: page.getByRole("heading", { name: "可用率90%", exact: true }) }).getByText("倍率 1.235x", { exact: true }).count(), 1)
   for (const [score, colorClass] of [[90, "bg-emerald-600"], [70, "bg-emerald-300"], [50, "bg-yellow-400"], [49, "bg-red-500"]]) {
     const card = page.locator("article").filter({ has: page.getByRole("heading", { name: `可用率${score}%`, exact: true }) })
     const bar = card.locator('button[role="listitem"]').first()
