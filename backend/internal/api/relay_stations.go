@@ -34,6 +34,11 @@ func registerRelayStations(g *gin.RouterGroup, d *Deps) {
 	gp.GET("/:id/users/:user_id/balance-history", func(c *gin.Context) { relayStationUserBalanceHistory(c, d) })
 	gp.GET("/:id/accounts/:external_id/models", func(c *gin.Context) { relayStationAccountModels(c, d) })
 	gp.POST("/:id/accounts/:external_id/test", func(c *gin.Context) { relayStationTestAccount(c, d) })
+	gp.GET("/:id/accounts/:external_id/model-whitelist", func(c *gin.Context) { relayStationAccountModelWhitelist(c, d) })
+	gp.POST("/:id/accounts/:external_id/model-whitelist/sync", func(c *gin.Context) { syncRelayStationAccountModelWhitelist(c, d) })
+	gp.POST("/:id/accounts/:external_id/model-whitelist/test", func(c *gin.Context) { testRelayStationAccountModels(c, d) })
+	gp.POST("/:id/accounts/:external_id/model-whitelist/remove", func(c *gin.Context) { removeRelayStationAccountModels(c, d) })
+	gp.DELETE("/:id/accounts/:external_id/model-whitelist", func(c *gin.Context) { clearRelayStationAccountModelWhitelist(c, d) })
 	gp.DELETE("/:id/accounts/:external_id", func(c *gin.Context) { deleteRelayStationAccount(c, d) })
 	gp.DELETE("/:id/accounts", func(c *gin.Context) { deleteAllRelayStationAccounts(c, d) })
 	gp.GET("/:id/groups/:external_id/models", func(c *gin.Context) { relayStationGroupModels(c, d) })
@@ -1589,6 +1594,106 @@ func relayStationTestAccount(c *gin.Context, d *Deps) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": result})
+}
+
+func relayStationAccountModelWhitelist(c *gin.Context, d *Deps) {
+	stationID, accountID, ok := relayStationAccountIDs(c)
+	if !ok {
+		return
+	}
+	models, err := d.Relay.AccountModelWhitelist(c.Request.Context(), stationID, accountID)
+	if err != nil {
+		fail(c, http.StatusBadGateway, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": models})
+}
+
+func syncRelayStationAccountModelWhitelist(c *gin.Context, d *Deps) {
+	stationID, accountID, ok := relayStationAccountIDs(c)
+	if !ok {
+		return
+	}
+	models, err := d.Relay.SyncAccountModelWhitelist(c.Request.Context(), stationID, accountID)
+	if err != nil {
+		fail(c, http.StatusBadGateway, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": models})
+}
+
+func clearRelayStationAccountModelWhitelist(c *gin.Context, d *Deps) {
+	stationID, accountID, ok := relayStationAccountIDs(c)
+	if !ok {
+		return
+	}
+	models, err := d.Relay.ClearAccountModelWhitelist(c.Request.Context(), stationID, accountID)
+	if err != nil {
+		fail(c, http.StatusBadGateway, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": models})
+}
+
+type relayAccountModelRemoveInput struct {
+	ModelIDs []string `json:"model_ids"`
+}
+
+func removeRelayStationAccountModels(c *gin.Context, d *Deps) {
+	stationID, accountID, ok := relayStationAccountIDs(c)
+	if !ok {
+		return
+	}
+	var in relayAccountModelRemoveInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		fail(c, http.StatusBadRequest, err)
+		return
+	}
+	models, err := d.Relay.RemoveAccountModels(c.Request.Context(), stationID, accountID, in.ModelIDs)
+	if err != nil {
+		fail(c, http.StatusBadGateway, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": models})
+}
+
+type relayAccountModelTestInput struct {
+	RemoveUnavailable bool `json:"remove_unavailable"`
+	Concurrency       int  `json:"concurrency"`
+}
+
+func testRelayStationAccountModels(c *gin.Context, d *Deps) {
+	stationID, accountID, ok := relayStationAccountIDs(c)
+	if !ok {
+		return
+	}
+	var in relayAccountModelTestInput
+	if c.Request.ContentLength != 0 {
+		if err := c.ShouldBindJSON(&in); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+	}
+	result, err := d.Relay.TestAccountModels(c.Request.Context(), stationID, accountID, in.RemoveUnavailable, in.Concurrency)
+	if err != nil {
+		fail(c, http.StatusBadGateway, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result})
+}
+
+func relayStationAccountIDs(c *gin.Context) (uint, int64, bool) {
+	stationID, err := uintParam(c, "id")
+	if err != nil {
+		fail(c, http.StatusBadRequest, err)
+		return 0, 0, false
+	}
+	accountID, err := strconv.ParseInt(c.Param("external_id"), 10, 64)
+	if err != nil || accountID <= 0 {
+		fail(c, http.StatusBadRequest, errors.New("账号 ID 无效"))
+		return 0, 0, false
+	}
+	return stationID, accountID, true
 }
 
 func relayStationGroupModels(c *gin.Context, d *Deps) {

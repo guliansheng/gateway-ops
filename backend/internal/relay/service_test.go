@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -144,6 +145,144 @@ func TestExtractAccountModelIDs(t *testing.T) {
 			got := extractAccountModelIDs(json.RawMessage(test.raw))
 			if !reflect.DeepEqual(got, test.want) {
 				t.Fatalf("models = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeAccountModelTestConcurrency(t *testing.T) {
+	tests := []struct {
+		input int
+		want  int
+	}{{0, 5}, {-1, 5}, {1, 1}, {5, 5}, {20, 20}, {21, 20}}
+	for _, test := range tests {
+		if got := normalizeAccountModelTestConcurrency(test.input); got != test.want {
+			t.Errorf("normalizeAccountModelTestConcurrency(%d) = %d, want %d", test.input, got, test.want)
+		}
+	}
+}
+
+func TestAccountModelTestWorkerCountUsesAvailableModels(t *testing.T) {
+	for _, test := range []struct {
+		concurrency int
+		models      int
+		want        int
+	}{{5, 0, 0}, {5, 2, 2}, {2, 5, 2}, {0, 8, 5}, {99, 30, 20}} {
+		if got := accountModelTestWorkerCount(test.concurrency, test.models); got != test.want {
+			t.Errorf("accountModelTestWorkerCount(%d, %d) = %d, want %d", test.concurrency, test.models, got, test.want)
+		}
+	}
+}
+
+func TestRunAccountModelTestsUsesBoundedWorkersAndContinues(t *testing.T) {
+	models := []string{"m1", "m2", "m3", "m4", "m5", "m6"}
+	started := make(chan string, len(models))
+	release := make(chan struct{})
+	var active, maxActive int
+	var lock sync.Mutex
+	done := make(chan []AccountModelTestItem, 1)
+	go func() {
+		done <- runAccountModelTests(context.Background(), models, 3, func(_ context.Context, model string) AccountModelTestItem {
+			lock.Lock()
+			active++
+			if active > maxActive {
+				maxActive = active
+			}
+			lock.Unlock()
+			started <- model
+			<-release
+			lock.Lock()
+			active--
+			lock.Unlock()
+			return AccountModelTestItem{ModelID: model, Success: model != "m2", Output: map[bool]string{true: "", false: "upstream error"}[model != "m2"]}
+		})
+	}()
+	for range 3 {
+		<-started
+	}
+	lock.Lock()
+	if maxActive != 3 {
+		lock.Unlock()
+		t.Fatalf("maximum active tests = %d, want 3", maxActive)
+	}
+	lock.Unlock()
+	close(release)
+	items := <-done
+	if len(items) != len(models) {
+		t.Fatalf("result count = %d, want %d", len(items), len(models))
+	}
+	for index, model := range models {
+		if items[index].ModelID != model {
+			t.Errorf("result[%d].ModelID = %q, want %q", index, items[index].ModelID, model)
+		}
+	}
+	if items[1].Success || items[1].Output != "upstream error" || !items[5].Success {
+		t.Fatalf("failed test was not recorded or later test did not run: %#v", items)
+	}
+}
+
+func TestAccountModelWhitelistMappingPreservesCredentials(t *testing.T) {
+	credentials := map[string]any{
+		"api_key": "keep-me",
+		"model_mapping": map[string]any{
+			"gpt-4":  "gpt-4",
+			"claude": "claude",
+			"alias":  "upstream-model",
+		},
+	}
+
+	if got, want := accountModelWhitelist(credentials), []string{"claude", "gpt-4"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("whitelist = %v, want %v", got, want)
+	}
+
+	updated := updateAccountModelMapping(credentials, []string{"new-model", "gpt-4"}, []string{"claude"}, false)
+	if updated["api_key"] != "keep-me" {
+		t.Fatalf("api_key = %v, want preserved value", updated["api_key"])
+	}
+	mapping, ok := updated["model_mapping"].(map[string]any)
+	if !ok {
+		t.Fatalf("model_mapping has type %T, want map[string]any", updated["model_mapping"])
+	}
+	if mapping["alias"] != "upstream-model" {
+		t.Fatalf("rewrite mapping = %v, want preserved upstream-model", mapping["alias"])
+	}
+	if got, want := accountModelWhitelist(updated), []string{"gpt-4", "new-model"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updated whitelist = %v, want %v", got, want)
+	}
+	if got, want := accountModelWhitelist(credentials), []string{"claude", "gpt-4"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("source whitelist mutated: %v, want %v", got, want)
+	}
+
+	cleared := updateAccountModelMapping(updated, nil, nil, true)
+	if cleared["api_key"] != "keep-me" {
+		t.Fatalf("clear removed unrelated credentials: %v", cleared)
+	}
+	if got := accountModelWhitelist(cleared); len(got) != 0 {
+		t.Fatalf("cleared whitelist = %v, want empty", got)
+	}
+	clearedMapping, ok := cleared["model_mapping"].(map[string]any)
+	if !ok || !reflect.DeepEqual(clearedMapping, map[string]any{"alias": "upstream-model"}) {
+		t.Fatalf("clear mapping = %#v, want non-identity rewrite only", cleared["model_mapping"])
+	}
+}
+
+func TestAccountModelUnavailableRequiresModelSpecificError(t *testing.T) {
+	tests := []struct {
+		name   string
+		result AccountTestResult
+		want   bool
+	}{
+		{name: "explicit 404 model missing", result: AccountTestResult{StatusCode: http.StatusNotFound, Output: `{"error":"model not found: old-model"}`}, want: true},
+		{name: "generic 404", result: AccountTestResult{StatusCode: http.StatusNotFound, Output: `{"error":"account not found"}`}, want: false},
+		{name: "explicit unsupported", result: AccountTestResult{StatusCode: http.StatusBadRequest, Output: `{"error":"unsupported model"}`}, want: true},
+		{name: "server error", result: AccountTestResult{StatusCode: http.StatusInternalServerError, Output: `{"error":"model not found"}`}, want: false},
+		{name: "success response", result: AccountTestResult{StatusCode: http.StatusOK, Output: `{"content":"model not found"}`}, want: false},
+		{name: "stream model error", result: AccountTestResult{StatusCode: http.StatusOK, Output: "event: error\ndata: {\"error\":\"unknown model\"}"}, want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := accountModelUnavailable(test.result); got != test.want {
+				t.Fatalf("accountModelUnavailable() = %v, want %v", got, test.want)
 			}
 		})
 	}

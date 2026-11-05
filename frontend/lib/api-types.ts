@@ -576,6 +576,24 @@ export interface RelayAccountTestResult {
   output: string
 }
 
+export interface RelayAccountModelTestItem {
+  model_id: string
+  success: boolean
+  unavailable: boolean
+  status_code: number
+  duration_ms: number
+  output: string
+}
+
+export interface RelayAccountModelTestResult {
+  requested: number
+  concurrency: number
+  succeeded: number
+  failed: number
+  removed_models: string[]
+  results: RelayAccountModelTestItem[]
+}
+
 export interface RelayGroupTestCallResult {
   index: number
   success: boolean

@@ -1448,6 +1448,303 @@ func extractAccountModelIDs(raw json.RawMessage) []string {
 	return models
 }
 
+type AccountModelTestItem struct {
+	ModelID     string `json:"model_id"`
+	Success     bool   `json:"success"`
+	Unavailable bool   `json:"unavailable"`
+	StatusCode  int    `json:"status_code"`
+	DurationMS  int64  `json:"duration_ms"`
+	Output      string `json:"output"`
+}
+
+type AccountModelTestResult struct {
+	Requested     int                    `json:"requested"`
+	Concurrency   int                    `json:"concurrency"`
+	Succeeded     int                    `json:"succeeded"`
+	Failed        int                    `json:"failed"`
+	RemovedModels []string               `json:"removed_models"`
+	Results       []AccountModelTestItem `json:"results"`
+}
+
+const (
+	defaultAccountModelTestConcurrency = 5
+	maxAccountModelTestConcurrency     = 20
+)
+
+func normalizeAccountModelTestConcurrency(concurrency int) int {
+	if concurrency <= 0 {
+		return defaultAccountModelTestConcurrency
+	}
+	if concurrency > maxAccountModelTestConcurrency {
+		return maxAccountModelTestConcurrency
+	}
+	return concurrency
+}
+
+func accountModelTestWorkerCount(concurrency, modelCount int) int {
+	if modelCount <= 0 {
+		return 0
+	}
+	workers := normalizeAccountModelTestConcurrency(concurrency)
+	if workers > modelCount {
+		return modelCount
+	}
+	return workers
+}
+
+func runAccountModelTests(ctx context.Context, models []string, concurrency int, test func(context.Context, string) AccountModelTestItem) []AccountModelTestItem {
+	results := make([]AccountModelTestItem, len(models))
+	workers := accountModelTestWorkerCount(concurrency, len(models))
+	jobs := make(chan int, len(models))
+	for index := range models {
+		jobs <- index
+	}
+	close(jobs)
+	var wait sync.WaitGroup
+	for range workers {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for index := range jobs {
+				results[index] = test(ctx, models[index])
+			}
+		}()
+	}
+	wait.Wait()
+	return results
+}
+
+func accountModelWhitelist(credentials map[string]any) []string {
+	mapping, _ := credentials["model_mapping"].(map[string]any)
+	models := make([]string, 0, len(mapping))
+	for source, targetValue := range mapping {
+		target, ok := targetValue.(string)
+		if ok && source != "" && source == target {
+			models = append(models, source)
+		}
+	}
+	sort.Strings(models)
+	return models
+}
+
+func updateAccountModelMapping(credentials map[string]any, add, remove []string, clear bool) map[string]any {
+	updated := make(map[string]any, len(credentials)+1)
+	for key, value := range credentials {
+		updated[key] = value
+	}
+	mapping := make(map[string]any)
+	if current, ok := credentials["model_mapping"].(map[string]any); ok {
+		for key, value := range current {
+			mapping[key] = value
+		}
+	} else if current, ok := credentials["model_mapping"].(map[string]string); ok {
+		for key, value := range current {
+			mapping[key] = value
+		}
+	}
+	removeSet := make(map[string]struct{}, len(remove))
+	for _, model := range remove {
+		removeSet[strings.TrimSpace(model)] = struct{}{}
+	}
+	if clear {
+		for source, value := range mapping {
+			if target, ok := value.(string); ok && source == target {
+				delete(mapping, source)
+			}
+		}
+	} else {
+		for source, value := range mapping {
+			if target, ok := value.(string); ok && source == target {
+				if _, exists := removeSet[source]; exists {
+					delete(mapping, source)
+				}
+			}
+		}
+	}
+	for _, model := range add {
+		model = strings.TrimSpace(model)
+		if model != "" {
+			mapping[model] = model
+		}
+	}
+	if len(mapping) == 0 {
+		delete(updated, "model_mapping")
+	} else {
+		updated["model_mapping"] = mapping
+	}
+	return updated
+}
+
+func accountTestOutputHasError(output string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.EqualFold(line, "event: error") || strings.EqualFold(line, "event: response.failed") || strings.EqualFold(line, "event: response.error") {
+			return true
+		}
+		if strings.HasPrefix(line, "data:") {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		}
+		var payload map[string]json.RawMessage
+		if json.Unmarshal([]byte(line), &payload) == nil {
+			if raw, ok := payload["error"]; ok && len(raw) > 0 && string(raw) != "null" && string(raw) != `""` {
+				return true
+			}
+			if event, ok := payload["type"]; ok {
+				var eventType string
+				if json.Unmarshal(event, &eventType) == nil && (eventType == "error" || eventType == "response.failed" || eventType == "response.error") {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func accountModelUnavailable(result AccountTestResult) bool {
+	statusCanContainModelFailure := result.StatusCode == http.StatusBadRequest || result.StatusCode == http.StatusNotFound || result.StatusCode == http.StatusUnprocessableEntity
+	if result.StatusCode >= 200 && result.StatusCode < 300 {
+		statusCanContainModelFailure = accountTestOutputHasError(result.Output)
+	}
+	if !statusCanContainModelFailure {
+		return false
+	}
+	message := strings.ToLower(result.Output)
+	for _, marker := range []string{
+		"model not found", "unknown model", "model does not exist", "model doesn't exist",
+		"unsupported model", "model is not supported", "model not supported",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) accountAdminTarget(ctx context.Context, stationID uint, accountID int64) (*storage.RelayStation, string, *remoteAccount, error) {
+	if accountID <= 0 {
+		return nil, "", nil, errors.New("账号 ID 无效")
+	}
+	station, err := s.stations.FindByID(stationID)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	if _, err := s.stations.FindAccountByExternalID(stationID, accountID); err != nil {
+		return nil, "", nil, errors.New("账号不存在或快照已过期，请先刷新后重试")
+	}
+	apiKey, err := s.cipher.Decrypt(station.APIKeyCipher)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("decrypt admin API key: %w", err)
+	}
+	account, err := s.fetchAccount(ctx, station.BaseURL, apiKey, accountID)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	return station, apiKey, account, nil
+}
+
+func (s *Service) AccountModelWhitelist(ctx context.Context, stationID uint, accountID int64) ([]string, error) {
+	_, _, account, err := s.accountAdminTarget(ctx, stationID, accountID)
+	if err != nil {
+		return nil, err
+	}
+	return accountModelWhitelist(account.Credentials.Raw), nil
+}
+
+func (s *Service) updateAccountModelWhitelist(ctx context.Context, stationID uint, accountID int64, add, remove []string, clear bool) ([]string, error) {
+	station, apiKey, account, err := s.accountAdminTarget(ctx, stationID, accountID)
+	if err != nil {
+		return nil, err
+	}
+	credentials := updateAccountModelMapping(account.Credentials.Raw, add, remove, clear)
+	endpoint := fmt.Sprintf("%s/api/v1/admin/accounts/%d", strings.TrimRight(station.BaseURL, "/"), accountID)
+	if err := s.put(ctx, endpoint, apiKey, map[string]any{"credentials": credentials}); err != nil {
+		return nil, fmt.Errorf("更新账号模型列表失败: %w", err)
+	}
+	return accountModelWhitelist(credentials), nil
+}
+
+func (s *Service) ClearAccountModelWhitelist(ctx context.Context, stationID uint, accountID int64) ([]string, error) {
+	return s.updateAccountModelWhitelist(ctx, stationID, accountID, nil, nil, true)
+}
+
+func (s *Service) RemoveAccountModel(ctx context.Context, stationID uint, accountID int64, modelID string) ([]string, error) {
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return nil, errors.New("模型 ID 不能为空")
+	}
+	return s.updateAccountModelWhitelist(ctx, stationID, accountID, nil, []string{modelID}, false)
+}
+
+func (s *Service) RemoveAccountModels(ctx context.Context, stationID uint, accountID int64, modelIDs []string) ([]string, error) {
+	if len(modelIDs) == 0 {
+		return nil, errors.New("请选择要移除的模型")
+	}
+	return s.updateAccountModelWhitelist(ctx, stationID, accountID, nil, modelIDs, false)
+}
+
+func (s *Service) SyncAccountModelWhitelist(ctx context.Context, stationID uint, accountID int64) ([]string, error) {
+	station, apiKey, _, err := s.accountAdminTarget(ctx, stationID, accountID)
+	if err != nil {
+		return nil, err
+	}
+	baseURL := strings.TrimRight(station.BaseURL, "/")
+	var syncData json.RawMessage
+	if err := s.post(ctx, fmt.Sprintf("%s/api/v1/admin/accounts/%d/models/sync-upstream", baseURL, accountID), apiKey, map[string]any{}, &syncData); err != nil {
+		return nil, fmt.Errorf("同步账号上游模型失败: %w", err)
+	}
+	models := extractAccountModelIDs(syncData)
+	if len(models) == 0 {
+		endpoint := fmt.Sprintf("%s/api/v1/admin/accounts/%d/models", baseURL, accountID)
+		var raw json.RawMessage
+		if err := s.get(ctx, endpoint, apiKey, &raw); err != nil {
+			return nil, fmt.Errorf("同步成功但读取模型目录失败: %w", err)
+		}
+		models = extractAccountModelIDs(raw)
+	}
+	return s.updateAccountModelWhitelist(ctx, stationID, accountID, models, nil, false)
+}
+
+func (s *Service) TestAccountModels(ctx context.Context, stationID uint, accountID int64, removeUnavailable bool, concurrency int) (AccountModelTestResult, error) {
+	models, err := s.AccountModelWhitelist(ctx, stationID, accountID)
+	if err != nil {
+		return AccountModelTestResult{}, err
+	}
+	result := AccountModelTestResult{Requested: len(models), Concurrency: accountModelTestWorkerCount(concurrency, len(models)), RemovedModels: make([]string, 0), Results: make([]AccountModelTestItem, 0, len(models))}
+	if len(models) == 0 {
+		return result, nil
+	}
+	items := runAccountModelTests(ctx, models, result.Concurrency, func(ctx context.Context, modelID string) AccountModelTestItem {
+		probe, probeErr := s.TestAccount(ctx, stationID, accountID, modelID, "regular")
+		modelError := accountTestOutputHasError(probe.Output)
+		output := probe.Output
+		if probeErr != nil && strings.TrimSpace(output) == "" {
+			output = probeErr.Error()
+		}
+		item := AccountModelTestItem{ModelID: modelID, StatusCode: probe.StatusCode, DurationMS: probe.DurationMS, Output: output, Unavailable: accountModelUnavailable(probe)}
+		item.Success = probeErr == nil && probe.StatusCode >= 200 && probe.StatusCode < 300 && !modelError
+		return item
+	})
+	unavailableModels := make([]string, 0)
+	for _, item := range items {
+		result.Results = append(result.Results, item)
+		if item.Success {
+			result.Succeeded++
+		} else {
+			result.Failed++
+		}
+		if item.Unavailable {
+			unavailableModels = append(unavailableModels, item.ModelID)
+		}
+	}
+	if removeUnavailable && len(unavailableModels) > 0 {
+		if _, err := s.RemoveAccountModels(ctx, stationID, accountID, unavailableModels); err != nil {
+			return result, fmt.Errorf("模型测试完成，但移除不可用模型失败: %w", err)
+		}
+		result.RemovedModels = unavailableModels
+	}
+	return result, nil
+}
+
 // UsageStats aggregates Sub2API's actual user charge and token count for every
 // account. Results are cached briefly because the relay account view refreshes
 // regularly, while the source aggregation is read-only but relatively expensive.
