@@ -19,7 +19,7 @@ const calls = new Map()
 const errors = []
 const service = (id, name) => ({ id, name, url: `https://${id}.example`, history_url: `https://${id}.example/history`, updated_at: updatedAt, status: { indicator: "none", description: "全部正常" }, components: [], groups: [], incidents: [], past_incidents: [], scheduled_maintenances: [] })
 let services = [service("openai", "OpenAI"), service("claude", "Claude")]
-const group = { external_id: 1, name: "测试分组", platform: "openai", enabled: true, group_status: "active", status: "available", data_complete: true, updated_at: updatedAt, rate_multiplier: 1, success_count: 95, failure_count: 5, consecutive_failures: 0, calls: [], buckets: [{ start_at: updatedAt, end_at: updatedAt, total: 100, success_count: 95, failure_count: 5, availability: 0.95, data_complete: true }], cache_rate: 0.6, first_token_ms: 150 }
+const group = { external_id: 1, name: "测试分组", platform: "openai", enabled: true, group_status: "active", status: "available", data_complete: true, updated_at: updatedAt, rate_multiplier: 1, success_count: 95, failure_count: 5, consecutive_failures: 0, calls: [], buckets: [{ start_at: updatedAt, end_at: updatedAt, total: 100, success_count: 95, failure_count: 5, availability: 0.95, data_complete: true }], cache_rate: 0.6, cache_sample_count: 51, cache_prompt_tokens: 12000000, cache_read_tokens: 7200000, cache_rate_prompt_tokens: 12000000, cache_rate_read_tokens: 7200000, cache_sample_status: "ready", first_token_ms: 150 }
 const pages = [
   { path: "model-pricing/1", title: "模型价格", refresh: "刷新模型价格", endpoint: "/api/public/relay-stations/1/model-pricing" },
   { path: "relay-monitor/1", title: "渠道状态", refresh: "刷新监控", endpoint: "/api/public/relay-stations/1/group-monitor", toolbar: true, countdown: true },

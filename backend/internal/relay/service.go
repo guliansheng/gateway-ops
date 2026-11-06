@@ -1261,33 +1261,55 @@ type remoteBatchUpdateResult struct {
 	Affected int `json:"affected"`
 }
 
+type remoteRequestType string
+
+func (value *remoteRequestType) UnmarshalJSON(data []byte) error {
+	raw := strings.TrimSpace(string(data))
+	if raw == "null" {
+		*value = ""
+		return nil
+	}
+	var text string
+	if err := json.Unmarshal(data, &text); err == nil {
+		*value = remoteRequestType(text)
+		return nil
+	}
+	number, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid request_type %s", raw)
+	}
+	*value = remoteRequestType(strconv.FormatInt(number, 10))
+	return nil
+}
+
 type remoteUsage struct {
-	ID                    int64   `json:"id"`
-	RequestID             string  `json:"request_id"`
-	ClientRequestID       string  `json:"client_request_id"`
-	AccountID             int64   `json:"account_id"`
-	AccountName           string  `json:"account_name"`
-	UserID                int64   `json:"user_id"`
-	UserName              string  `json:"user_name"`
-	UserEmail             string  `json:"user_email"`
-	IPAddress             string  `json:"ip_address"`
-	GroupID               int64   `json:"group_id"`
-	GroupName             string  `json:"group_name"`
-	FirstTokenMS          int64   `json:"first_token_ms"`
-	DurationMS            int64   `json:"duration_ms"`
-	CreatedAt             string  `json:"created_at"`
-	Model                 string  `json:"model"`
-	RequestedModel        string  `json:"requested_model"`
-	RequestType           string  `json:"request_type"`
-	InputTokens           int64   `json:"input_tokens"`
-	OutputTokens          int64   `json:"output_tokens"`
-	CacheReadTokens       int64   `json:"cache_read_tokens"`
-	CacheCreationTokens   int64   `json:"cache_creation_tokens"`
-	CacheCreation5mTokens int64   `json:"cache_creation_5m_tokens"`
-	CacheCreation1hTokens int64   `json:"cache_creation_1h_tokens"`
-	CacheTTLOverridden    bool    `json:"cache_ttl_overridden"`
-	ActualCost            float64 `json:"actual_cost"`
-	TotalCost             float64 `json:"total_cost"`
+	ID                    int64             `json:"id"`
+	RequestID             string            `json:"request_id"`
+	ClientRequestID       string            `json:"client_request_id"`
+	AccountID             int64             `json:"account_id"`
+	AccountName           string            `json:"account_name"`
+	UserID                int64             `json:"user_id"`
+	UserName              string            `json:"user_name"`
+	UserEmail             string            `json:"user_email"`
+	IPAddress             string            `json:"ip_address"`
+	GroupID               int64             `json:"group_id"`
+	GroupName             string            `json:"group_name"`
+	FirstTokenMS          int64             `json:"first_token_ms"`
+	DurationMS            int64             `json:"duration_ms"`
+	CreatedAt             string            `json:"created_at"`
+	Model                 string            `json:"model"`
+	RequestedModel        string            `json:"requested_model"`
+	RequestType           remoteRequestType `json:"request_type"`
+	Stream                bool              `json:"stream"`
+	InputTokens           int64             `json:"input_tokens"`
+	OutputTokens          int64             `json:"output_tokens"`
+	CacheReadTokens       int64             `json:"cache_read_tokens"`
+	CacheCreationTokens   int64             `json:"cache_creation_tokens"`
+	CacheCreation5mTokens int64             `json:"cache_creation_5m_tokens"`
+	CacheCreation1hTokens int64             `json:"cache_creation_1h_tokens"`
+	CacheTTLOverridden    bool              `json:"cache_ttl_overridden"`
+	ActualCost            float64           `json:"actual_cost"`
+	TotalCost             float64           `json:"total_cost"`
 }
 
 type remoteUsagePage struct {
@@ -2449,7 +2471,7 @@ func (s *Service) RecentUsage(ctx context.Context, stationID uint, limit int) ([
 		items = append(items, RecentUsageItem{ID: usage.ID, UserID: usage.UserID, UserEmail: userEmail, UserName: userName,
 			IPAddress: ipAddress, IPLocation: ipLocation,
 			GroupID: usage.GroupID, GroupName: groupName, AccountID: usage.AccountID, AccountName: accountName,
-			Model: model, RequestType: usage.RequestType, InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
+			Model: model, RequestType: string(usage.RequestType), InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
 			CacheReadTokens: usage.CacheReadTokens, CacheCreationTokens: usage.CacheCreationTokens,
 			CacheCreation5mTokens: usage.CacheCreation5mTokens, CacheCreation1hTokens: usage.CacheCreation1hTokens,
 			CacheTTLOverridden: usage.CacheTTLOverridden,
@@ -4381,7 +4403,7 @@ func (s *Service) fetchAccountLatencies(ctx context.Context, baseURL, apiKey str
 					}
 					samples = append(samples, storage.RelayLatencySample{
 						FirstTokenMS: usage.FirstTokenMS, DurationMS: usage.DurationMS,
-						CreatedAt: created.UTC(), Model: usage.Model, Platform: item.platform, RequestType: usage.RequestType,
+						CreatedAt: created.UTC(), Model: usage.Model, Platform: item.platform, RequestType: string(usage.RequestType),
 						UserEmail:   userEmail,
 						InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
 						CacheReadTokens: usage.CacheReadTokens, CacheCreationTokens: usage.CacheCreationTokens,

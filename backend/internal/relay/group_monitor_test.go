@@ -42,6 +42,37 @@ func TestClassifyGroupMonitor(t *testing.T) {
 	}
 }
 
+func TestRemoteUsageRequestTypeDecodesStringsAndNumbers(t *testing.T) {
+	for _, input := range []string{
+		`{"created_at":"2026-08-18T12:00:00Z","request_type":2}`,
+		`{"created_at":"2026-08-18T12:00:00Z","request_type":"4"}`,
+	} {
+		var usage remoteUsage
+		if err := json.Unmarshal([]byte(input), &usage); err != nil {
+			t.Fatalf("decode %s: %v", input, err)
+		}
+		events := usageMonitorEvents([]remoteUsage{usage})
+		if len(events) != 1 || !events[0].stream {
+			t.Fatalf("decoded usage %s as %#v", input, events)
+		}
+	}
+}
+
+func TestUsageMonitorEventsIdentifiesStreamingRequests(t *testing.T) {
+	items := []remoteUsage{
+		{CreatedAt: "2026-08-18T12:00:00Z", Stream: true, RequestType: "sync"},
+		{CreatedAt: "2026-08-18T12:00:01Z", RequestType: "streaming"},
+		{CreatedAt: "2026-08-18T12:00:02Z", RequestType: "2"},
+		{CreatedAt: "2026-08-18T12:00:03Z", RequestType: "4"},
+		{CreatedAt: "2026-08-18T12:00:04Z", RequestType: "1"},
+		{CreatedAt: "2026-08-18T12:00:05Z", RequestType: "sync"},
+	}
+	events := usageMonitorEvents(items)
+	if len(events) != 6 || !events[0].stream || !events[1].stream || !events[2].stream || !events[3].stream || events[4].stream || events[5].stream {
+		t.Fatalf("streaming classification = %#v", events)
+	}
+}
+
 func TestErrorMonitorEventsOnlyIncludesUserVisibleFinalFailures(t *testing.T) {
 	items := []remoteRequestError{
 		{CreatedAt: "2026-08-18T12:00:00Z", Phase: "upstream", ErrorOwner: "provider", StatusCode: 502, Message: "Upstream request failed", GroupID: 28, RequestedModel: "gpt-5.6"},

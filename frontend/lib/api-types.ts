@@ -834,7 +834,6 @@ export interface PublicGroupMonitorBucket {
   success_count: number
   failure_count: number
   availability?: number | null
-  cache_rate?: number | null
   first_token_ms?: number | null
   duration_ms?: number | null
   data_complete: boolean
@@ -858,6 +857,12 @@ export interface PublicGroupMonitorGroup {
 	calls: PublicGroupMonitorCall[]
 	buckets?: PublicGroupMonitorBucket[]
 	cache_rate?: number | null
+	cache_sample_count: number
+	cache_prompt_tokens: number
+	cache_read_tokens: number
+	cache_rate_prompt_tokens: number
+	cache_rate_read_tokens: number
+	cache_sample_status: "ready" | "insufficient" | "incomplete"
 	first_token_ms?: number | null
 }
 

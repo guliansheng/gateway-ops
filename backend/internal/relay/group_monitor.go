@@ -40,25 +40,31 @@ type PublicGroupMonitorSummary struct {
 }
 
 type PublicGroupMonitorGroup struct {
-	ExternalID          int64                      `json:"external_id"`
-	Name                string                     `json:"name"`
-	Description         string                     `json:"description,omitempty"`
-	Platform            string                     `json:"platform,omitempty"`
-	RateMultiplier      float64                    `json:"rate_multiplier"`
-	Enabled             bool                       `json:"enabled"`
-	GroupStatus         string                     `json:"group_status,omitempty"`
-	Status              string                     `json:"status"`
-	DataComplete        bool                       `json:"data_complete"`
-	UpdatedAt           time.Time                  `json:"updated_at"`
-	LatestCallAt        *time.Time                 `json:"latest_call_at,omitempty"`
-	SuccessCount        int                        `json:"success_count"`
-	FailureCount        int                        `json:"failure_count"`
-	ConsecutiveFailures int                        `json:"consecutive_failures"`
-	FailureSummary      string                     `json:"-"`
-	Calls               []PublicGroupMonitorCall   `json:"calls"`
-	Buckets             []PublicGroupMonitorBucket `json:"buckets"`
-	CacheRate           *float64                   `json:"cache_rate,omitempty"`
-	FirstTokenMS        *int64                     `json:"first_token_ms,omitempty"`
+	ExternalID            int64                      `json:"external_id"`
+	Name                  string                     `json:"name"`
+	Description           string                     `json:"description,omitempty"`
+	Platform              string                     `json:"platform,omitempty"`
+	RateMultiplier        float64                    `json:"rate_multiplier"`
+	Enabled               bool                       `json:"enabled"`
+	GroupStatus           string                     `json:"group_status,omitempty"`
+	Status                string                     `json:"status"`
+	DataComplete          bool                       `json:"data_complete"`
+	UpdatedAt             time.Time                  `json:"updated_at"`
+	LatestCallAt          *time.Time                 `json:"latest_call_at,omitempty"`
+	SuccessCount          int                        `json:"success_count"`
+	FailureCount          int                        `json:"failure_count"`
+	ConsecutiveFailures   int                        `json:"consecutive_failures"`
+	FailureSummary        string                     `json:"-"`
+	Calls                 []PublicGroupMonitorCall   `json:"calls"`
+	Buckets               []PublicGroupMonitorBucket `json:"buckets"`
+	CacheRate             *float64                   `json:"cache_rate,omitempty"`
+	CacheSampleCount      int                        `json:"cache_sample_count"`
+	CachePromptTokens     int64                      `json:"cache_prompt_tokens"`
+	CacheReadTokens       int64                      `json:"cache_read_tokens"`
+	CacheRatePromptTokens int64                      `json:"cache_rate_prompt_tokens"`
+	CacheRateReadTokens   int64                      `json:"cache_rate_read_tokens"`
+	CacheSampleStatus     string                     `json:"cache_sample_status"`
+	FirstTokenMS          *int64                     `json:"first_token_ms,omitempty"`
 }
 
 type PublicGroupMonitorCall struct {
@@ -80,6 +86,7 @@ type monitorEvent struct {
 	model               string
 	requestID           string
 	clientRequestID     string
+	stream              bool
 	firstTokenMS        *int64
 	durationMS          *int64
 	failureReason       string
@@ -257,7 +264,14 @@ func (s *Service) PublicGroupMonitorForRange(ctx context.Context, stationID uint
 		group := groups[groupIndex]
 		complete := perGroup[index].usageOK && perGroup[index].errorsOK
 		item := buildPublicGroupMonitorGroup(group, perGroup[index].usage, perGroup[index].errors, complete, now)
-		item.Buckets, item.CacheRate, item.FirstTokenMS = buildMonitorBucketsForConfig(perGroup[index].usage, perGroup[index].errors, complete, now, config)
+		var cacheSummary cacheRateSummary
+		item.Buckets, item.CacheRate, item.FirstTokenMS, cacheSummary = buildMonitorBucketsForConfig(perGroup[index].usage, perGroup[index].errors, complete, perGroup[index].usageOK, now, config)
+		item.CacheSampleCount = cacheSummary.SampleCount
+		item.CachePromptTokens = cacheSummary.PromptTokens
+		item.CacheReadTokens = cacheSummary.ReadTokens
+		item.CacheRatePromptTokens = cacheSummary.RatePromptTokens
+		item.CacheRateReadTokens = cacheSummary.RateReadTokens
+		item.CacheSampleStatus = cacheSampleStatus(item.CacheSampleCount, item.CachePromptTokens, perGroup[index].usageOK)
 		view.Groups = append(view.Groups, item)
 		switch item.Status {
 		case "available":
@@ -301,9 +315,21 @@ func usageMonitorEvents(items []remoteUsage) []monitorEvent {
 		if cacheCreation == 0 {
 			cacheCreation = item.CacheCreation5mTokens + item.CacheCreation1hTokens
 		}
-		events = append(events, monitorEvent{success: true, createdAt: created, model: model, requestID: strings.TrimSpace(item.RequestID), clientRequestID: strings.TrimSpace(item.ClientRequestID), firstTokenMS: &first, durationMS: &duration, cacheReadTokens: item.CacheReadTokens, inputTokens: item.InputTokens, cacheCreationTokens: cacheCreation})
+		events = append(events, monitorEvent{success: true, createdAt: created, model: model, requestID: strings.TrimSpace(item.RequestID), clientRequestID: strings.TrimSpace(item.ClientRequestID), stream: isStreamingUsage(item), firstTokenMS: &first, durationMS: &duration, cacheReadTokens: item.CacheReadTokens, inputTokens: item.InputTokens, cacheCreationTokens: cacheCreation})
 	}
 	return events
+}
+
+func isStreamingUsage(item remoteUsage) bool {
+	if item.Stream {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(string(item.RequestType))) {
+	case "stream", "streaming", "sse", "2", "4":
+		return true
+	default:
+		return false
+	}
 }
 
 func errorMonitorEvents(items []remoteRequestError, groupID int64) []monitorEvent {

@@ -89,8 +89,8 @@ try {
     }
     if (url.pathname.endsWith("/group-monitor")) {
       const now = new Date().toISOString()
-      const groups = [90, 70, 50, 49].map((score, index) => ({ external_id: 101 + index, name: `可用率${score}%`, description: index === 1 ? "测试分组说明，用于验证不同内容长度的卡片保持同行等高，指标按自然顺序排列。" : "", platform: "openai", rate_multiplier: index === 0 ? 1.23456 : 1, enabled: true, group_status: "active", status: "available", data_complete: true, updated_at: now, success_count: score, failure_count: 100 - score, consecutive_failures: 0, calls: [], cache_rate: 0.5, first_token_ms: 120, buckets: [{ start_at: now, end_at: now, total: 100, success_count: score, failure_count: 100 - score, availability: score / 100, cache_rate: 0.5, first_token_ms: 120, data_complete: true }] }))
-      groups.push({ ...groups[0], external_id: 105, name: "无请求", success_count: 0, failure_count: 0, buckets: [{ start_at: now, end_at: now, total: 0, success_count: 0, failure_count: 0, data_complete: true }] })
+      const groups = [90, 70, 50, 49].map((score, index) => ({ external_id: 101 + index, name: `可用率${score}%`, description: index === 1 ? "测试分组说明，用于验证不同内容长度的卡片保持同行等高，指标按自然顺序排列。" : "", platform: "openai", rate_multiplier: index === 0 ? 1.23456 : 1, enabled: true, group_status: "active", status: "available", data_complete: true, updated_at: now, success_count: score, failure_count: 100 - score, consecutive_failures: 0, calls: [], cache_rate: index === 0 ? 0.75 : 0.5, cache_sample_count: 51, cache_prompt_tokens: index === 0 ? 12000000 : 10200000, cache_read_tokens: index === 0 ? 9000000 : 5100000, cache_rate_prompt_tokens: index === 0 ? 4000000 : 10200000, cache_rate_read_tokens: index === 0 ? 3000000 : 5100000, cache_sample_status: "ready", first_token_ms: 120, buckets: [{ start_at: now, end_at: now, total: 100, success_count: score, failure_count: 100 - score, availability: score / 100, first_token_ms: 120, data_complete: true }] }))
+      groups.push({ ...groups[0], external_id: 105, name: "无请求", success_count: 0, failure_count: 0, cache_rate: null, cache_sample_count: 0, cache_prompt_tokens: 0, cache_read_tokens: 0, cache_rate_prompt_tokens: 0, cache_rate_read_tokens: 0, cache_sample_status: "insufficient", buckets: [{ start_at: now, end_at: now, total: 0, success_count: 0, failure_count: 0, data_complete: true }] })
       return route.fulfill({ json: { data: { station_id: 1, station_name: "测试站", range: url.searchParams.get("range") ?? "90m", updated_at: now, groups, summary: { total: 5, available: 4, idle: 1, degraded: 0, unavailable: 0, disabled: 0, unknown: 0 } } } })
     }
     if (/^\/api\/public\/relay-stations\/\d+\/groups\/\d+\/degradation$/.test(url.pathname)) {
@@ -158,6 +158,10 @@ try {
   await page.getByRole("heading", { name: "可用率90%", exact: true }).waitFor()
   await page.getByRole("heading", { name: "降智检测", exact: true }).first().waitFor()
   assert.equal(await page.locator("article").filter({ has: page.getByRole("heading", { name: "可用率90%", exact: true }) }).getByText("倍率 1.235x", { exact: true }).count(), 1)
+  assert.equal(await page.locator("article").filter({ has: page.getByRole("heading", { name: "无请求", exact: true }) }).getByText("样本不足", { exact: true }).count(), 1)
+  assert.equal(await page.locator("article").filter({ has: page.getByRole("heading", { name: "可用率90%", exact: true }) }).getByText("75.0%", { exact: true }).count(), 1)
+  assert.match(await page.locator("[data-public-header-details]").last().innerText(), /缓存率 52\.9% · 有效组 4\/5/)
+  assert.doesNotMatch((await page.locator("article").allInnerTexts()).join("\n"), /条流式请求|prompt tokens|缓存样本：/)
   for (const [score, colorClass] of [[90, "bg-emerald-600"], [70, "bg-emerald-300"], [50, "bg-yellow-400"], [49, "bg-red-500"]]) {
     const card = page.locator("article").filter({ has: page.getByRole("heading", { name: `可用率${score}%`, exact: true }) })
     const bar = card.locator('button[role="listitem"]').first()
@@ -218,7 +222,7 @@ try {
   }))
   assert.ok(cardLayout.every((card) => card.y === cardLayout[0].y && card.height === cardLayout[0].height), "same-row monitor cards are equally tall")
   assert.ok(cardLayout.every((card) => card.marginTop === "0px"), "metrics are not pushed down with auto margins")
-  for (const card of cardLayout) assert.deepEqual(card.labels, ["可用率", "首 Token"], "cache rate is not a metric card")
+  for (const card of cardLayout) assert.deepEqual(card.labels, ["可用率", "缓存率", "首 Token"], "cache rate includes sample quality on the card")
   assert.equal(cardLayout[2].metricsY, cardLayout[2].headerBottom)
   assert.ok(cardLayout[1].metricsY > cardLayout[2].metricsY, "longer description stays above its metrics in natural flow")
   assert.ok(cardLayout[2].trailingSpace > 30, "short cards leave unused space at the bottom")
@@ -226,9 +230,13 @@ try {
   await firstTrendBar.hover()
   const trendTooltip = page.getByRole("tooltip")
   await trendTooltip.waitFor()
-  assert.match(await trendTooltip.innerText(), /缓存率 50\.0%/)
+  const trendTooltipText = await trendTooltip.innerText()
+  assert.match(trendTooltipText, /次请求/)
+  assert.match(trendTooltipText, /可用率/)
+  assert.match(trendTooltipText, /首 Token/)
+  assert.doesNotMatch(trendTooltipText, /缓存率|条流式请求|prompt tokens|缓存样本：/)
   await page.getByRole("heading", { name: "渠道状态", exact: true }).hover()
-  console.log("PASS: two metric cards, cache rate retained in tooltip, natural top-to-bottom content, same-row card heights, bottom whitespace and no degradation configuration summary")
+  console.log("PASS: three metric cards with cache sample quality, bucket tooltip without cache details, natural top-to-bottom content, same-row card heights, bottom whitespace and no degradation configuration summary")
   await page.getByRole("tab", { name: "7d", exact: true }).click()
   await page.waitForFunction(() => document.querySelector('[aria-selected="true"]').textContent === "7d")
   if (artifacts) await page.screenshot({ path: `${artifacts}/group-monitor-desktop.png`, fullPage: true })

@@ -14,7 +14,7 @@ import { PublicPageHeader, PublicPageTabs } from "@/components/public/public-pag
 import { availabilityBand, availabilityBands, availabilityBar } from "@/lib/group-monitor"
 
 const refreshSeconds = 30
-const cacheVersion = 4
+const cacheVersion = 6
 const monitorRanges = ["90m", "24h", "7d", "30d"] as const
 type MonitorRange = (typeof monitorRanges)[number]
 
@@ -54,6 +54,11 @@ function percent(value: number | null | undefined) {
 
 function latency(value: number | null | undefined) {
   return value == null || !Number.isFinite(value) || value < 0 ? "—" : value < 1000 ? `${Math.round(value)}ms` : `${(value / 1000).toFixed(1)}s`
+}
+
+function cacheStatusLabel(status?: PublicGroupMonitorGroup["cache_sample_status"]) {
+  if (status === "ready") return "样本充足"
+  return status === "incomplete" ? "采集不完整" : "样本不足"
 }
 
 function time(raw?: string | null, full = false) {
@@ -105,7 +110,7 @@ function Timeline({ group, range }: { group: PublicGroupMonitorGroup; range: Mon
           </TooltipTrigger>
           <TooltipContent side="top" className="max-w-[min(23rem,calc(100vw-2rem))] border-0 bg-zinc-900 px-3 py-2 text-xs text-white shadow-lg">
             <p className="font-semibold">{time(bucket.start_at, true)}–{time(bucket.end_at)} · {status}</p>
-            {bucket.total ? <p className="mt-1 leading-5">{bucket.total} 次请求 · 可用率 {percent(bucket.availability)} · 缓存率 {percent(bucket.cache_rate)} · 首 Token {latency(bucket.first_token_ms)}</p> : null}
+            {bucket.total ? <p className="mt-1 leading-5">{bucket.total} 次请求 · 可用率 {percent(bucket.availability)} · 首 Token {latency(bucket.first_token_ms)}</p> : null}
             {!bucket.data_complete ? <p className="mt-1 text-zinc-300">日志源读取失败或超过采集上限，指标仅为部分样本。</p> : null}
           </TooltipContent>
         </Tooltip>
@@ -135,7 +140,7 @@ function MonitorCard({ group, range, stationID }: { group: PublicGroupMonitorGro
     </header>
     {group.description ? <p className="mt-2 line-clamp-2 text-xs leading-5 text-muted-foreground">{group.description}</p> : null}
     <div className="pt-4">
-      <div data-public-monitor-metrics className="grid grid-cols-2 gap-2"><Metric label="可用率" value={percent(availability)} tone={band?.textTone} /><Metric label="首 Token" value={latency(group.first_token_ms)} /></div>
+      <div data-public-monitor-metrics className="grid grid-cols-3 gap-2"><Metric label="可用率" value={percent(availability)} tone={band?.textTone} /><Metric label="缓存率" value={group.cache_sample_status === "ready" ? percent(group.cache_rate) : cacheStatusLabel(group.cache_sample_status)} /><Metric label="首 Token" value={latency(group.first_token_ms)} /></div>
       <Timeline group={group} range={range} />
     </div>
     <GroupDegradationStatus stationID={stationID} groupID={group.external_id} />
@@ -143,7 +148,7 @@ function MonitorCard({ group, range, stationID }: { group: PublicGroupMonitorGro
 }
 
 function Metric({ label, value, tone }: { label: string; value: string; tone?: string }) {
-  return <div className="min-w-0 rounded-md border border-border/70 bg-muted/15 px-3 py-3"><p className="text-[11px] font-medium text-muted-foreground">{label}</p><p className={cn("mt-1.5 font-mono text-base font-semibold tabular-nums", tone)}>{value}</p></div>
+  return <div className="min-w-0 rounded-md border border-border/70 bg-muted/15 px-3 py-3"><p className="text-[11px] font-medium text-muted-foreground">{label}</p><p className={cn("mt-1.5 break-words font-mono text-base font-semibold tabular-nums", tone)}>{value}</p></div>
 }
 
 function LoadingCards() {
@@ -206,14 +211,20 @@ function StationMonitor({ stationID }: { stationID: number }) {
   const summary = useMemo(() => {
     let total = 0
     let success = 0
-    const cacheRates: number[] = []
+    let cachePromptTokens = 0
+    let cacheReadTokens = 0
+    let cacheGroupCount = 0
     for (const group of data?.groups ?? []) {
       const buckets = bucketsFor(group, range)
       total += buckets.reduce((sum, bucket) => sum + bucket.total, 0)
       success += buckets.reduce((sum, bucket) => sum + bucket.success_count, 0)
-      if (group.cache_rate != null && Number.isFinite(group.cache_rate)) cacheRates.push(group.cache_rate)
+      if (group.cache_sample_status === "ready") {
+        cacheGroupCount++
+        cachePromptTokens += group.cache_rate_prompt_tokens
+        cacheReadTokens += group.cache_rate_read_tokens
+      }
     }
-    return { availability: total ? success / total : null, cacheRate: cacheRates.length ? cacheRates.reduce((sum, value) => sum + value, 0) / cacheRates.length : null }
+    return { availability: total ? success / total : null, cacheRate: cachePromptTokens > 0 ? cacheReadTokens / cachePromptTokens : null, cacheGroupCount }
   }, [data?.groups, range])
 
   return <main data-public-page className="min-h-screen min-w-0 bg-transparent text-foreground"><div className="w-full min-w-0">
@@ -227,7 +238,7 @@ function StationMonitor({ stationID }: { stationID: number }) {
       refreshLabel="刷新监控"
       onRefresh={() => void load()}
       controls={<PublicPageTabs items={monitorRanges.map((value) => ({ value, label: rangeConfig[value].label }))} value={range} label="监控时间范围" onValueChange={(value) => { if (value !== range) { setRange(value as MonitorRange); setCountdown(refreshSeconds) } }} />}
-      metadata={<><span>{data?.groups.length ?? 0} 组</span><span>可用率 {percent(summary.availability)} · 缓存率 {percent(summary.cacheRate)}</span></>}
+      metadata={<><span>{data?.groups.length ?? 0} 组</span><span>可用率 {percent(summary.availability)} · 缓存率 {summary.cacheRate == null ? "样本不足" : `${percent(summary.cacheRate)} · 有效组 ${summary.cacheGroupCount}/${data?.groups.length ?? 0}`}</span></>}
     />
     <div className="mb-3 flex flex-wrap items-center justify-between gap-3 text-[11px] text-muted-foreground"><p>{rangeConfig[range].description}，数据来自已有调用日志，不主动探测。柱形越高代表可用率越高；无请求或采集不完整时不参与颜色分级。</p><div className="flex flex-wrap gap-3" aria-label="可用率分级图例">{availabilityBands.map((band) => <span key={band.minimum} className="flex items-end gap-1"><i aria-hidden="true" className={cn("w-2 rounded-sm", band.shape)} />{band.label}</span>)}<span className="flex items-end gap-1"><i aria-hidden="true" className="mb-0.5 h-[3px] w-2 rounded-sm bg-zinc-300" />无请求或未知</span></div></div>
     {error ? <p role="alert" className="mb-4 flex items-center gap-2 rounded-md border border-danger/30 bg-danger/5 p-3 text-sm text-danger"><TriangleAlert className="size-4 shrink-0" />{error}{data ? "，正在显示上次数据" : ""}</p> : null}

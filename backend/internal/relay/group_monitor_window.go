@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +14,9 @@ const monitorBucketDuration = 5 * time.Minute
 const monitorBucketCount = 18
 const monitorWindowPageSize = 200
 const monitorWindowMaxPages = 50
+const minCacheSampleRequests = 50
+const minCachePromptTokens = 10_000_000
+const recentCacheSampleRequests = 20
 
 const publicMonitorDefaultRange = "90m"
 
@@ -55,7 +59,6 @@ type PublicGroupMonitorBucket struct {
 	SuccessCount int       `json:"success_count"`
 	FailureCount int       `json:"failure_count"`
 	Availability *float64  `json:"availability,omitempty"`
-	CacheRate    *float64  `json:"cache_rate,omitempty"`
 	FirstTokenMS *int64    `json:"first_token_ms,omitempty"`
 	DurationMS   *int64    `json:"duration_ms,omitempty"`
 	DataComplete bool      `json:"data_complete"`
@@ -141,12 +144,30 @@ func (s *Service) fetchMonitorWindowForConfig(ctx context.Context, baseURL, key 
 	return events, fmt.Errorf("monitor window exceeds pagination limit")
 }
 
-func buildMonitorBuckets(usage, failures []monitorEvent, complete bool, now time.Time) ([]PublicGroupMonitorBucket, *float64, *int64) {
-	config, _ := monitorWindowConfigFor(publicMonitorDefaultRange)
-	return buildMonitorBucketsForConfig(usage, failures, complete, now, config)
+type cacheRateSummary struct {
+	Rate               *float64
+	SampleCount        int
+	PromptTokens       int64
+	ReadTokens         int64
+	RatePromptTokens   int64
+	RateReadTokens     int64
+	RecentSampleCount  int
+	RecentPromptTokens int64
+	RecentReadTokens   int64
 }
 
-func buildMonitorBucketsForConfig(usage, failures []monitorEvent, complete bool, now time.Time, config monitorWindowConfig) ([]PublicGroupMonitorBucket, *float64, *int64) {
+type cacheRateSample struct {
+	createdAt    time.Time
+	promptTokens int64
+	readTokens   int64
+}
+
+func buildMonitorBuckets(usage, failures []monitorEvent, complete bool, now time.Time) ([]PublicGroupMonitorBucket, *float64, *int64, cacheRateSummary) {
+	config, _ := monitorWindowConfigFor(publicMonitorDefaultRange)
+	return buildMonitorBucketsForConfig(usage, failures, complete, complete, now, config)
+}
+
+func buildMonitorBucketsForConfig(usage, failures []monitorEvent, complete, cacheComplete bool, now time.Time, config monitorWindowConfig) ([]PublicGroupMonitorBucket, *float64, *int64, cacheRateSummary) {
 	start := monitorWindowStart(now, config)
 	buckets := make([]PublicGroupMonitorBucket, config.bucketCount)
 	for index := range buckets {
@@ -160,9 +181,8 @@ func buildMonitorBucketsForConfig(usage, failures []monitorEvent, complete bool,
 	durationSums := make([]int64, config.bucketCount)
 	firstCounts := make([]int64, config.bucketCount)
 	durationCounts := make([]int64, config.bucketCount)
-	inputs := make([]int64, config.bucketCount)
-	cacheReads := make([]int64, config.bucketCount)
-	var allFirst, allFirstCount, allInputs, allCache int64
+	cacheSamples := make([]cacheRateSample, 0)
+	var allFirst, allFirstCount int64
 	events := append(append([]monitorEvent{}, usage...), filterRecoveredMonitorFailures(usage, failures)...)
 	for _, event := range events {
 		if event.createdAt.Before(start) || event.createdAt.After(now) {
@@ -182,8 +202,12 @@ func buildMonitorBucketsForConfig(usage, failures []monitorEvent, complete bool,
 			continue
 		}
 		bucket.SuccessCount++
-		inputs[index] += event.inputTokens + event.cacheReadTokens + event.cacheCreationTokens
-		cacheReads[index] += event.cacheReadTokens
+		if event.stream && !isCacheSampleModelExcluded(event.model) {
+			promptTokens := event.inputTokens + event.cacheReadTokens + event.cacheCreationTokens
+			if promptTokens > 0 {
+				cacheSamples = append(cacheSamples, cacheRateSample{createdAt: event.createdAt, promptTokens: promptTokens, readTokens: event.cacheReadTokens})
+			}
+		}
 		if event.firstTokenMS != nil && *event.firstTokenMS >= 0 {
 			firstSums[index] += *event.firstTokenMS
 			firstCounts[index]++
@@ -199,10 +223,6 @@ func buildMonitorBucketsForConfig(usage, failures []monitorEvent, complete bool,
 			value := float64(bucket.SuccessCount) / float64(bucket.Total)
 			bucket.Availability = &value
 		}
-		if inputs[index] > 0 {
-			value := float64(cacheReads[index]) / float64(inputs[index])
-			bucket.CacheRate = &value
-		}
 		if firstCounts[index] > 0 {
 			value := firstSums[index] / firstCounts[index]
 			bucket.FirstTokenMS = &value
@@ -213,18 +233,74 @@ func buildMonitorBucketsForConfig(usage, failures []monitorEvent, complete bool,
 		}
 		allFirst += firstSums[index]
 		allFirstCount += firstCounts[index]
-		allInputs += inputs[index]
-		allCache += cacheReads[index]
 	}
-	var rate *float64
+	cacheSummary := summarizeCacheRateSamples(cacheSamples, cacheComplete)
 	var first *int64
-	if allInputs > 0 {
-		value := float64(allCache) / float64(allInputs)
-		rate = &value
-	}
 	if allFirstCount > 0 {
 		value := allFirst / allFirstCount
 		first = &value
 	}
-	return buckets, rate, first
+	return buckets, cacheSummary.Rate, first, cacheSummary
+}
+
+func summarizeCacheRateSamples(samples []cacheRateSample, complete bool) cacheRateSummary {
+	var summary cacheRateSummary
+	for _, sample := range samples {
+		summary.SampleCount++
+		summary.PromptTokens += sample.promptTokens
+		summary.ReadTokens += sample.readTokens
+	}
+	if cacheSampleStatus(summary.SampleCount, summary.PromptTokens, complete) != cacheSampleStatusReady {
+		return summary
+	}
+
+	summary.RatePromptTokens = summary.PromptTokens
+	summary.RateReadTokens = summary.ReadTokens
+	overallRate := float64(summary.ReadTokens) / float64(summary.PromptTokens)
+	summary.Rate = &overallRate
+
+	if len(samples) < recentCacheSampleRequests {
+		return summary
+	}
+	recent := append([]cacheRateSample(nil), samples...)
+	sort.SliceStable(recent, func(left, right int) bool {
+		return recent[left].createdAt.After(recent[right].createdAt)
+	})
+	for _, sample := range recent[:recentCacheSampleRequests] {
+		summary.RecentSampleCount++
+		summary.RecentPromptTokens += sample.promptTokens
+		summary.RecentReadTokens += sample.readTokens
+	}
+	recentRate := float64(summary.RecentReadTokens) / float64(summary.RecentPromptTokens)
+	if recentRate > overallRate {
+		summary.Rate = &recentRate
+		summary.RatePromptTokens = summary.RecentPromptTokens
+		summary.RateReadTokens = summary.RecentReadTokens
+	}
+	return summary
+}
+
+func isCacheSampleModelExcluded(model string) bool {
+	switch strings.ToLower(strings.TrimSpace(model)) {
+	case "gpt-5.6-luna", "gpt-6-luna":
+		return true
+	default:
+		return false
+	}
+}
+
+const (
+	cacheSampleStatusReady        = "ready"
+	cacheSampleStatusInsufficient = "insufficient"
+	cacheSampleStatusIncomplete   = "incomplete"
+)
+
+func cacheSampleStatus(sampleCount int, promptTokens int64, complete bool) string {
+	if !complete {
+		return cacheSampleStatusIncomplete
+	}
+	if sampleCount <= minCacheSampleRequests || promptTokens <= minCachePromptTokens {
+		return cacheSampleStatusInsufficient
+	}
+	return cacheSampleStatusReady
 }
