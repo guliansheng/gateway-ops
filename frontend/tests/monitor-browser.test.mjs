@@ -231,7 +231,7 @@ try {
   const trendTooltip = page.getByRole("tooltip")
   await trendTooltip.waitFor()
   const trendTooltipText = await trendTooltip.innerText()
-  assert.match(trendTooltipText, /次请求/)
+  assert.doesNotMatch(trendTooltipText, /次请求/)
   assert.match(trendTooltipText, /可用率/)
   assert.match(trendTooltipText, /首 Token/)
   assert.doesNotMatch(trendTooltipText, /缓存率|条流式请求|prompt tokens|缓存样本：/)

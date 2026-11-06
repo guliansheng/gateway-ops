@@ -110,7 +110,7 @@ function Timeline({ group, range }: { group: PublicGroupMonitorGroup; range: Mon
           </TooltipTrigger>
           <TooltipContent side="top" className="max-w-[min(23rem,calc(100vw-2rem))] border-0 bg-zinc-900 px-3 py-2 text-xs text-white shadow-lg">
             <p className="font-semibold">{time(bucket.start_at, true)}–{time(bucket.end_at)} · {status}</p>
-            {bucket.total ? <p className="mt-1 leading-5">{bucket.total} 次请求 · 可用率 {percent(bucket.availability)} · 首 Token {latency(bucket.first_token_ms)}</p> : null}
+            {bucket.total ? <p className="mt-1 leading-5">可用率 {percent(bucket.availability)} · 首 Token {latency(bucket.first_token_ms)}</p> : null}
             {!bucket.data_complete ? <p className="mt-1 text-zinc-300">日志源读取失败或超过采集上限，指标仅为部分样本。</p> : null}
           </TooltipContent>
         </Tooltip>
