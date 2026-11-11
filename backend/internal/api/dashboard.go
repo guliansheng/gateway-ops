@@ -137,7 +137,12 @@ func dashboardSummary(c *gin.Context, d *Deps) {
 		matchedAccountCount += interval.MatchedAccountCount
 	}
 
-	recentChanges, err := d.Rates.ListChangesSince(since, 20)
+	recentChanges, err := d.Rates.ListChangesSince(since, 50)
+	if err != nil {
+		fail(c, http.StatusInternalServerError, err)
+		return
+	}
+	recentGroups, err := d.Rates.ListRecentGroupsSince(since, 50)
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err)
 		return
@@ -194,6 +199,7 @@ func dashboardSummary(c *gin.Context, d *Deps) {
 			"channels":                    stats,
 			"rate_change_count":           rateChangeCount,
 			"recent_rate_changes":         recentChanges,
+			"recent_groups":               recentGroups,
 			"recent_notification_logs":    recentNotifs,
 			"relay":                       relayStats,
 			"recent_relay_adjustments":    relayAdjustments,

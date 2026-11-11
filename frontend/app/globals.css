@@ -62,14 +62,28 @@
   background: linear-gradient(to right, rgb(0 0 0 / 40%), transparent);
 }
 
-@media (width >= 64rem) {
-  .relay-account-grid {
-    min-width: 3136px;
-    grid-template-columns:
-      64px minmax(202px, 1.1fr) 132px 110px 96px 120px 96px 96px 120px
-      152px 160px 104px 104px 212px minmax(172px, 0.9fr) 132px minmax(280px, 1.1fr) 120px
-      96px 130px 144px minmax(294px, 0.9fr);
-  }
+/* Relay management keeps aligned table columns at every viewport width. */
+.relay-account-table,
+.relay-account-grid {
+  min-width: 3136px;
+}
+
+.relay-account-grid {
+  grid-template-columns:
+    64px minmax(202px, 1.1fr) 132px 110px 96px 120px 96px 96px 120px
+    152px 160px 104px 104px 212px minmax(172px, 0.9fr) 132px minmax(280px, 1.1fr) 120px
+    96px 130px 144px minmax(294px, 0.9fr);
+}
+
+.relay-group-table,
+.relay-group-grid {
+  min-width: 1920px;
+}
+
+.relay-group-grid {
+  grid-template-columns:
+    88px minmax(152px, 0.8fr) 132px minmax(172px, 1fr) 114px minmax(152px, 0.9fr)
+    160px 128px 120px 144px 120px 144px 96px 176px;
 }
 
 @media (width < 64rem) {

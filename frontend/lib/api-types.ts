@@ -222,6 +222,7 @@ export interface DashboardSummary {
   channels: DashboardChannelStat[]
   rate_change_count: number
   recent_rate_changes: RateChangeLog[]
+  recent_groups: RateSnapshot[]
   recent_notification_logs: NotificationLog[]
   relay: RelayDashboardStat[]
   recent_relay_adjustments: RelayAdjustmentView[]

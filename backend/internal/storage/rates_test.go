@@ -1,9 +1,45 @@
 package storage
 
 import (
+	"database/sql/driver"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
+
+func TestListRecentGroupsSinceReturnsEmptyArray(t *testing.T) {
+	since := time.Date(2026, 8, 19, 0, 0, 0, 0, time.UTC)
+	for _, limit := range []int{50, 0, -1} {
+		t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
+			repo, _ := newDegradationSQL(t, degradationSQLStep{
+				contains: `FROM "rate_snapshots"`, columns: []string{"id"},
+				check: func(_ string, args []driver.NamedValue) {
+					if len(args) != 2 || args[0].Value != since || args[1].Value != int64(50) {
+						t.Fatalf("query arguments = %v, want since and limit 50", args)
+					}
+				},
+			})
+			groups, err := NewRates(repo.db).ListRecentGroupsSince(since, limit)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(groups)
+			if err != nil || string(data) != "[]" {
+				t.Fatalf("empty groups JSON = %s, err = %v; want []", data, err)
+			}
+		})
+	}
+}
+
+func TestListRecentGroupsSincePropagatesQueryError(t *testing.T) {
+	queryErr := errors.New("recent groups query failed")
+	repo, _ := newDegradationSQL(t, degradationSQLStep{contains: `FROM "rate_snapshots"`, err: queryErr})
+	if _, err := NewRates(repo.db).ListRecentGroupsSince(time.Time{}, 50); !errors.Is(err, queryErr) {
+		t.Fatalf("query error = %v, want %v", err, queryErr)
+	}
+}
 
 func TestIsTransientBalanceReset(t *testing.T) {
 	at := time.Date(2026, 8, 19, 13, 5, 0, 0, time.UTC)

@@ -51,6 +51,21 @@ func (r *Rates) GroupNamesByChannel(channelIDs []uint) (map[uint][]string, error
 	return groups, nil
 }
 
+// ListRecentGroupsSince returns current groups first discovered within the range.
+// Older soft-deleted channels can retain snapshots, so filter their parent rows
+// explicitly instead of treating rate-change logs as group creation events.
+func (r *Rates) ListRecentGroupsSince(since time.Time, limit int) ([]RateSnapshot, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	list := make([]RateSnapshot, 0)
+	err := r.db.Model(&RateSnapshot{}).Select("rate_snapshots.*").
+		Joins("JOIN channels ON channels.id = rate_snapshots.channel_id AND channels.deleted_at IS NULL").
+		Where("rate_snapshots.first_seen_at >= ?", since).
+		Order("rate_snapshots.first_seen_at DESC, rate_snapshots.id DESC").Limit(limit).Find(&list).Error
+	return list, err
+}
+
 func (r *Rates) FindByID(id uint, channelID uint) (*RateSnapshot, error) {
 	var snapshot RateSnapshot
 	if err := r.db.Where("id = ? AND channel_id = ?", id, channelID).First(&snapshot).Error; err != nil {
@@ -232,7 +247,7 @@ func (r *Rates) ListChangesSince(since time.Time, limit int) ([]RateChangeLog, e
 	}
 	var list []RateChangeLog
 	err := r.db.Where("changed_at >= ? AND old_ratio IS NOT NULL AND old_ratio <> new_ratio", since).
-		Order("changed_at DESC").Limit(limit).Find(&list).Error
+		Order("changed_at DESC, id DESC").Limit(limit).Find(&list).Error
 	return list, err
 }
 

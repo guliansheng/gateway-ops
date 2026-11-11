@@ -11,6 +11,7 @@ import { apiFetch } from "@/lib/api"
 import { ChannelCards } from "@/components/monitor/channel-cards"
 import { KpiRow } from "@/components/monitor/kpi-row"
 import { MultiplierChanges } from "@/components/monitor/multiplier-changes"
+import { RecentGroups } from "@/components/monitor/recent-groups"
 import type { RelayUsageRange } from "@/lib/api-types"
 import { cn } from "@/lib/utils"
 
@@ -124,7 +125,10 @@ export default function ChannelsPage() {
         </CardContent>
       </Card>
 
-      <MultiplierChanges range={range} />
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+        <MultiplierChanges range={range} />
+        <RecentGroups range={range} />
+      </div>
 
       <ChannelCards usageRange={range} />
     </section>
