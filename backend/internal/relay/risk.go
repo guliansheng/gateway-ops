@@ -214,6 +214,9 @@ func evaluateAccountRiskWithOptions(account storage.RelayAccount, currentGroups,
 	}
 	risk.CurrentMinMultiplier = &minCurrent
 	margin := minCurrent - cost
+	if sameMultiplier(minCurrent, cost) {
+		margin = 0
+	}
 	risk.Margin = &margin
 
 	for _, group := range activeCurrent {
@@ -230,7 +233,7 @@ func evaluateAccountRiskWithOptions(account storage.RelayAccount, currentGroups,
 	candidates := make([]storage.RelayGroup, 0)
 	for _, group := range allGroups {
 		if !isActive(group.Status) || !samePlatform(group.Platform, account.Platform) ||
-			!sameAccountType(account, group, groupTypes) || group.RateMultiplier <= cost {
+			!sameAccountType(account, group, groupTypes) || group.RateMultiplier <= cost || sameMultiplier(group.RateMultiplier, cost) {
 			continue
 		}
 		// 未设置模型类型的分组不参与调组策略：既不作为调组建议，也不作为自动调组候选。
@@ -288,7 +291,7 @@ func evaluateAccountRiskWithOptions(account storage.RelayAccount, currentGroups,
 		if _, needs := needsAdjustment[group.ExternalID]; needs {
 			continue
 		}
-		if isActive(group.Status) && samePlatform(group.Platform, account.Platform) && sameAccountType(account, group, groupTypes) && group.RateMultiplier > cost {
+		if isActive(group.Status) && samePlatform(group.Platform, account.Platform) && sameAccountType(account, group, groupTypes) && group.RateMultiplier > cost && !sameMultiplier(group.RateMultiplier, cost) {
 			profitableCurrent = true
 		}
 		if _, exists := seen[group.ExternalID]; !exists {

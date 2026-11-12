@@ -1149,7 +1149,7 @@ function RiskRow({
             "font-mono text-sm font-semibold tabular-nums",
             marginTone,
           )}
-          title="利润率 = (销售倍率 - 成本倍率) / 成本倍率"
+          title="成本利润率 =（销售倍率 - 成本倍率）/ 成本倍率；销售倍率取账号当前关联的启用分组中、平台与账号类型匹配分组的最低倍率。此为倍率空间估算，不等同于区间实际净利润。"
         >
           {profitPercent(account.margin, account.cost_multiplier)}
         </p>
