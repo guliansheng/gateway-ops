@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
+	"github.com/guliansheng/gateway-ops/internal/httpclient"
 	"github.com/guliansheng/gateway-ops/internal/storage"
 )
 
@@ -36,7 +37,7 @@ func newTelegram(raw string) (*telegram, error) {
 	if cfg.BotToken == "" || cfg.ChatID == "" {
 		return nil, errors.New("telegram bot_token and chat_id are required")
 	}
-	return &telegram{cfg: cfg, http: resty.New().SetTimeout(15 * time.Second)}, nil
+	return &telegram{cfg: cfg, http: httpclient.New().SetTimeout(15 * time.Second)}, nil
 }
 
 func (t *telegram) Type() storage.NotificationChannelType { return storage.NotifyTelegram }

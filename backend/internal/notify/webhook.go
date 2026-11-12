@@ -6,6 +6,7 @@ import (
 	"errors"
 
 	"github.com/go-resty/resty/v2"
+	"github.com/guliansheng/gateway-ops/internal/httpclient"
 	"github.com/guliansheng/gateway-ops/internal/storage"
 )
 
@@ -35,7 +36,7 @@ func newWebhook(raw string) (*webhook, error) {
 	if cfg.Method == "" {
 		cfg.Method = "POST"
 	}
-	return &webhook{cfg: cfg, http: resty.New()}, nil
+	return &webhook{cfg: cfg, http: httpclient.New()}, nil
 }
 
 func (w *webhook) Type() storage.NotificationChannelType { return storage.NotifyWebhook }

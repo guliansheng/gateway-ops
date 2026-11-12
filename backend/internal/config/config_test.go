@@ -55,6 +55,23 @@ func DefaultGuardConfigForTest() AuthConfig {
 	return AuthConfig{LoginMaxFailuresPerIP: 5, LoginWindowMinutes: 10}
 }
 
+func TestLoadTrustedProxiesExplicitEnv(t *testing.T) {
+	t.Setenv("GATEWAYOPS_SERVER_TRUSTEDPROXIES", "127.0.0.1/32,::1/128,172.18.0.1/32,172.19.0.1/32")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"127.0.0.1/32", "::1/128", "172.18.0.1/32", "172.19.0.1/32"}
+	if len(cfg.Server.TrustedProxies) != len(want) {
+		t.Fatalf("unexpected proxies: %v", cfg.Server.TrustedProxies)
+	}
+	for i, proxy := range want {
+		if cfg.Server.TrustedProxies[i] != proxy {
+			t.Fatalf("unexpected proxies: %v", cfg.Server.TrustedProxies)
+		}
+	}
+}
+
 // 未配置 trustedProxies 时应带上本机 + 私有网段的默认值。
 func TestLoadTrustedProxiesDefault(t *testing.T) {
 	cfg, err := Load("")

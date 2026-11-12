@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/go-resty/resty/v2"
+	"github.com/guliansheng/gateway-ops/internal/httpclient"
 	"github.com/guliansheng/gateway-ops/internal/storage"
 )
 
@@ -45,7 +46,7 @@ func newBark(raw string) (*bark, error) {
 		strings.Trim(parsed.Path, "/") == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return nil, errors.New("bark url must be a valid http or https URL")
 	}
-	return &bark{cfg: cfg, http: resty.New()}, nil
+	return &bark{cfg: cfg, http: httpclient.New()}, nil
 }
 
 func (b *bark) Type() storage.NotificationChannelType { return storage.NotifyBark }

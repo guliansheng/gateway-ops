@@ -174,7 +174,7 @@ export function DockBar() {
     {
       icon: Settings,
       label: "系统设置",
-      path: "/captcha",
+      path: "/settings",
       gradient: "from-zinc-400 via-zinc-500 to-zinc-700",
     },
   ]

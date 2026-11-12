@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
+	"github.com/guliansheng/gateway-ops/internal/httpclient"
 	"github.com/guliansheng/gateway-ops/internal/storage"
 )
 
@@ -37,7 +38,7 @@ func newDingTalk(raw string) (*dingTalk, error) {
 	if cfg.WebhookURL == "" {
 		return nil, errors.New("dingtalk webhook_url is required")
 	}
-	return &dingTalk{cfg: cfg, http: resty.New()}, nil
+	return &dingTalk{cfg: cfg, http: httpclient.New()}, nil
 }
 
 func (d *dingTalk) Type() storage.NotificationChannelType { return storage.NotifyDingTalk }

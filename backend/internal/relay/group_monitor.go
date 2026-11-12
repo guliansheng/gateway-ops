@@ -169,16 +169,52 @@ func (s *Service) PublicGroupMonitorForRange(ctx context.Context, stationID uint
 	if !ok {
 		return PublicGroupMonitor{}, fmt.Errorf("unsupported monitor range %q", rawRange)
 	}
+	cacheKey := fmt.Sprintf("%d:%s", stationID, config.key)
+	if cached, ok := s.cachedPublicMonitor(cacheKey, time.Now()); ok {
+		return clonePublicGroupMonitor(cached), nil
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := waitCtx.Err(); err != nil {
+		return PublicGroupMonitor{}, err
+	}
+	resultCh := s.publicMonitorFlights.DoChan(cacheKey, func() (any, error) {
+		// The cache may have been filled after this request's first lookup but
+		// before it joined the singleflight call.
+		if cached, ok := s.cachedPublicMonitor(cacheKey, time.Now()); ok {
+			return cached, nil
+		}
+		loadCtx, loadCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer loadCancel()
+		view, err := s.buildPublicGroupMonitor(loadCtx, stationID, config)
+		if err != nil {
+			return nil, err
+		}
+		return view, nil
+	})
+	select {
+	case <-waitCtx.Done():
+		return PublicGroupMonitor{}, waitCtx.Err()
+	case result := <-resultCh:
+		if result.Err != nil {
+			return PublicGroupMonitor{}, result.Err
+		}
+		view, ok := result.Val.(PublicGroupMonitor)
+		if !ok {
+			return PublicGroupMonitor{}, fmt.Errorf("invalid public monitor result")
+		}
+		return clonePublicGroupMonitor(view), nil
+	}
+}
+
+func (s *Service) buildPublicGroupMonitor(ctx context.Context, stationID uint, config monitorWindowConfig) (PublicGroupMonitor, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	now := time.Now().UTC()
 	cacheKey := fmt.Sprintf("%d:%s", stationID, config.key)
-	s.publicMonitorMu.Lock()
-	if cached, ok := s.publicMonitorCache[cacheKey]; ok && now.Before(cached.ExpiresAt) {
-		s.publicMonitorMu.Unlock()
-		return cached.View, nil
+	if cached, ok := s.cachedPublicMonitor(cacheKey, now); ok {
+		return cached, nil
 	}
-	s.publicMonitorMu.Unlock()
 
 	station, err := s.stations.FindByID(stationID)
 	if err != nil {
@@ -293,9 +329,84 @@ func (s *Service) PublicGroupMonitorForRange(ctx context.Context, stationID uint
 	return view, nil
 }
 
+func (s *Service) cachedPublicMonitor(cacheKey string, now time.Time) (PublicGroupMonitor, bool) {
+	s.publicMonitorMu.Lock()
+	defer s.publicMonitorMu.Unlock()
+	cached, ok := s.publicMonitorCache[cacheKey]
+	if !ok {
+		return PublicGroupMonitor{}, false
+	}
+	if !now.Before(cached.ExpiresAt) {
+		delete(s.publicMonitorCache, cacheKey)
+		return PublicGroupMonitor{}, false
+	}
+	return cached.View, true
+}
+
+func clonePublicGroupMonitor(view PublicGroupMonitor) PublicGroupMonitor {
+	if view.Groups != nil {
+		groups := make([]PublicGroupMonitorGroup, len(view.Groups))
+		copy(groups, view.Groups)
+		for i := range groups {
+			group := &groups[i]
+			group.LatestCallAt = cloneTimePointer(group.LatestCallAt)
+			group.CacheRate = cloneFloat64Pointer(group.CacheRate)
+			group.FirstTokenMS = cloneInt64Pointer(group.FirstTokenMS)
+			if group.Calls != nil {
+				calls := make([]PublicGroupMonitorCall, len(group.Calls))
+				copy(calls, group.Calls)
+				for j := range calls {
+					calls[j].FirstTokenMS = cloneInt64Pointer(calls[j].FirstTokenMS)
+					calls[j].DurationMS = cloneInt64Pointer(calls[j].DurationMS)
+				}
+				group.Calls = calls
+			}
+			if group.Buckets != nil {
+				buckets := make([]PublicGroupMonitorBucket, len(group.Buckets))
+				copy(buckets, group.Buckets)
+				for j := range buckets {
+					buckets[j].Availability = cloneFloat64Pointer(buckets[j].Availability)
+					buckets[j].FirstTokenMS = cloneInt64Pointer(buckets[j].FirstTokenMS)
+					buckets[j].DurationMS = cloneInt64Pointer(buckets[j].DurationMS)
+				}
+				group.Buckets = buckets
+			}
+		}
+		view.Groups = groups
+	}
+	return view
+}
+
+func cloneTimePointer(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func cloneInt64Pointer(value *int64) *int64 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func cloneFloat64Pointer(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
 func (s *Service) storePublicMonitor(stationID uint, rangeKey string, view PublicGroupMonitor, now time.Time) {
 	s.publicMonitorMu.Lock()
-	s.publicMonitorCache[fmt.Sprintf("%d:%s", stationID, rangeKey)] = publicMonitorCacheEntry{ExpiresAt: now.Add(groupMonitorCacheTTL), View: view}
+	if s.publicMonitorCache == nil {
+		s.publicMonitorCache = make(map[string]publicMonitorCacheEntry)
+	}
+	s.publicMonitorCache[fmt.Sprintf("%d:%s", stationID, rangeKey)] = publicMonitorCacheEntry{ExpiresAt: now.Add(groupMonitorCacheTTL), View: clonePublicGroupMonitor(view)}
 	s.publicMonitorMu.Unlock()
 }
 

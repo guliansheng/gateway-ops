@@ -11,6 +11,7 @@ import { AuthGate } from '@/components/auth/auth-gate'
 import { AppShell } from '@/components/app-shell'
 import { Toaster } from '@/components/ui/sonner'
 import DashboardPage from '@/app/page'
+import SettingsPage from '@/app/settings-page'
 import ChannelsPage from '@/app/channels-page'
 import CaptchaPage from '@/app/captcha-page'
 import NotificationsPage from '@/app/notifications-page'
@@ -24,6 +25,11 @@ import PublicHelpPage from '@/app/public-help-page'
 import '@/app/globals.css'
 
 function ProtectedApplication() {
+  // A public document can navigate client-side without receiving fresh headers.
+  // Never mount authentication or management UI inside that existing iframe.
+  if (window.self !== window.top) {
+    return <p role="alert" className="p-6 text-sm">管理后台不能在 iframe 内打开，请在独立窗口访问。</p>
+  }
   return (
     <AuthProvider>
       <AuthGate>
@@ -51,6 +57,7 @@ createRoot(document.getElementById('root')!).render(
             <Route path="channels" element={<ChannelsPage />} />
             <Route path="captcha" element={<CaptchaPage />} />
             <Route path="notifications" element={<NotificationsPage />} />
+            <Route path="settings" element={<SettingsPage />} />
             <Route path="relay-stations" element={<RelayStationsPage />} />
             <Route path="operations/costs" element={<OperationsCostsPage />} />
             <Route path="operations/local-pool" element={<LocalPoolPage />} />

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -31,6 +32,7 @@ type publicServiceStatusCache struct {
 	mu      sync.Mutex
 	value   *PublicServiceStatusView
 	expires time.Time
+	flights singleflight.Group
 }
 
 var serviceStatusCache publicServiceStatusCache
@@ -153,17 +155,16 @@ var openAIGroupDefinitions = []openAIGroupDefinition{
 func registerPublicServiceStatus(g *gin.RouterGroup) { g.GET("/service-status", publicServiceStatus) }
 
 func publicServiceStatus(c *gin.Context) {
-	now := time.Now().UTC()
-	serviceStatusCache.mu.Lock()
-	if serviceStatusCache.value != nil && now.Before(serviceStatusCache.expires) {
-		cached := *serviceStatusCache.value
-		serviceStatusCache.mu.Unlock()
-		c.JSON(http.StatusOK, gin.H{"data": cached})
+	view, err := serviceStatusCache.get(c.Request.Context(), buildPublicServiceStatus)
+	if err != nil {
+		fail(c, http.StatusGatewayTimeout, errors.New("官方状态暂时无法获取"))
 		return
 	}
-	serviceStatusCache.mu.Unlock()
-	ctx, cancel := context.WithTimeout(c.Request.Context(), statusFetchTimeout)
-	defer cancel()
+	c.JSON(http.StatusOK, gin.H{"data": view})
+}
+
+func buildPublicServiceStatus(ctx context.Context) (PublicServiceStatusView, error) {
+	now := time.Now().UTC()
 	targets := []statusTarget{{"openai", "OpenAI", "https://status.openai.com/", "https://status.openai.com/history", openAIStatusURL, openAIComponentsURL, openAIIncidentsURL}, {"claude", "Claude", "https://status.claude.com/", "https://status.claude.com/history", claudeStatusURL, "", claudeIncidentsURL}}
 	results := make(chan PublicServiceStatus, len(targets))
 	for _, target := range targets {
@@ -179,11 +180,163 @@ func publicServiceStatus(c *gin.Context) {
 	for _, target := range targets {
 		view.Services = append(view.Services, byID[target.id])
 	}
-	serviceStatusCache.mu.Lock()
-	serviceStatusCache.value = &view
-	serviceStatusCache.expires = now.Add(statusCacheTTL)
-	serviceStatusCache.mu.Unlock()
-	c.JSON(http.StatusOK, gin.H{"data": view})
+	return view, nil
+}
+
+func (cache *publicServiceStatusCache) get(ctx context.Context, load func(context.Context) (PublicServiceStatusView, error)) (PublicServiceStatusView, error) {
+	if cached, ok := cache.cached(time.Now()); ok {
+		return cached, nil
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, statusFetchTimeout)
+	defer cancel()
+	if err := waitCtx.Err(); err != nil {
+		return PublicServiceStatusView{}, err
+	}
+	resultCh := cache.flights.DoChan("public-service-status", func() (any, error) {
+		// Another call may have filled the cache between the first lookup and
+		// this call taking ownership of the singleflight key.
+		if cached, ok := cache.cached(time.Now()); ok {
+			return cached, nil
+		}
+		loadCtx, loadCancel := context.WithTimeout(context.WithoutCancel(ctx), statusFetchTimeout)
+		defer loadCancel()
+		view, err := load(loadCtx)
+		if err != nil {
+			return nil, err
+		}
+		cache.store(view, time.Now())
+		return view, nil
+	})
+	select {
+	case <-waitCtx.Done():
+		return PublicServiceStatusView{}, waitCtx.Err()
+	case result := <-resultCh:
+		if result.Err != nil {
+			return PublicServiceStatusView{}, result.Err
+		}
+		view, ok := result.Val.(PublicServiceStatusView)
+		if !ok {
+			return PublicServiceStatusView{}, errors.New("invalid public service status result")
+		}
+		return clonePublicServiceStatusView(view), nil
+	}
+}
+
+func (cache *publicServiceStatusCache) cached(now time.Time) (PublicServiceStatusView, bool) {
+	cache.mu.Lock()
+	if cache.value == nil {
+		cache.mu.Unlock()
+		return PublicServiceStatusView{}, false
+	}
+	if !now.Before(cache.expires) {
+		cache.value = nil
+		cache.expires = time.Time{}
+		cache.mu.Unlock()
+		return PublicServiceStatusView{}, false
+	}
+	view := *cache.value
+	cache.mu.Unlock()
+	return clonePublicServiceStatusView(view), true
+}
+
+func (cache *publicServiceStatusCache) store(view PublicServiceStatusView, now time.Time) {
+	stored := clonePublicServiceStatusView(view)
+	cache.mu.Lock()
+	cache.value = &stored
+	cache.expires = now.Add(statusCacheTTL)
+	cache.mu.Unlock()
+}
+
+func clonePublicServiceStatusView(view PublicServiceStatusView) PublicServiceStatusView {
+	if view.Services != nil {
+		services := make([]PublicServiceStatus, len(view.Services))
+		copy(services, view.Services)
+		for i := range services {
+			service := &services[i]
+			service.UpdatedAt = cloneStatusTimePointer(service.UpdatedAt)
+			service.Components = clonePublicServiceStatusComponents(service.Components)
+			if service.Groups != nil {
+				groups := make([]PublicServiceStatusGroup, len(service.Groups))
+				copy(groups, service.Groups)
+				for j := range groups {
+					groups[j].History = clonePublicServiceStatusDays(groups[j].History)
+					groups[j].Components = clonePublicServiceStatusComponents(groups[j].Components)
+				}
+				service.Groups = groups
+			}
+			service.Incidents = clonePublicServiceStatusIncidents(service.Incidents)
+			service.PastIncidents = clonePublicServiceStatusIncidents(service.PastIncidents)
+			service.ScheduledMaintenances = clonePublicServiceStatusIncidents(service.ScheduledMaintenances)
+		}
+		view.Services = services
+	}
+	return view
+}
+
+func clonePublicServiceStatusComponents(items []PublicServiceStatusComponent) []PublicServiceStatusComponent {
+	if items == nil {
+		return nil
+	}
+	cloned := make([]PublicServiceStatusComponent, len(items))
+	copy(cloned, items)
+	for i := range cloned {
+		cloned[i].UpdatedAt = cloneStatusTimePointer(cloned[i].UpdatedAt)
+		cloned[i].History = clonePublicServiceStatusDays(cloned[i].History)
+	}
+	return cloned
+}
+
+func clonePublicServiceStatusDays(items []PublicServiceStatusDay) []PublicServiceStatusDay {
+	if items == nil {
+		return nil
+	}
+	cloned := make([]PublicServiceStatusDay, len(items))
+	copy(cloned, items)
+	for i := range cloned {
+		if cloned[i].Incidents != nil {
+			cloned[i].Incidents = append([]PublicServiceStatusBlip{}, cloned[i].Incidents...)
+		}
+	}
+	return cloned
+}
+
+func clonePublicServiceStatusIncidents(items []PublicServiceStatusIncident) []PublicServiceStatusIncident {
+	if items == nil {
+		return nil
+	}
+	cloned := make([]PublicServiceStatusIncident, len(items))
+	copy(cloned, items)
+	for i := range cloned {
+		incident := &cloned[i]
+		incident.CreatedAt = cloneStatusTimePointer(incident.CreatedAt)
+		incident.UpdatedAt = cloneStatusTimePointer(incident.UpdatedAt)
+		incident.ResolvedAt = cloneStatusTimePointer(incident.ResolvedAt)
+		if incident.Components != nil {
+			incident.Components = append([]PublicServiceIncidentComponent{}, incident.Components...)
+		}
+		if incident.IncidentUpdates != nil {
+			updates := make([]PublicServiceStatusIncidentUpdate, len(incident.IncidentUpdates))
+			copy(updates, incident.IncidentUpdates)
+			for j := range updates {
+				updates[j].CreatedAt = cloneStatusTimePointer(updates[j].CreatedAt)
+				updates[j].UpdatedAt = cloneStatusTimePointer(updates[j].UpdatedAt)
+				updates[j].DisplayAt = cloneStatusTimePointer(updates[j].DisplayAt)
+				if updates[j].AffectedComponents != nil {
+					updates[j].AffectedComponents = append([]PublicServiceStatusAffectedComponent{}, updates[j].AffectedComponents...)
+				}
+			}
+			incident.IncidentUpdates = updates
+		}
+	}
+	return cloned
+}
+
+func cloneStatusTimePointer(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func fetchPublicServiceStatus(ctx context.Context, target statusTarget, now time.Time) PublicServiceStatus {

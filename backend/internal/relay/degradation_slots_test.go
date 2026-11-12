@@ -9,7 +9,10 @@ func TestDegradationSlotPoolsAreIndependentAndBounded(t *testing.T) {
 	service := &Service{}
 
 	scheduled := exhaust(t, "scheduled", service.acquireScheduledDegradationSlot)
-	if len(scheduled) != len(service.scheduledDegradationSlots) || len(scheduled) != 2 {
+	if len(scheduled) != len(service.scheduledDegradationSlots) {
+		t.Fatalf("scheduled pool = %d slots, want %d", len(scheduled), len(service.scheduledDegradationSlots))
+	}
+	if len(scheduled) != 2 {
 		t.Fatalf("scheduled pool = %d slots, want 2", len(scheduled))
 	}
 	if release, ok := service.acquireScheduledDegradationSlot(); ok {
@@ -18,7 +21,10 @@ func TestDegradationSlotPoolsAreIndependentAndBounded(t *testing.T) {
 	}
 
 	manual := exhaust(t, "manual", service.acquireGroupDegradationSlot)
-	if len(manual) != len(service.manualDegradationSlots) || len(manual) != 3 {
+	if len(manual) != len(service.manualDegradationSlots) {
+		t.Fatalf("manual pool = %d slots, want %d", len(manual), len(service.manualDegradationSlots))
+	}
+	if len(manual) != 3 {
 		t.Fatalf("manual pool = %d slots, want 3", len(manual))
 	}
 	if release, ok := service.acquireGroupDegradationSlot(); ok {

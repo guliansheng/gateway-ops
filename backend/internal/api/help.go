@@ -4,8 +4,8 @@ import (
 	"errors"
 	"math"
 	"net/http"
+	"net/url"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -28,7 +28,7 @@ func registerHelp(g *gin.RouterGroup, d *Deps) {
 func registerPublicHelp(g *gin.RouterGroup, d *Deps) {
 	g.GET("/relay-stations/:id/help", func(c *gin.Context) { publicHelp(c, d) })
 	g.GET("/relay-stations/:id/help/commenter", func(c *gin.Context) { publicHelpCommenter(c, d) })
-	g.POST("/relay-stations/:id/help/comments", func(c *gin.Context) { createPublicHelpComment(c, d) })
+	g.POST("/relay-stations/:id/help/comments", newPublicCommentGuard(), func(c *gin.Context) { createPublicHelpComment(c, d) })
 }
 
 type helpDocumentInput struct {
@@ -62,6 +62,21 @@ func sanitizeHelpHTML(content string) string {
 
 func helpEnabled(in helpDocumentInput) bool {
 	return in.Enabled == nil || *in.Enabled
+}
+
+// publicHelpStationURL protects legacy station URLs that may have been saved
+// before userinfo validation was added. A malformed URL is omitted rather than
+// risking publication of an unparseable credential-bearing value.
+func publicHelpStationURL(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	if parsed.User == nil {
+		return raw
+	}
+	parsed.User = nil
+	return parsed.String()
 }
 
 // maskHelpCommentAuthor 遮蔽留言名称里的邮箱：@ 后面的域名完整展示，
@@ -248,7 +263,7 @@ func publicHelp(c *gin.Context, d *Deps) {
 	stationName, stationURL := "", ""
 	if station != nil {
 		stationName = station.Name
-		stationURL = station.BaseURL
+		stationURL = publicHelpStationURL(station.BaseURL)
 	}
 	// 公开页只给遮蔽后的名称；完整邮箱属于管理端视图。
 	for i := range comments {
@@ -266,33 +281,11 @@ func publicHelp(c *gin.Context, d *Deps) {
 	}})
 }
 
-// publicHelpCommenter 用 user_id 换留言名称的默认值（该用户的邮箱），前端拿去预填名称输入框，
-// 访客仍可自行修改。查不到用户或邮箱时回空串，公开文档与留言不受影响（名称回落到「游客」）。
-func publicHelpCommenter(c *gin.Context, d *Deps) {
-	stationID, err := uintParam(c, "id")
-	if err != nil || stationID == 0 {
-		fail(c, http.StatusBadRequest, errors.New("无效的中转站 ID"))
-		return
-	}
-	raw := strings.TrimSpace(c.Query("user_id"))
-	if raw == "" {
-		c.JSON(http.StatusOK, gin.H{"data": gin.H{"author_name": ""}})
-		return
-	}
-	userID, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || userID <= 0 {
-		fail(c, http.StatusBadRequest, errors.New("用户 ID 无效"))
-		return
-	}
-	email, err := d.Relay.UserEmail(c.Request.Context(), stationID, userID)
-	if err != nil {
-		if d.Log != nil {
-			d.Log.Warn("help commenter email lookup failed", "station_id", stationID, "user_id", userID, "err", err)
-		}
-		c.JSON(http.StatusOK, gin.H{"data": gin.H{"author_name": ""}})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{"author_name": email}})
+// publicHelpCommenter 保留旧公开页面的响应结构，但绝不按未认证的 user_id
+// 查询上游用户。用户 ID 不是身份证明；即使只返回遮蔽邮箱也会泄露用户存在性。
+func publicHelpCommenter(c *gin.Context, _ *Deps) {
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"author_name": ""}})
 }
 
 func createPublicHelpComment(c *gin.Context, d *Deps) {

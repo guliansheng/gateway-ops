@@ -24,9 +24,15 @@ import (
 
 	"github.com/guliansheng/gateway-ops/internal/crypto"
 	"github.com/guliansheng/gateway-ops/internal/storage"
+	"golang.org/x/sync/singleflight"
 )
 
 const requestTimeout = 45 * time.Second
+
+// Allow large paginated account lists while bounding untrusted admin JSON.
+const maxRemoteJSONResponseBytes = 16 << 20
+
+var errRemoteJSONResponseTooLarge = errors.New("remote JSON response exceeds 16 MiB limit")
 
 // Latency samples are optional telemetry. A short snapshot interval must not
 // fan out one usage request per account on every tick and overload Sub2API.
@@ -71,6 +77,7 @@ type Service struct {
 	scheduledDegradationSlots [2]sync.Mutex
 	publicMonitorMu           sync.Mutex
 	publicMonitorCache        map[string]publicMonitorCacheEntry
+	publicMonitorFlights      singleflight.Group
 	publicPricingMu           sync.Mutex
 	publicPricingCache        map[uint]publicModelPricingCacheEntry
 	userEmailMu               sync.Mutex
@@ -93,11 +100,18 @@ func NewService(stations *storage.RelayStations, cipher *crypto.Cipher, deps ...
 		rates, _ = deps[1].(*storage.Rates)
 	}
 	service := &Service{
-		stations:           stations,
-		cipher:             cipher,
-		channels:           channels,
-		rates:              rates,
-		client:             &http.Client{Timeout: requestTimeout},
+		stations: stations,
+		cipher:   cipher,
+		channels: channels,
+		rates:    rates,
+		client: &http.Client{
+			Timeout: requestTimeout,
+			// Custom x-api-key headers are copied to redirect targets by net/http.
+			// Keep every request at its configured endpoint, including same-host redirects.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 		usageCache:         make(map[string]usageCacheEntry),
 		userUsageCache:     make(map[string]userUsageCacheEntry),
 		latencyCache:       make(map[string]latencyCacheEntry),
@@ -997,6 +1011,19 @@ type remoteEnvelope struct {
 	Code    int             `json:"code"`
 	Message string          `json:"message"`
 	Data    json.RawMessage `json:"data"`
+}
+
+func decodeRemoteEnvelope(body io.Reader, envelope *remoteEnvelope) error {
+	// Read one extra byte so a valid prefix or trailing whitespace cannot hide
+	// an oversized response, even when Content-Length is absent or misleading.
+	payload, err := io.ReadAll(io.LimitReader(body, maxRemoteJSONResponseBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(payload) > maxRemoteJSONResponseBytes {
+		return errRemoteJSONResponseTooLarge
+	}
+	return json.Unmarshal(payload, envelope)
 }
 
 type remoteGroup struct {
@@ -4577,7 +4604,7 @@ func (s *Service) get(ctx context.Context, endpoint, apiKey string, out any) err
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	var envelope remoteEnvelope
-	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+	if err := decodeRemoteEnvelope(resp.Body, &envelope); err != nil {
 		return err
 	}
 	if envelope.Code != 0 {
@@ -4626,7 +4653,7 @@ func (s *Service) put(ctx context.Context, endpoint, apiKey string, body any) er
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	var envelope remoteEnvelope
-	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+	if err := decodeRemoteEnvelope(resp.Body, &envelope); err != nil {
 		return err
 	}
 	if envelope.Code != 0 {
@@ -4703,7 +4730,7 @@ func (s *Service) post(ctx context.Context, endpoint, apiKey string, body, out a
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	var envelope remoteEnvelope
-	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+	if err := decodeRemoteEnvelope(resp.Body, &envelope); err != nil {
 		return err
 	}
 	if envelope.Code != 0 {
@@ -4733,7 +4760,7 @@ func (s *Service) duplicateRemote(ctx context.Context, baseURL, apiKey string, a
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	var envelope remoteEnvelope
-	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+	if err := decodeRemoteEnvelope(resp.Body, &envelope); err != nil {
 		return nil, err
 	}
 	if envelope.Code != 0 {
@@ -4757,6 +4784,9 @@ func normalizeBaseURL(raw string) (string, error) {
 	parsed, err := url.Parse(value)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return "", errors.New("中转站地址必须是完整的 http(s) URL")
+	}
+	if parsed.User != nil {
+		return "", errors.New("中转站地址不能包含用户名或密码")
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return "", errors.New("中转站地址仅支持 http 或 https")

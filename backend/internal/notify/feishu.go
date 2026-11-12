@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
+	"github.com/guliansheng/gateway-ops/internal/httpclient"
 	"github.com/guliansheng/gateway-ops/internal/storage"
 )
 
@@ -37,7 +38,7 @@ func newFeishu(raw string) (*feishu, error) {
 	if cfg.WebhookURL == "" {
 		return nil, errors.New("feishu webhook_url is required")
 	}
-	return &feishu{cfg: cfg, http: resty.New()}, nil
+	return &feishu{cfg: cfg, http: httpclient.New()}, nil
 }
 
 func (f *feishu) Type() storage.NotificationChannelType { return storage.NotifyFeishu }

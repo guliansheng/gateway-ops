@@ -48,6 +48,12 @@ type Deps struct {
 
 // Register 把所有路由挂到给定 gin engine。
 func Register(r *gin.Engine, d *Deps) {
+	var settingsStore frameSettingsStore
+	if d.DB != nil {
+		settingsStore = storage.NewSettings(d.DB)
+	}
+	framePolicy := newFramePolicy(settingsStore, d.Log)
+	r.Use(securityHeaders(framePolicy), limitRequestBody(maxAPIRequestBytes))
 	r.GET("/healthz", func(c *gin.Context) {
 		sqlDB, err := d.DB.DB()
 		if err != nil {
@@ -87,6 +93,7 @@ func Register(r *gin.Engine, d *Deps) {
 		registerRelayStations(api, d)
 		registerGroupDegradation(api, d)
 		registerSyncSettings(api, d)
+		registerSecuritySettings(api, framePolicy)
 		registerOperations(api, d)
 		registerHelp(api, d)
 	}

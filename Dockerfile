@@ -10,7 +10,7 @@
 #   或在 docker-compose 里写 context: .
 
 # ---------- Stage 1: 前端 ----------
-FROM node:20-alpine AS frontend-builder
+FROM node:24-alpine AS frontend-builder
 WORKDIR /web
 
 # pnpm-workspace.yaml 用了 allowBuilds: 这种 pnpm 10.4+ 才支持的字段，
@@ -19,16 +19,15 @@ RUN corepack enable && corepack prepare pnpm@10.4.0 --activate
 
 # 先拷依赖清单走缓存层
 COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./
-# 不用 --frozen-lockfile：lockfile 不严格匹配时只警告不报错；
-# 在 CI 里如果发现 lockfile 已经稳定可信，可以改回 --frozen-lockfile 锁定可复现性。
-RUN pnpm install --no-frozen-lockfile
+# 构建必须使用已审计的锁文件，禁止构建时隐式漂移依赖。
+RUN pnpm install --frozen-lockfile
 
 # 再拷源码，build 产物在 /web/dist
 COPY frontend/ ./
 RUN pnpm build
 
 # ---------- Stage 2: 后端 ----------
-FROM golang:1.23-alpine AS go-builder
+FROM golang:1.26.11-alpine AS go-builder
 WORKDIR /src
 
 # 先 go.mod / go.sum 走缓存
@@ -49,8 +48,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
         ./cmd/server
 
 # ---------- Stage 3: 运行时 ----------
-FROM alpine:3.20
-RUN apk add --no-cache ca-certificates tzdata wget && \
+FROM alpine:3.23
+# Apply stable-branch security fixes as well as new packages (e.g. zlib).
+RUN apk upgrade --no-cache && \
+    apk add --no-cache ca-certificates tzdata wget && \
     adduser -D -u 10001 gatewayops
 USER gatewayops
 WORKDIR /app

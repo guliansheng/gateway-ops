@@ -306,10 +306,16 @@ docker build -t gateway-ops:dev .
 - 公开模型价格页面只展示模型与价格信息，不暴露中转站管理员密钥或分组 API 密钥。
 - 删除中转站会删除本地账号、分组、渠道快照和调整配置，但保留历史运营账本记录。
 - PostgreSQL 端口默认仅绑定 `127.0.0.1`。
+- API 请求体上限为 8 MiB；匿名留言单次请求体上限为 16 KiB，每 IP 每分钟最多 5 次尝试、每进程每分钟最多 60 次，超限返回 429。进程内限流不替代 CDN/WAF 或多实例共享限流。
+- 旧公开 `help/commenter` 接口为兼容保留，但恒返回空名称，不再按用户 ID 查询邮箱；访客自行填写留言名称。
+- 中转站、NewAPI/Sub2API 连接器、打码和 HTTP 通知客户端均拒绝自动重定向；集成地址应直接配置为最终 URL，避免密码、刷新令牌或自定义密钥头被第二跳带走。普通管理员 JSON 与其它 HTTP 客户端解压后的响应上限为 16 MiB，避免恶意上游无限返回数据。通知错误在进入 API、重试日志或数据库前统一隐藏凭据 URL 和配置值。
+- 公网反代可参考 [nginx 安全配置](./deploy/nginx/gatewayops.conf)。应用的 `GATEWAYOPS_SERVER_TRUSTEDPROXIES` 只允许实际反代对端，不能直接信客户端提交的 `X-Forwarded-For`。模板中的域名、上游端口和可信 CDN 地址需按部署环境调整。
+- 应用响应包含防嵌入、禁止 MIME 嗅探和最小 CSP；这不等于完整的 XSS 防护，帮助文档仍依赖允许列表清洗和 iframe 沙箱。应用容器默认丢弃全部 Linux capabilities 并禁止提权。
+- **公开页 iframe 放行：** 管理员打开「系统设置 → 安全与运行设置」（`/settings`），在「公开页面 iframe 放行策略」每行填写一个完整 HTTPS 来源，例如 `https://qidian7.top`，保存后新加载的公开页立即生效。只允许公开监控、模型价格、服务状态和帮助文档，后台/登录页/管理 API 始终禁止嵌入；也不会开放 CORS。来源必须精确匹配，子域名/非默认端口另加，不支持通配符、路径、HTTP 或 CSP 指令；清空保存即禁止所有嵌入。多层嵌入时每层祖先都需放行。设置持久化到现有 `app_settings` 表，无需新增迁移；未设置或读取失败默认拒绝全部嵌入。当前为单实例即时更新，多实例需同步重载策略或重启各实例。被嵌入方自身的 `frame-src` 也必须允许 GatewayOps。
 
 ## 技术架构
 
-- **Backend**：Go 1.23、Gin、GORM、PostgreSQL、robfig/cron。
+- **Backend**：Go 1.26（Docker 构建使用 1.26.11）、Gin、GORM、PostgreSQL、robfig/cron。
 - **Frontend**：React 19、TypeScript、Vite、Tailwind CSS、Radix UI、Recharts。
 - **连接器**：NewAPI 与 Sub2API 登录、鉴权、余额、倍率和管理 API 适配。
 - **构建**：前端构建、Go 编译、Alpine 运行时三阶段 Docker 构建。

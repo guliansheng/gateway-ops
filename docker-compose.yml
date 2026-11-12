@@ -29,6 +29,10 @@ services:
       dockerfile: Dockerfile
     container_name: gatewayops-app
     restart: unless-stopped
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     depends_on:
       postgres:
         condition: service_healthy

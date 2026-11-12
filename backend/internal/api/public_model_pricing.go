@@ -2,11 +2,20 @@ package api
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
+
+func failPublicModelPricing(c *gin.Context, logger *slog.Logger, stationID uint, err error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.Error("public model pricing unavailable", "station_id", stationID, "err", err)
+	fail(c, http.StatusBadGateway, errors.New("模型价格信息暂时无法获取"))
+}
 
 func registerPublicModelPricing(g *gin.RouterGroup, d *Deps) {
 	g.GET("/relay-stations/:id/model-pricing", func(c *gin.Context) {
@@ -21,7 +30,7 @@ func registerPublicModelPricing(g *gin.RouterGroup, d *Deps) {
 				fail(c, http.StatusNotFound, errors.New("中转站不存在"))
 				return
 			}
-			fail(c, http.StatusBadGateway, err)
+			failPublicModelPricing(c, d.Log, stationID, err)
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"data": view})

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
+	"github.com/guliansheng/gateway-ops/internal/httpclient"
 	"github.com/guliansheng/gateway-ops/internal/storage"
 )
 
@@ -37,7 +38,7 @@ func newAntiCaptcha(c Config) *antiCaptcha {
 	}
 	return &antiCaptcha{
 		cfg:  c,
-		http: resty.New().SetTimeout(30 * time.Second),
+		http: httpclient.New().SetTimeout(30 * time.Second),
 		base: base,
 	}
 }

@@ -197,6 +197,9 @@ func main() {
 		Addr:              fmt.Sprintf(":%d", cfg.Server.Port),
 		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       90 * time.Second,
+		MaxHeaderBytes:    64 << 10,
 	}
 
 	go func() {

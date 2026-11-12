@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-resty/resty/v2"
 	"github.com/guliansheng/gateway-ops/internal/connector"
+	"github.com/guliansheng/gateway-ops/internal/httpclient"
 )
 
 func init() {
@@ -23,7 +24,7 @@ type Client struct {
 }
 
 func New() *Client {
-	c := resty.New().
+	c := httpclient.New().
 		SetTimeout(30*time.Second).
 		SetHeader("User-Agent", "GatewayOps/0.1").
 		SetHeader("Accept", "application/json")

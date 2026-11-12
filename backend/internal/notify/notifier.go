@@ -59,5 +59,9 @@ func Build(c *storage.NotificationChannel, decryptedConfig string) (Notifier, er
 	if !ok {
 		return nil, fmt.Errorf("unknown notifier type: %s", c.Type)
 	}
-	return f(decryptedConfig)
+	n, err := f(decryptedConfig)
+	if err != nil {
+		return nil, sanitizeNotificationError(err, decryptedConfig)
+	}
+	return &safeNotifier{Notifier: n, config: decryptedConfig}, nil
 }

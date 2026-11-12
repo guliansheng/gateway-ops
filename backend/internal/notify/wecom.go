@@ -6,6 +6,7 @@ import (
 	"errors"
 
 	"github.com/go-resty/resty/v2"
+	"github.com/guliansheng/gateway-ops/internal/httpclient"
 	"github.com/guliansheng/gateway-ops/internal/storage"
 )
 
@@ -30,7 +31,7 @@ func newWecom(raw string) (*wecom, error) {
 	if cfg.WebhookURL == "" {
 		return nil, errors.New("wecom webhook_url is required")
 	}
-	return &wecom{cfg: cfg, http: resty.New()}, nil
+	return &wecom{cfg: cfg, http: httpclient.New()}, nil
 }
 
 func (w *wecom) Type() storage.NotificationChannelType { return storage.NotifyWecom }
